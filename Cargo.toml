@@ -5,7 +5,7 @@ edition = "2024"
 
 [lib]
 # "cdylib" produces the shared library required by Python C-extensions
-name = "pyroxide"
+name = "_pyroxide"
 crate-type = ["cdylib"]
 
 [dependencies]

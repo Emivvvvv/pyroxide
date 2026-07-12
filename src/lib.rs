@@ -25,7 +25,7 @@ fn get_status(task_id: usize) -> PyResult<String> {
 
 /// PyO3 entry point
 #[pymodule]
-fn pyroxide(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _pyroxide(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(submit_task, m)?)?;
     m.add_function(wrap_pyfunction!(get_status, m)?)?;
 
