@@ -4,11 +4,11 @@ build-backend = "maturin"
 
 [project]
 name = "pyro3"
-version = "0.2.0"
+version = "0.2.1"
 description = "A lock-free, high-concurrency task broker for Python, powered by Rust."
 readme = "README.md"
 requires-python = ">=3.8"
-keywords = ["rust", "python", "pyo3", "concurrency", "lock-free", "task-broker", "background-tasks", "gil-free", "multithreading", "performance", "odoo"]
+keywords = ["rust", "python", "pyo3", "concurrency", "lock-free", "task-broker", "background-tasks", "gil-free", "multithreading", "performance"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
