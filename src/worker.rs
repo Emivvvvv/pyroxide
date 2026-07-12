@@ -3,6 +3,11 @@ use pyo3::prelude::*;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+enum NativePayload {
+    Str(String),
+    Bytes(Vec<u8>),
+}
+
 fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>) {
     while let Ok(task_id) = receiver.recv() {
         // 1. Get task from Slab using a read lock
@@ -33,24 +38,55 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                     })
                 } else {
                     // Native Execution (GIL-free)
-                    Python::attach(|py| {
+                    // 1. Extract payload with GIL held
+                    let extracted = Python::attach(|py| {
                         let bound_payload = task_clone.payload.bind(py);
                         if let Ok(s) = bound_payload.extract::<String>() {
-                            if s == "TRIGGER_PANIC" {
-                                panic!("Simulated Rust worker panic!");
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(1));
-                            let upper = s.to_uppercase();
-                            let py_str = pyo3::types::PyString::new(py, &upper);
-                            Ok(py_str.into_any().unbind())
+                            Ok(NativePayload::Str(s))
                         } else if let Ok(b) = bound_payload.extract::<Vec<u8>>() {
-                            std::thread::sleep(std::time::Duration::from_millis(1));
-                            let mut upper = b;
-                            upper.make_ascii_uppercase();
-                            let py_bytes = pyo3::types::PyBytes::new(py, &upper);
-                            Ok(py_bytes.into_any().unbind())
+                            Ok(NativePayload::Bytes(b))
                         } else {
                             Err("Native execution: Unsupported payload type".to_string())
+                        }
+                    });
+
+                    // 2. Process payload without GIL (outside Python::attach)
+                    let processed = extracted.and_then(|payload| {
+                        match payload {
+                            NativePayload::Str(s) => {
+                                if s == "TRIGGER_PANIC" {
+                                    panic!("Simulated Rust worker panic!");
+                                }
+                                if s.starts_with("SLEEP:") {
+                                    if let Ok(ms) = s["SLEEP:".len()..].parse::<u64>() {
+                                        std::thread::sleep(std::time::Duration::from_millis(ms));
+                                    }
+                                } else {
+                                    std::thread::sleep(std::time::Duration::from_millis(1));
+                                }
+                                let upper = s.to_uppercase();
+                                Ok(NativePayload::Str(upper))
+                            }
+                            NativePayload::Bytes(mut b) => {
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                                b.make_ascii_uppercase();
+                                Ok(NativePayload::Bytes(b))
+                            }
+                        }
+                    });
+
+                    // 3. Re-acquire GIL to construct the Python return value
+                    Python::attach(|py| {
+                        match processed {
+                            Ok(NativePayload::Str(s)) => {
+                                let py_str = pyo3::types::PyString::new(py, &s);
+                                Ok(py_str.into_any().unbind())
+                            }
+                            Ok(NativePayload::Bytes(b)) => {
+                                let py_bytes = pyo3::types::PyBytes::new(py, &b);
+                                Ok(py_bytes.into_any().unbind())
+                            }
+                            Err(err) => Err(err),
                         }
                     })
                 }

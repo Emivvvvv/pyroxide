@@ -5,6 +5,7 @@ from ._pyroxide import get_status, wait_status
 class TaskHandle:
     def __init__(self, task_id: int) -> None:
         self.task_id: int = task_id
+        self._consumed: bool = False
 
     @property
     def status(self) -> str:
@@ -43,6 +44,7 @@ class TaskHandle:
         res = get_result(self.task_id)
         if consume:
             free_task(self.task_id)
+            self._consumed = True
         return res
 
     def __del__(self) -> None:
@@ -50,9 +52,12 @@ class TaskHandle:
         Garbage collection destructor.
         Automatically frees the task memory in the Rust Slab when the Python handle is deleted/dropped.
         """
+        if getattr(self, "_consumed", False):
+            return
         try:
             from ._pyroxide import free_task
 
             free_task(self.task_id)
+            self._consumed = True
         except Exception:
             pass
