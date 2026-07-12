@@ -8,10 +8,28 @@ version = "0.1.1"
 description = "A lock-free, high-concurrency task broker for Python, powered by Rust."
 readme = "README.md"
 requires-python = ">=3.8"
+keywords = ["rust", "python", "pyo3", "concurrency", "lock-free", "task-broker", "background-tasks", "gil-free", "multithreading", "performance", "odoo"]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Hardware :: Symmetric Multi-processing",
 ]
+
+[project.urls]
+Homepage = "https://github.com/emivvvvv/pyroxide"
+Repository = "https://github.com/emivvvvv/pyroxide"
+"Bug Tracker" = "https://github.com/emivvvvv/pyroxide/issues"
 
 [tool.maturin]
 python-source = "python"

@@ -16,7 +16,7 @@
     <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/License-MIT%2FApache--2.0%2FCoffee-blue.svg" alt="License: MIT/Apache-2.0/Coffee" style="display:inline;margin:0 2px;"></a>
     <br />
     <br />
-    <a href="https://github.com/emivvvvv/pyroxide/tree/main/examples">View Demo</a>
+    <a href="https://github.com/emivvvvv/pyroxide/tree/main/examples">See Examples</a>
     &middot;
     <a href="https://github.com/emivvvvv/pyroxide/issues/new?labels=bug">Report Bug</a>
     &middot;
