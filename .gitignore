@@ -32,3 +32,8 @@ env/
 .DS_Store
 .idea/
 *.swp
+
+
+# Added by cargo
+
+/target

@@ -1,0 +1,15 @@
+[package]
+name = "pyroxide"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+# "cdylib" produces the shared library required by Python C-extensions
+name = "pyroxide"
+crate-type = ["cdylib"]
+
+[dependencies]
+crossbeam-channel = "0.5.16"
+# Enable the "extension-module" feature to build a native Python module
+pyo3 = { version = "0.29.0", features = ["extension-module"] }
+slab = "0.4.12"
