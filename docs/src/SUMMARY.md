@@ -8,4 +8,4 @@
 - [Task Cancellation](cancellation.md)
 - [Traceback Preservation](tracebacks.md)
 - [Performance & Benchmarks](benchmarks.md)
-- [Python API Reference](api/index.html)
+- [Python API Reference](api/pyroxide.html)

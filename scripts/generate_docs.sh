@@ -14,6 +14,7 @@ echo "=== Generating pdoc Python API Reference ==="
 echo "=== Generating mdBook Documentation ==="
 if command -v mdbook &> /dev/null; then
     mdbook build docs
+    cp -r docs/api/. docs/book/api/
     echo "mdBook built successfully in docs/book/"
 else
     echo "WARNING: mdbook binary not found. Please install it with 'cargo install mdbook'."

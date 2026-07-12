@@ -54,7 +54,7 @@ jobs:
 
       - name: Merge mdBook and API docs
         run: |
-          mv docs/api docs/book/api
+          cp -r docs/api/. docs/book/api/
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
