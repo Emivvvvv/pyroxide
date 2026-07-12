@@ -7,6 +7,7 @@
 - [Batch Submission](batch_submission.md)
 - [Task Cancellation](cancellation.md)
 - [Traceback Preservation](tracebacks.md)
-- [Custom Native Logic](custom_native_logic.md)
+- [Dynamic Shared Libraries (dylib)](native_plugins.md)
+- [WebAssembly Execution Engine](wasm_engine.md)
 - [Performance & Benchmarks](benchmarks.md)
 - [Python API Reference](api/pyroxide.html)

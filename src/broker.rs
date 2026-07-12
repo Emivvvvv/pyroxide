@@ -39,6 +39,9 @@ pub(crate) struct Task {
     pub(crate) completed_cvar: Condvar,
     pub(crate) completed_mutex: Mutex<bool>,
     pub(crate) cancelled: AtomicBool,
+    pub(crate) wasm_module: Option<String>,
+    pub(crate) wasm_func: Option<String>,
+    pub(crate) dylib: Option<String>,
 }
 
 pub(crate) struct Broker {
@@ -100,6 +103,9 @@ pub(crate) fn submit_task(callable: Option<Py<PyAny>>, payload: Py<PyAny>) -> us
         completed_cvar: Condvar::new(),
         completed_mutex: Mutex::new(false),
         cancelled: AtomicBool::new(false),
+        wasm_module: None,
+        wasm_func: None,
+        dylib: None,
     });
 
     let task_id = {
@@ -130,6 +136,9 @@ pub(crate) fn submit_batch(
             completed_cvar: Condvar::new(),
             completed_mutex: Mutex::new(false),
             cancelled: AtomicBool::new(false),
+            wasm_module: None,
+            wasm_func: None,
+            dylib: None,
         });
         let task_id = slab.insert(task);
         ids.push(task_id);
@@ -137,6 +146,62 @@ pub(crate) fn submit_batch(
     }
 
     ids
+}
+
+pub(crate) fn submit_wasm_task(
+    module_name: String,
+    func_name: String,
+    payload: Py<PyAny>,
+) -> usize {
+    let engine = get_engine();
+
+    let task = Arc::new(Task {
+        status: AtomicU8::new(TaskStatus::Pending as u8),
+        callable: None,
+        payload,
+        result: Mutex::new(None),
+        completed_cvar: Condvar::new(),
+        completed_mutex: Mutex::new(false),
+        cancelled: AtomicBool::new(false),
+        wasm_module: Some(module_name),
+        wasm_func: Some(func_name),
+        dylib: None,
+    });
+
+    let task_id = {
+        let mut slab = engine.broker.tasks.write().expect("Lock poisoned");
+        slab.insert(task)
+    };
+
+    engine.sender.send(task_id).expect("Failed to send task ID");
+
+    task_id
+}
+
+pub(crate) fn submit_dylib_task(plugin_name: String, payload: Py<PyAny>) -> usize {
+    let engine = get_engine();
+
+    let task = Arc::new(Task {
+        status: AtomicU8::new(TaskStatus::Pending as u8),
+        callable: None,
+        payload,
+        result: Mutex::new(None),
+        completed_cvar: Condvar::new(),
+        completed_mutex: Mutex::new(false),
+        cancelled: AtomicBool::new(false),
+        wasm_module: None,
+        wasm_func: None,
+        dylib: Some(plugin_name),
+    });
+
+    let task_id = {
+        let mut slab = engine.broker.tasks.write().expect("Lock poisoned");
+        slab.insert(task)
+    };
+
+    engine.sender.send(task_id).expect("Failed to send task ID");
+
+    task_id
 }
 
 pub(crate) fn cancel_task(task_id: usize) -> bool {

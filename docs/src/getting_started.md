@@ -23,21 +23,29 @@ result = handle.result()
 print(f"Factorial result: {result}")
 ```
 
-## 2. Offloading Native Rust Tasks (GIL-Free)
+## 2. GIL-Free Execution (WebAssembly & Dynamic Libraries)
 
-For heavy compute tasks where you want to bypass the Global Interpreter Lock (GIL) completely and execute code natively:
+For heavy compute tasks where you want to bypass the GIL completely:
 
 ```python
-from pyroxide import task
+# Option A: Sandboxed WebAssembly
+from pyroxide import register_wasm, wasm_task
 
-# Decorating with native=True offloads execution to Rust core
-@task(native=True)
-def parse_and_process(payload: str) -> None:
+with open("my_module.wasm", "rb") as f:
+    register_wasm("my_module", f.read())
+
+@wasm_task("my_module")
+def compute(payload: str) -> str:
     pass
 
-# Processes the string completely GIL-free inside Rust
-handle = parse_and_process("SLEEP:100")
-result = handle.result()
+# Option B: Dynamic shared library (compiled on-the-fly)
+from pyroxide import compile_dylib, dylib_task
+
+compile_dylib("my_lib", RUST_SOURCE_CODE)
+
+@dylib_task("my_lib")
+def process(payload: str) -> str:
+    pass
 ```
 
 ## 3. Querying Task Status

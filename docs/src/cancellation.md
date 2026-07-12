@@ -10,9 +10,11 @@ Use the `.cancel()` method on `TaskHandle` to abort execution:
 from pyroxide import task
 import time
 
-@task(native=True)
+@task
 def long_running_sleep(payload: str) -> None:
-    pass
+    if payload.startswith("SLEEP:"):
+        sec = int(payload.split(":")[1]) / 1000.0
+        time.sleep(sec)
 
 # Submit a long-running task
 handle = long_running_sleep("SLEEP:5000")

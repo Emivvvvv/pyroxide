@@ -46,5 +46,5 @@ Pyroxide coordinates the main Python thread and background OS worker threads usi
 3. **Panic-Safe Workers:**
    Background tasks are executed within worker loops wrapped in `std::panic::catch_unwind`. If a task causes a Rust panic, the panic is caught and isolated. The thread is preserved to process remaining tasks, and the failure status is returned gracefully.
 
-4. **GIL-Free Native Execution:**
-   Tasks flagged with `native=True` are evaluated on background threads without acquiring the Python GIL. This allows fully parallel multi-core CPU utilization (ideal for parsing, calculations, or IO-heavy operations).
+4. **GIL-Free Execution:**
+   Tasks submitted via `@wasm_task` (WebAssembly sandbox) or `@dylib_task` (dynamic shared library) are executed on background threads without acquiring the Python GIL. This allows fully parallel multi-core CPU utilization (ideal for parsing, calculations, or IO-heavy operations).

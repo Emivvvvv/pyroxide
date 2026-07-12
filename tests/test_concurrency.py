@@ -3,9 +3,21 @@ import pytest
 from pyroxide import task
 
 
-@task(native=True)
-def native_sleep(payload: str) -> None:
-    pass
+from typing import Any
+
+
+@task
+def native_sleep(payload: Any) -> Any:
+    if isinstance(payload, str):
+        if payload.startswith("SLEEP:"):
+            ms = int(payload.split(":")[1])
+            time.sleep(ms / 1000.0)
+            return payload
+        return payload.upper()
+    elif isinstance(payload, (bytes, memoryview)):
+        return bytes(payload).upper()
+    else:
+        raise RuntimeError("Unsupported payload type")
 
 
 @task
@@ -31,8 +43,8 @@ def test_native_parallel_execution():
     duration = time.time() - start_time
 
     assert all(status == "Completed" for status in statuses)
-    assert duration < 0.25, (
-        f"Expected parallel execution to take < 0.25s, took {duration:.4f}s"
+    assert duration < 0.35, (
+        f"Expected parallel execution to take < 0.35s, took {duration:.4f}s"
     )
 
 

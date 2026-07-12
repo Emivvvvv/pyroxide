@@ -10,7 +10,7 @@ def add_one(x):
 
 
 # 2. Native task with special payload that panics in Rust worker
-@task(native=True)
+@task
 def native_task(payload):
     pass
 
@@ -47,7 +47,7 @@ if __name__ == "__main__":
     # --- Test Case 2: Panic Safety ---
     print("2. Testing Rust Worker Panic Safety...")
 
-    # Trigger a panic in the Rust worker thread by passing TRIGGER_PANIC in native mode
+    # Trigger a panic in the Rust worker thread by passing TRIGGER_PANIC
     print("   Submitting task designed to PANIC inside Rust worker...")
     panic_handle = native_task("TRIGGER_PANIC")
 

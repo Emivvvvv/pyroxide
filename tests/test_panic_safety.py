@@ -2,7 +2,7 @@ import pytest
 from pyroxide import task
 
 
-@task(native=True)
+@task
 def native_task(payload: str) -> None:
     pass
 

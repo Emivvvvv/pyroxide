@@ -39,6 +39,19 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
             let task_clone = Arc::clone(&task);
 
             let exec_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                // Simulate Rust worker panic inside the main binary for testing catch_unwind
+                let should_panic = Python::attach(|py| {
+                    let bound_payload = task_clone.payload.bind(py);
+                    if let Ok(s) = bound_payload.extract::<String>() {
+                        s == "TRIGGER_PANIC"
+                    } else {
+                        false
+                    }
+                });
+                if should_panic {
+                    panic!("Simulated Rust worker panic!");
+                }
+
                 if let Some(ref cb) = task_clone.callable {
                     // Execute Python Callable (requires GIL)
                     Python::attach(|py| {
@@ -58,8 +71,13 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                             }
                         }
                     })
-                } else {
-                    // Native Execution:
+                } else if let Some(ref module_name) = task_clone.wasm_module {
+                    // WASM Execution:
+                    let func_name = task_clone
+                        .wasm_func
+                        .clone()
+                        .unwrap_or_else(|| "run".to_string());
+
                     // 1. Extract payload with GIL held
                     let extracted = Python::attach(|py| {
                         let bound_payload = task_clone.payload.bind(py);
@@ -68,45 +86,94 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                         } else if let Ok(b) = bound_payload.extract::<Vec<u8>>() {
                             Ok(NativePayload::Bytes(b))
                         } else {
-                            Err("Native execution: Unsupported payload type".to_string())
+                            Err("WASM execution: Unsupported payload type".to_string())
                         }
                     });
 
-                    // 2. Process payload without GIL (outside Python::attach)
-                    let processed = extracted.and_then(|payload| match payload {
-                        NativePayload::Str(s) => {
-                            if s == "TRIGGER_PANIC" {
-                                panic!("Simulated Rust worker panic!");
-                            }
-                            if let Some(stripped) = s.strip_prefix("SLEEP:") {
-                                if let Ok(ms) = stripped.parse::<u64>() {
-                                    let sleep_chunk = std::time::Duration::from_millis(10);
-                                    let mut elapsed = std::time::Duration::ZERO;
-                                    let total = std::time::Duration::from_millis(ms);
-                                    while elapsed < total {
-                                        if task_clone.cancelled.load(Ordering::Acquire) {
-                                            return Err("Task cancelled".to_string());
-                                        }
-                                        std::thread::sleep(sleep_chunk);
-                                        elapsed += sleep_chunk;
-                                    }
-                                }
-                            } else {
-                                std::thread::sleep(std::time::Duration::from_millis(1));
-                            }
-                            if task_clone.cancelled.load(Ordering::Acquire) {
-                                return Err("Task cancelled".to_string());
-                            }
-                            let upper = s.to_uppercase();
-                            Ok(NativePayload::Str(upper))
+                    // 2. Process payload inside WebAssembly engine without GIL
+                    let processed = extracted.and_then(|payload| {
+                        let input_bytes = match &payload {
+                            NativePayload::Str(s) => s.as_bytes(),
+                            NativePayload::Bytes(b) => b.as_slice(),
+                        };
+
+                        let module = crate::get_wasm_module(module_name)
+                            .ok_or_else(|| format!("WASM module '{module_name}' not registered"))?;
+
+                        let engine = crate::get_wasm_engine();
+                        let mut store = wasmtime::Store::new(engine, ());
+                        let linker = wasmtime::Linker::new(engine);
+                        let instance = linker
+                            .instantiate(&mut store, &module)
+                            .map_err(|e| format!("Failed to instantiate WASM: {e}"))?;
+
+                        let alloc_fn = instance
+                            .get_typed_func::<i32, i32>(&mut store, "alloc")
+                            .map_err(|e| format!("WASM missing export 'alloc': {e}"))?;
+                        let dealloc_fn = instance
+                            .get_typed_func::<(i32, i32), ()>(&mut store, "dealloc")
+                            .map_err(|e| format!("WASM missing export 'dealloc': {e}"))?;
+                        let run_fn = instance
+                            .get_typed_func::<(i32, i32), i64>(&mut store, &func_name)
+                            .map_err(|e| format!("WASM missing export '{func_name}': {e}"))?;
+
+                        let memory = instance
+                            .get_memory(&mut store, "memory")
+                            .ok_or_else(|| "WASM missing export 'memory'".to_string())?;
+
+                        let input_len = input_bytes.len() as i32;
+
+                        if task_clone.cancelled.load(Ordering::Acquire) {
+                            return Err("Task cancelled".to_string());
                         }
-                        NativePayload::Bytes(mut b) => {
-                            std::thread::sleep(std::time::Duration::from_millis(1));
-                            if task_clone.cancelled.load(Ordering::Acquire) {
-                                return Err("Task cancelled".to_string());
+
+                        // Allocate guest memory
+                        let guest_ptr = alloc_fn
+                            .call(&mut store, input_len)
+                            .map_err(|e| format!("WASM alloc failed: {e}"))?;
+
+                        // Write bytes into WASM linear memory
+                        memory
+                            .write(&mut store, guest_ptr as usize, input_bytes)
+                            .map_err(|e| format!("Failed to write to WASM memory: {e}"))?;
+
+                        if task_clone.cancelled.load(Ordering::Acquire) {
+                            let _ = dealloc_fn.call(&mut store, (guest_ptr, input_len));
+                            return Err("Task cancelled".to_string());
+                        }
+
+                        // Run execution
+                        let packed_result = run_fn
+                            .call(&mut store, (guest_ptr, input_len))
+                            .map_err(|e| format!("WASM execution failed: {e}"))?;
+
+                        // Unpack pointer and length
+                        let out_ptr = (packed_result >> 32) as i32;
+                        let out_len = (packed_result & 0xFFFFFFFF) as i32;
+
+                        if task_clone.cancelled.load(Ordering::Acquire) {
+                            let _ = dealloc_fn.call(&mut store, (guest_ptr, input_len));
+                            let _ = dealloc_fn.call(&mut store, (out_ptr, out_len));
+                            return Err("Task cancelled".to_string());
+                        }
+
+                        // Read output bytes
+                        let mut output_bytes = vec![0u8; out_len as usize];
+                        memory
+                            .read(&store, out_ptr as usize, &mut output_bytes)
+                            .map_err(|e| format!("Failed to read from WASM memory: {e}"))?;
+
+                        // Free memory in guest
+                        let _ = dealloc_fn.call(&mut store, (guest_ptr, input_len));
+                        let _ = dealloc_fn.call(&mut store, (out_ptr, out_len));
+
+                        match payload {
+                            NativePayload::Str(_) => {
+                                let s = String::from_utf8(output_bytes)
+                                    .map_err(|e| format!("Invalid UTF-8 output from WASM: {e}"))?;
+                                Ok(NativePayload::Str(s))
                             }
-                            b.make_ascii_uppercase();
-                            Ok(NativePayload::Bytes(b))
+                            NativePayload::Bytes(_) => Ok(NativePayload::Bytes(output_bytes)),
                         }
                     });
 
@@ -122,6 +189,86 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                         }
                         Err(err) => Err(err),
                     })
+                } else if let Some(ref plugin_name) = task_clone.dylib {
+                    // Dynamic Shared Library (dylib) Execution:
+                    // 1. Extract payload with GIL held
+                    let extracted = Python::attach(|py| {
+                        let bound_payload = task_clone.payload.bind(py);
+                        if let Ok(s) = bound_payload.extract::<String>() {
+                            Ok(NativePayload::Str(s))
+                        } else if let Ok(b) = bound_payload.extract::<Vec<u8>>() {
+                            Ok(NativePayload::Bytes(b))
+                        } else {
+                            Err("Dylib execution: Unsupported payload type".to_string())
+                        }
+                    });
+
+                    // 2. Call dynamic library symbol without GIL
+                    let processed = extracted.and_then(|payload| {
+                        let input_bytes = match &payload {
+                            NativePayload::Str(s) => s.as_bytes(),
+                            NativePayload::Bytes(b) => b.as_slice(),
+                        };
+
+                        let registry = crate::get_dylib_registry()
+                            .ok_or_else(|| "Dylib registry not initialized".to_string())?;
+                        let map = registry
+                            .read()
+                            .map_err(|e| format!("Registry poisoned: {e}"))?;
+                        let plugin = map
+                            .get(plugin_name)
+                            .ok_or_else(|| format!("Dylib '{plugin_name}' not registered"))?;
+
+                        let mut out_len: usize = 0;
+
+                        if task_clone.cancelled.load(Ordering::Acquire) {
+                            return Err("Task cancelled".to_string());
+                        }
+
+                        // Execute the dynamic library function pointer directly
+                        let out_ptr = unsafe {
+                            (plugin.run_fn)(input_bytes.as_ptr(), input_bytes.len(), &mut out_len)
+                        };
+
+                        if out_ptr.is_null() {
+                            return Err("Dylib execution returned null pointer".to_string());
+                        }
+
+                        let output_bytes =
+                            unsafe { std::slice::from_raw_parts(out_ptr, out_len).to_vec() };
+
+                        // Free the memory on the dynamic library's allocator
+                        unsafe {
+                            (plugin.free_fn)(out_ptr, out_len);
+                        }
+
+                        match payload {
+                            NativePayload::Str(_) => {
+                                let s = String::from_utf8(output_bytes)
+                                    .map_err(|e| format!("Invalid UTF-8 output from dylib: {e}"))?;
+                                Ok(NativePayload::Str(s))
+                            }
+                            NativePayload::Bytes(_) => Ok(NativePayload::Bytes(output_bytes)),
+                        }
+                    });
+
+                    // 3. Re-acquire GIL to construct the Python return value
+                    Python::attach(|py| match processed {
+                        Ok(NativePayload::Str(s)) => {
+                            let py_str = pyo3::types::PyString::new(py, &s);
+                            Ok(py_str.into_any().unbind())
+                        }
+                        Ok(NativePayload::Bytes(b)) => {
+                            let py_bytes = pyo3::types::PyBytes::new(py, &b);
+                            Ok(py_bytes.into_any().unbind())
+                        }
+                        Err(err) => Err(err),
+                    })
+                } else {
+                    Err(
+                        "Invalid task configuration: no callable, wasm module, or dylib specified"
+                            .to_string(),
+                    )
                 }
             }));
 

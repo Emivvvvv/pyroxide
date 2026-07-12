@@ -3,6 +3,122 @@ pub mod worker;
 
 use crate::broker::{get_task_result, get_task_status, wait_task};
 use pyo3::prelude::*;
+use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::sync::RwLock;
+use wasmtime::{Engine, Module};
+
+pub(crate) struct DylibPlugin {
+    pub(crate) _lib: libloading::Library,
+    pub(crate) run_fn:
+        unsafe extern "C" fn(ptr: *const u8, len: usize, out_len: *mut usize) -> *mut u8,
+    pub(crate) free_fn: unsafe extern "C" fn(ptr: *mut u8, len: usize),
+}
+
+static DYLIB_PLUGINS: OnceLock<RwLock<HashMap<String, DylibPlugin>>> = OnceLock::new();
+
+pub(crate) fn get_dylib_registry() -> Option<&'static RwLock<HashMap<String, DylibPlugin>>> {
+    Some(DYLIB_PLUGINS.get_or_init(|| RwLock::new(HashMap::new())))
+}
+
+pub type PluginRunFn =
+    unsafe extern "C" fn(ptr: *const u8, len: usize, out_len: *mut usize) -> *mut u8;
+pub type PluginFreeFn = unsafe extern "C" fn(ptr: *mut u8, len: usize);
+
+/// Registers a dynamic shared library (.so / .dylib / .dll) with the Pyroxide engine.
+#[pyfunction]
+fn register_dylib(name: String, library_path: String) -> PyResult<()> {
+    unsafe {
+        let lib = libloading::Library::new(&library_path).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("Failed to load dynamic library: {e}"))
+        })?;
+
+        let run_fn = *lib
+            .get::<PluginRunFn>(b"pyroxide_plugin_run")
+            .map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "Missing symbol 'pyroxide_plugin_run': {e}"
+                ))
+            })?;
+
+        let free_fn = *lib
+            .get::<PluginFreeFn>(b"pyroxide_plugin_free")
+            .map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "Missing symbol 'pyroxide_plugin_free': {e}"
+                ))
+            })?;
+
+        let plugin = DylibPlugin {
+            _lib: lib,
+            run_fn,
+            free_fn,
+        };
+
+        let registry = DYLIB_PLUGINS.get_or_init(|| RwLock::new(HashMap::new()));
+        let mut map = registry.write().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Registry poisoned: {e}"))
+        })?;
+        map.insert(name, plugin);
+        Ok(())
+    }
+}
+
+/// Submits a task to be executed by a registered dynamic shared library (dylib).
+#[pyfunction]
+#[pyo3(signature = (plugin_name, payload))]
+fn submit_dylib_task(
+    py: Python<'_>,
+    plugin_name: String,
+    payload: Bound<'_, PyAny>,
+) -> PyResult<usize> {
+    let py_payload = payload.into_any().unbind();
+    let task_id = py.detach(move || broker::submit_dylib_task(plugin_name, py_payload));
+    Ok(task_id)
+}
+
+static WASM_ENGINE: OnceLock<Engine> = OnceLock::new();
+static WASM_REGISTRY: OnceLock<RwLock<HashMap<String, Module>>> = OnceLock::new();
+
+pub(crate) fn get_wasm_engine() -> &'static Engine {
+    WASM_ENGINE.get_or_init(Engine::default)
+}
+
+pub(crate) fn get_wasm_module(module_name: &str) -> Option<Module> {
+    let registry = WASM_REGISTRY.get()?;
+    let map = registry.read().ok()?;
+    map.get(module_name).cloned()
+}
+
+/// This function registers a WebAssembly module binary under a name in the global registry.
+#[pyfunction]
+fn register_wasm_module(module_name: String, wasm_bytes: Vec<u8>) -> PyResult<()> {
+    let engine = get_wasm_engine();
+    let module = Module::new(engine, &wasm_bytes).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("Failed to compile WASM module: {e}"))
+    })?;
+
+    let registry = WASM_REGISTRY.get_or_init(|| RwLock::new(HashMap::new()));
+    let mut map = registry.write().map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("Registry lock poisoned: {e}"))
+    })?;
+    map.insert(module_name, module);
+    Ok(())
+}
+
+/// This function submits a WebAssembly task to the broker.
+#[pyfunction]
+#[pyo3(signature = (module_name, func_name, payload))]
+fn submit_wasm_task(
+    py: Python<'_>,
+    module_name: String,
+    func_name: String,
+    payload: Bound<'_, PyAny>,
+) -> PyResult<usize> {
+    let py_payload = payload.into_any().unbind();
+    let task_id = py.detach(move || broker::submit_wasm_task(module_name, func_name, py_payload));
+    Ok(task_id)
+}
 
 /// This function submits a task to the broker and returns the task ID.
 #[pyfunction]
@@ -107,6 +223,10 @@ fn _pyroxide(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(free_task, m)?)?;
     m.add_function(wrap_pyfunction!(get_slab_size, m)?)?;
     m.add_function(wrap_pyfunction!(cancel_task, m)?)?;
+    m.add_function(wrap_pyfunction!(register_wasm_module, m)?)?;
+    m.add_function(wrap_pyfunction!(submit_wasm_task, m)?)?;
+    m.add_function(wrap_pyfunction!(register_dylib, m)?)?;
+    m.add_function(wrap_pyfunction!(submit_dylib_task, m)?)?;
 
     Ok(())
 }

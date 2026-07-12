@@ -40,7 +40,7 @@ With Pyroxide, you can seamlessly offload tasks from Python to a background nati
 *   **Bypass the Python GIL**: Explicitly release the Python GIL via PyO3 thread-detaching, running heavy computations concurrently on native OS threads.
 *   **Zero-Overhead Status Tracking**: Avoids global lock contention using an atomic-state (`AtomicU8`) task tracking structure per task slot under a concurrent sharded/read-lock Slab architecture.
 *   **Instant Condvar Signaling**: Replaces latency-inducing polling loops (`time.sleep`) with native Rust `Condvar` waking, waking waiting Python threads in microseconds with 0% CPU consumption.
-*   **Dynamic Task Execution**: Seamlessly offloads dynamic Python callbacks (running inside temporary attached-GIL scopes) or executes native Rust functions completely GIL-free.
+*   **Dynamic Task Execution**: Offload Python callbacks, run sandboxed WebAssembly modules (`@wasm_task`), or compile and execute dynamic shared libraries on-the-fly (`@dylib_task`) — all completely GIL-free.
 *   **Configurable Concurrency**: Set worker thread pool size dynamically at startup via environment variables.
 *   **Panic Safety**: Wrapped task execution prevents Rust worker panics from crashing the host Python interpreter, gracefully marking tasks as `Failed` instead.
 *   **Zero-Copy Byte Buffers**: Easily pass byte arrays, memoryviews, and columnar buffers (e.g., Apache Arrow) across the C-ABI without copy overhead.
@@ -145,23 +145,63 @@ result = handle.result()
 print(f"Result: {result}") # Output: 144
 ```
 
-### 2. Offloading Native Rust Tasks (GIL-Free)
-To completely bypass the Python GIL and run logic natively in Rust:
+### 2. Sandboxed WebAssembly Execution (GIL-Free & Panic-Safe)
+To run computations GIL-free in a secure, sandboxed environment without compiling native code:
 
 ```python
-from pyroxide import task
+from pyroxide import register_wasm, wasm_task
 
-# Passes the string to Rust which processes it completely GIL-free
-@task(native=True)
-def native_uppercase(payload: str) -> None:
+# 1. Register compiled WebAssembly bytecode (WASM module)
+with open("rot13.wasm", "rb") as f:
+    register_wasm("rot13", f.read())
+
+# 2. Decorate a stub function with @wasm_task
+@wasm_task("rot13")
+def rot13_cipher(payload: str) -> str:
     pass
 
-handle = native_uppercase("hello pyroxide")
-result = handle.result()
-print(f"Result: {result}") # Output: b"HELLO PYROXIDE"
+# 3. Execute GIL-free on the background worker pool!
+handle = rot13_cipher("hello")
+print(handle.result()) # "uryyb"
 ```
 
-### 3. Graceful Memory Reclamation & Retaining Results
+### 3. Dynamic Shared Libraries (On-the-Fly Compilation)
+For use cases that need full OS/system/database access but must avoid manual compilation or rebuilding Pyroxide:
+
+```python
+from pyroxide import compile_dylib, dylib_task
+
+RUST_SRC = """
+#[no_mangle]
+pub unsafe extern "C" fn pyroxide_plugin_run(ptr: *const u8, len: usize, out_len: *mut usize) -> *mut u8 {
+    let input = std::slice::from_raw_parts(ptr, len);
+    let s = std::str::from_utf8(input).unwrap_or("");
+    let result = s.to_uppercase().into_bytes();
+    *out_len = result.len();
+    let boxed = result.into_boxed_slice();
+    Box::into_raw(boxed) as *mut u8
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pyroxide_plugin_free(ptr: *mut u8, len: usize) {
+    let _ = Box::from_raw(std::slice::from_raw_parts_mut(ptr, len));
+}
+"""
+
+# Pyroxide compiles the Rust source code on-the-fly via Cargo
+# and loads it as a dynamic shared library (.so / .dylib / .dll).
+compile_dylib("greeter", RUST_SRC)
+
+# Decorate a stub to submit tasks to the compiled dylib
+@dylib_task("greeter")
+def native_uppercase(payload: str) -> str:
+    pass
+
+handle = native_uppercase("hello dynamic pyroxide")
+print(handle.result())  # "HELLO DYNAMIC PYROXIDE"
+```
+
+### 4. Graceful Memory Reclamation & Retaining Results
 By default, `result()` consumes and evicts the task. If you want to keep the task in the Slab (e.g. to check status or result again later), set `consume=False`. It will be automatically cleaned up later via the Python garbage collector when the handle reference is deleted:
 
 ```python
@@ -226,9 +266,12 @@ Tasks can be aborted before or during execution. Calling `.cancel()` transitions
 ```python
 from pyroxide import task
 
-@task(native=True)
+@task
 def native_sleep(payload: str) -> None:
-    pass
+    import time
+    if payload.startswith("SLEEP:"):
+        sec = int(payload.split(":")[1]) / 1000.0
+        time.sleep(sec)
 
 # Submit long-running task
 handle = native_sleep("SLEEP:5000")

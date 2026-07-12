@@ -9,9 +9,11 @@ def dummy_square(x):
     return x * x
 
 
-@task(native=True)
+@task
 def native_sleep(payload):
-    pass
+    if isinstance(payload, str) and payload.startswith("SLEEP:"):
+        ms = int(payload.split(":")[1])
+        time.sleep(ms / 1000.0)
 
 
 def test_cancel_pending_task():
