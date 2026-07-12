@@ -3,19 +3,17 @@ pub mod worker;
 
 use pyo3::prelude::*;
 
-/// A simple Rust function that we will call from Python.
-/// The #[pyfunction] macro generates the C-API bindings automatically.
+/// This function submits a task to the broker and returns the task ID.
 #[pyfunction]
-fn ping(message: String) -> PyResult<String> {
-    let response = format!("Pyroxide Engine received: {}", message);
-    Ok(response)
+fn submit_task(payload: String) -> PyResult<usize> {
+    let task_id = broker::submit_task(payload);
+    Ok(task_id)
 }
 
-/// A Python module implemented in Rust.
-/// The name of this function MUST match the `lib.name` in Cargo.toml.
+/// PyO3 entry point
 #[pymodule]
 fn pyroxide(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register the `ping` function so Python can see it
-    m.add_function(wrap_pyfunction!(ping, m)?)?;
+    m.add_function(wrap_pyfunction!(submit_task, m)?)?;
     Ok(())
 }
