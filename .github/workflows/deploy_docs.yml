@@ -30,7 +30,7 @@ jobs:
       - name: Set up mdBook
         uses: peaceiris/actions-mdbook@v2
         with:
-          mdbook-version: '0.4.40'
+          mdbook-version: '0.5.4'
 
       - name: Set up Python
         uses: actions/setup-python@v5
