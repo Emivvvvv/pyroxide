@@ -121,7 +121,7 @@ pub(crate) fn submit_batch(
 
     let mut slab = engine.broker.tasks.write().expect("Lock poisoned");
 
-    for (callable, payload) in callables.into_iter().zip(payloads.into_iter()) {
+    for (callable, payload) in callables.into_iter().zip(payloads) {
         let task = Arc::new(Task {
             status: AtomicU8::new(TaskStatus::Pending as u8),
             callable,
