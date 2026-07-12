@@ -2,7 +2,7 @@
 <br />
 <div align="center">
   <a href="https://github.com/emivvvvv/pyroxide">
-    <img src="pyroxide.svg" alt="Logo" width="80" height="80">
+    <img src="https://raw.githubusercontent.com/emivvvvv/pyroxide/main/pyroxide.svg" alt="Logo" width="80" height="80">
   </a>
 
   <h3 align="center">Pyroxide</h3>
@@ -14,9 +14,6 @@
     <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-stable-brightgreen.svg" alt="Rust" style="display:inline;margin:0 2px;"></a>
     <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python" style="display:inline;margin:0 2px;"></a>
     <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/License-MIT%2FApache--2.0%2FCoffee-blue.svg" alt="License: MIT/Apache-2.0/Coffee" style="display:inline;margin:0 2px;"></a>
-    <br />
-    <br />
-    <a href="https://github.com/emivvvvv/pyroxide"><strong>Explore the docs »</strong></a>
     <br />
     <br />
     <a href="https://github.com/emivvvvv/pyroxide/tree/main/examples">View Demo</a>
