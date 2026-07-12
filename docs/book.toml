@@ -1,0 +1,7 @@
+[book]
+authors = ["Emirhan Tala"]
+language = "en"
+src = "src"
+title = "Pyroxide Documentation Guide"
+
+[preprocessor.links]

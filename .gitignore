@@ -43,3 +43,9 @@ env/
 *.pyd
 *.dylib
 *.dll
+
+# Documentation builds
+docs/book/
+docs/api/
+/docs/book/
+/docs/api/
