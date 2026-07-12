@@ -1,4 +1,31 @@
-<div align="center"><img src="pyroxide.svg" width="80" alt="Pyroxide Logo" style="display:block;margin:12px auto -7px auto;padding:0;"><h1 style="margin:0 0 5px 0;padding:0;line-height:1.1;">Pyroxide</h1><p style="margin:0 0 12px 0;padding:0;"><strong>Lock-Free Python/Rust Background Task Broker</strong></p><div style="margin:0 0 10px 0;padding:0;line-height:1;"><a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-stable-brightgreen.svg" alt="Rust" style="display:inline;margin:0 2px;"></a><a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python" style="display:inline;margin:0 2px;"></a><a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT%2FApache--2.0-blue.svg" alt="License: MIT/Apache-2.0" style="display:inline;margin:0 2px;"></a></div><p style="margin:0;padding:0;"><strong>v0.1.0</strong></p></div>
+<!-- PROJECT LOGO -->
+<br />
+<div align="center">
+  <a href="https://github.com/emivvvvv/pyroxide">
+    <img src="pyroxide.svg" alt="Logo" width="80" height="80">
+  </a>
+
+  <h3 align="center">pyro3 (Pyroxide)</h3>
+
+  <p align="center">
+    A lock-free, high-concurrency background task broker for Python, powered by Rust.
+    <br />
+    <br />
+    <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-stable-brightgreen.svg" alt="Rust" style="display:inline;margin:0 2px;"></a>
+    <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python" style="display:inline;margin:0 2px;"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT%2FApache--2.0-blue.svg" alt="License: MIT/Apache-2.0" style="display:inline;margin:0 2px;"></a>
+    <br />
+    <br />
+    <a href="https://github.com/emivvvvv/pyroxide"><strong>Explore the docs »</strong></a>
+    <br />
+    <br />
+    <a href="https://github.com/emivvvvv/pyroxide/tree/main/examples">View Demo</a>
+    &middot;
+    <a href="https://github.com/emivvvvv/pyroxide/issues/new?labels=bug">Report Bug</a>
+    &middot;
+    <a href="https://github.com/emivvvvv/pyroxide/issues/new?labels=enhancement">Request Feature</a>
+  </p>
+</div>
 
 ---
 
