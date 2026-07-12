@@ -166,7 +166,7 @@ print(handle.result()) # "uryyb"
 ```
 
 ### 3. Dynamic Shared Libraries (On-the-Fly Compilation)
-For use cases that need full OS/system/database access but must avoid manual compilation or rebuilding Pyroxide:
+For use cases that need full OS/system/database access but must avoid manual compilation or rebuilding Pyroxide. Supports compiling **Rust** (`compile_dylib`), **C** (`compile_c`), and **Zig** (`compile_zig`) on-the-fly:
 
 ```python
 from pyroxide import compile_dylib, dylib_task

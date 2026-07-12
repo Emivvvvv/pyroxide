@@ -106,6 +106,92 @@ def compile_dylib(
         raise RuntimeError(f"Failed to compile dylib '{name}' via Cargo: {e}")
 
 
+def compile_c(name: str, source_code: str) -> str:
+    """
+    Compiles C source code on-the-fly into a dynamic shared library (.so / .dylib / .dll),
+    and registers it with the Pyroxide background broker for GIL-free execution.
+
+    Args:
+        name: Unique name for the library. Used to reference it in @dylib_task.
+        source_code: Raw C source code string. Must export two functions:
+            - ``pyroxide_plugin_run(ptr, len, out_len) -> uint8_t*``
+            - ``pyroxide_plugin_free(ptr, len)``
+    """
+    temp_dir = tempfile.mkdtemp(prefix=f"pyroxide_c_{name}_")
+    try:
+        src_path = os.path.join(temp_dir, f"{name}.c")
+        with open(src_path, "w") as f:
+            f.write(source_code)
+
+        cc = os.environ.get("CC", "clang" if sys.platform == "darwin" else "gcc")
+        lib_ext = "dylib" if sys.platform == "darwin" else "so"
+        if sys.platform == "win32":
+            lib_ext = "dll"
+
+        lib_name = f"lib{name}.{lib_ext}"
+        if sys.platform == "win32":
+            lib_name = f"{name}.{lib_ext}"
+        compiled_path = os.path.join(temp_dir, lib_name)
+
+        cmd = [cc, "-shared", "-o", compiled_path, "-fPIC", src_path]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise RuntimeError(f"C compilation failed:\n{res.stderr}\n{res.stdout}")
+
+        if not os.path.exists(compiled_path):
+            raise FileNotFoundError(f"Compiled C library not found at: {compiled_path}")
+
+        register_dylib(name, compiled_path)
+        return compiled_path
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to compile C library '{name}': {e}")
+
+
+def compile_zig(name: str, source_code: str) -> str:
+    """
+    Compiles Zig source code on-the-fly into a dynamic shared library (.so / .dylib / .dll),
+    and registers it with the Pyroxide background broker for GIL-free execution.
+
+    Args:
+        name: Unique name for the library. Used to reference it in @dylib_task.
+        source_code: Raw Zig source code string. Must export two functions:
+            - ``pyroxide_plugin_run(ptr, len, out_len) -> [*]u8``
+            - ``pyroxide_plugin_free(ptr, len)``
+    """
+    temp_dir = tempfile.mkdtemp(prefix=f"pyroxide_zig_{name}_")
+    try:
+        src_path = os.path.join(temp_dir, f"{name}.zig")
+        with open(src_path, "w") as f:
+            f.write(source_code)
+
+        # Compiles dynamic library. Zig build-lib generates output in cwd
+        cmd = ["zig", "build-lib", "-dynamic", "-O", "ReleaseFast", src_path]
+        res = subprocess.run(cmd, cwd=temp_dir, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise RuntimeError(f"Zig compilation failed:\n{res.stderr}\n{res.stdout}")
+
+        lib_ext = "dylib" if sys.platform == "darwin" else "so"
+        if sys.platform == "win32":
+            lib_ext = "dll"
+
+        lib_name = f"lib{name}.{lib_ext}"
+        if sys.platform == "win32":
+            lib_name = f"{name}.{lib_ext}"
+
+        compiled_path = os.path.join(temp_dir, lib_name)
+        if not os.path.exists(compiled_path):
+            raise FileNotFoundError(
+                f"Compiled Zig library not found at: {compiled_path}"
+            )
+
+        register_dylib(name, compiled_path)
+        return compiled_path
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to compile Zig library '{name}': {e}")
+
+
 def dylib_task(dylib_name: str):
     """
     Decorator that routes task payloads to a registered dynamic shared library (dylib)

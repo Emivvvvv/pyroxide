@@ -61,6 +61,24 @@ Compiles Rust source code into a shared library and registers it with the engine
 | `source_code` | `str` | Raw Rust source code string |
 | `dependencies` | `dict` | Optional Cargo dependencies, e.g. `{"serde": "1.0"}` |
 
+### `compile_c(name, source_code)`
+
+Compiles C source code on-the-fly into a shared library and registers it with the engine.
+
+| Parameter | Type | Description |
+| :--- | :--- | :--- |
+| `name` | `str` | Unique identifier for this dylib |
+| `source_code` | `str` | Raw C source code string exporting `pyroxide_plugin_run` and `pyroxide_plugin_free` |
+
+### `compile_zig(name, source_code)`
+
+Compiles Zig source code on-the-fly into a shared library and registers it with the engine.
+
+| Parameter | Type | Description |
+| :--- | :--- | :--- |
+| `name` | `str` | Unique identifier for this dylib |
+| `source_code` | `str` | Raw Zig source code string exporting `pyroxide_plugin_run` and `pyroxide_plugin_free` |
+
 ### `@dylib_task(dylib_name)`
 
 Decorator that routes payloads to the named dylib for GIL-free execution.
@@ -109,6 +127,84 @@ def log_event(message: str) -> str:
 # Execute GIL-free with full OS access!
 handle = log_event("User login at 12:00")
 print(handle.result())  # "Logged: User login at 12:00"
+```
+
+---
+
+## On-the-Fly Compilation: C & Zig
+
+### C Example
+You can compile C code directly on-the-fly. Pyroxide automatically invokes the local C compiler (`clang` or `gcc` via subprocess).
+
+```python
+from pyroxide import compile_c, dylib_task
+
+C_SRC = """
+#include <stdint.h>
+#include <stdlib.h>
+
+uint8_t* pyroxide_plugin_run(const uint8_t* ptr, size_t len, size_t* out_len) {
+    uint8_t* res = (uint8_t*)malloc(len);
+    for (size_t i = 0; i < len; i++) {
+        if (ptr[i] >= 'a' && ptr[i] <= 'z') {
+            res[i] = ptr[i] - 32;
+        } else {
+            res[i] = ptr[i];
+        }
+    }
+    *out_len = len;
+    return res;
+}
+
+void pyroxide_plugin_free(uint8_t* ptr, size_t len) {
+    free(ptr);
+}
+"""
+
+compile_c("c_upper", C_SRC)
+
+@dylib_task("c_upper")
+def to_upper_c(payload: str) -> str:
+    pass
+
+print(to_upper_c("hello from c").result())  # "HELLO FROM C"
+```
+
+### Zig Example
+If you have `zig` installed on your path, you can compile Zig code on-the-fly:
+
+```python
+from pyroxide import compile_zig, dylib_task
+
+ZIG_SRC = """
+const std = @import("std");
+
+export fn pyroxide_plugin_run(ptr: [*]const u8, len: usize, out_len: *usize) [*]u8 {
+    const allocator = std.heap.page_allocator;
+    const output = allocator.alloc(u8, len) catch unreachable;
+    @memcpy(output, ptr[0..len]);
+    for (output) |*char| {
+        if (char.* >= 'a' and char.* <= 'z') {
+            char.* -= 32;
+        }
+    }
+    out_len.* = len;
+    return output.ptr;
+}
+
+export fn pyroxide_plugin_free(ptr: [*]u8, len: usize) void {
+    const allocator = std.heap.page_allocator;
+    allocator.free(ptr[0..len]);
+}
+"""
+
+compile_zig("zig_upper", ZIG_SRC)
+
+@dylib_task("zig_upper")
+def to_upper_zig(payload: str) -> str:
+    pass
+
+print(to_upper_zig("hello from zig").result())  # "HELLO FROM ZIG"
 ```
 
 ---

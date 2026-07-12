@@ -16,7 +16,7 @@ from ._pyroxide import submit_task, get_status, register_dylib
 from .decorators import task
 from .types import TaskHandle
 from .wasm import register_wasm, wasm_task
-from .plugins import compile_dylib, dylib_task
+from .plugins import compile_dylib, dylib_task, compile_c, compile_zig
 
 __all__ = [
     "submit_task",
@@ -28,4 +28,6 @@ __all__ = [
     "wasm_task",
     "compile_dylib",
     "dylib_task",
+    "compile_c",
+    "compile_zig",
 ]
