@@ -2,20 +2,20 @@ use std::sync::RwLock;
 use slab::Slab;
 
 #[derive(Debug, Clone, PartialEq)]
-enum TaskStatus {
+pub(crate) enum TaskStatus {
     Pending,
     Running,
     Completed,
     Failed,
 }
 
-struct Task {
-    status: TaskStatus,
+pub(crate) struct Task {
+    pub(crate) status: TaskStatus,
     payload: String,
 }
 
-struct Broker {
-    tasks: RwLock<Slab<Task>>,
+pub(crate) struct Broker {
+    pub(crate) tasks: RwLock<Slab<Task>>,
     sender: crossbeam_channel::Sender<usize>,
 }
 

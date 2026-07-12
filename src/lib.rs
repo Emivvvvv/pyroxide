@@ -1,8 +1,7 @@
 pub mod broker;
-mod worker;
+pub mod worker;
 
 use pyo3::prelude::*;
-
 
 /// A simple Rust function that we will call from Python.
 /// The #[pyfunction] macro generates the C-API bindings automatically.
