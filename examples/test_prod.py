@@ -64,7 +64,7 @@ if __name__ == "__main__":
     gc.collect()
 
     success_handle = add_one(41)
-    res = success_handle.result()
+    res = success_handle.result(consume=False)
     print(
         f"   Subsequent Task Result: {res} (Expected: 42) | Status: {success_handle.status}"
     )

@@ -27,14 +27,14 @@ if __name__ == "__main__":
     print("1. Submitting Python callable task (calculate_square(12))...")
     handle1 = calculate_square(12)
     print(f"   Task submitted. Status: {handle1.status}")
-    res1 = handle1.result()
+    res1 = handle1.result(consume=False)
     print(f"   Result: {res1} (Expected: 144) | Final Status: {handle1.status}\n")
 
     # --- Test Case 2: Exception Propagation ---
     print("2. Submitting Python callable task that raises exception...")
     handle2 = fail_task("broken_payload")
     try:
-        handle2.result()
+        handle2.result(consume=False)
     except Exception as e:
         print(f"   Successfully caught exception: {type(e).__name__}: {e}")
         print(f"   Final Status: {handle2.status}\n")
@@ -44,7 +44,7 @@ if __name__ == "__main__":
         "3. Submitting Native Rust task (native_uppercase('hello dynamic pyroxide'))..."
     )
     handle3 = native_uppercase("hello dynamic pyroxide")
-    res3 = handle3.result()
+    res3 = handle3.result(consume=False)
     print(
         f"   Result: '{res3.decode() if isinstance(res3, bytes) else res3}' (Expected: 'HELLO DYNAMIC PYROXIDE')"
     )
