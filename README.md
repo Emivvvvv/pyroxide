@@ -33,16 +33,6 @@
 
 Pyroxide (`pyro3`) is a lightweight, ultra-high-performance background task broker designed to bridge Python and Rust. It allows CPU-bound or blocking workloads to bypass the Python Global Interpreter Lock (GIL) with minimal memory overhead and zero CPU-sleep polling.
 
-## Why Pyroxide?
-
-*   🚀 **Bypass the GIL (GIL-Free)**: Execute CPU-intensive compiled tasks on background OS threads without holding the Python GIL.
-*   ⚡ **Microsecond Latency**: Utilizes OS-level signaling (`Condvar`) rather than CPU-burning thread polling, dispatching and completing tasks in under **25 microseconds**.
-*   📦 **Zero Infrastructure**: Runs completely in-process. No Redis, RabbitMQ, or Celery worker daemons to configure or maintain.
-*   💾 **Zero-Copy Serialization**: Pass large byte arrays, memoryviews, or columnar buffers across the C-ABI boundary without copy or `pickle` overhead.
-*   🛠️ **On-the-Fly Native Compilers**: Write code as Python strings and compile them to dynamic libraries on-the-fly (**Rust**, **C**, and **Zig** supported!).
-
----
-
 ## Pyroxide vs. Alternatives
 
 | Broker / Engine | GIL Bypass | IPC / Serialization Cost | Infrastructure | Best For |
@@ -53,6 +43,16 @@ Pyroxide (`pyro3`) is a lightweight, ultra-high-performance background task brok
 | **Raw PyO3 Extension** | Yes | Medium (C-API boundary) | Medium (Rebuild required) | Fixed native bindings (static packages) |
 
 For a detailed analysis, check out the [Library Comparison Guide](https://emivvvvv.github.io/pyroxide/comparison.html).
+
+---
+
+## Why Pyroxide?
+
+*   🚀 **Bypass the GIL (GIL-Free)**: Execute CPU-intensive compiled tasks on background OS threads without holding the Python GIL.
+*   ⚡ **Microsecond Latency**: Utilizes OS-level signaling (`Condvar`) rather than CPU-burning thread polling, dispatching and completing tasks in under **25 microseconds**.
+*   📦 **Zero Infrastructure**: Runs completely in-process. No Redis, RabbitMQ, or Celery worker daemons to configure or maintain.
+*   💾 **Zero-Copy Serialization**: Pass large byte arrays, memoryviews, or columnar buffers across the C-ABI boundary without copy or `pickle` overhead.
+*   🛠️ **On-the-Fly Native Compilers**: Write code as Python strings and compile them to dynamic libraries on-the-fly (**Rust**, **C**, and **Zig** supported!).
 
 ---
 
