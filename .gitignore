@@ -37,3 +37,9 @@ env/
 # Added by cargo
 
 /target
+
+# Compiled binaries
+*.so
+*.pyd
+*.dylib
+*.dll

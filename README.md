@@ -13,7 +13,7 @@
     <br />
     <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-stable-brightgreen.svg" alt="Rust" style="display:inline;margin:0 2px;"></a>
     <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python" style="display:inline;margin:0 2px;"></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT%2FApache--2.0-blue.svg" alt="License: MIT/Apache-2.0" style="display:inline;margin:0 2px;"></a>
+    <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/License-MIT%2FApache--2.0%2FCoffee-blue.svg" alt="License: MIT/Apache-2.0/Coffee" style="display:inline;margin:0 2px;"></a>
     <br />
     <br />
     <a href="https://github.com/emivvvvv/pyroxide"><strong>Explore the docs »</strong></a>
@@ -175,9 +175,10 @@ Contributions are welcome! If you'd like to improve Pyroxide or add support for 
 
 ## License
 
-Pyroxide is licensed under either of:
+Pyroxide is licensed under any of:
 
-* Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0)
-* MIT license (http://opensource.org/licenses/MIT)
+* MIT License ([LICENSE-MIT](LICENSE-MIT))
+* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+* Coffeeware License ([LICENSE-COFFEE](LICENSE-COFFEE))
 
 at your option.
