@@ -5,7 +5,7 @@
     <img src="pyroxide.svg" alt="Logo" width="80" height="80">
   </a>
 
-  <h3 align="center">pyro3 (Pyroxide)</h3>
+  <h3 align="center">Pyroxide</h3>
 
   <p align="center">
     A lock-free, high-concurrency background task broker for Python, powered by Rust.

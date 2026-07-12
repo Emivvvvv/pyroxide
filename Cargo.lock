@@ -108,7 +108,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pyro3"
+name = "pyroxide"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
