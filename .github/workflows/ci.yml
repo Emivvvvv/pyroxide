@@ -44,7 +44,7 @@ jobs:
           pip install maturin pyarrow
 
       - name: Build Pyroxide (Maturin)
-        run: maturin develop
+        run: pip install .
 
       - name: Run Dynamic Execution Tests
         run: python examples/test_dynamic.py
