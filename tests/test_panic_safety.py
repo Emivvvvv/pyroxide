@@ -55,7 +55,10 @@ def test_python_exception_propagation():
     # Assert result() raises RuntimeError containing the traceback/message
     with pytest.raises(RuntimeError) as exc_info:
         handle.result()
-    assert "Intentionally failing" in str(exc_info.value)
+    err_str = str(exc_info.value)
+    assert "Intentionally failing" in err_str
+    assert "Original Background Traceback:" in err_str
+    assert "test_panic_safety.py" in err_str
 
     # Assert final status is Failed
     assert handle.status == "Failed"

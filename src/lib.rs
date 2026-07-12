@@ -20,6 +20,34 @@ fn submit_task(
     Ok(task_id)
 }
 
+/// This function submits a batch of tasks to the broker under a single write lock.
+#[pyfunction]
+#[pyo3(signature = (callable, payloads))]
+fn submit_batch(
+    py: Python<'_>,
+    callable: Option<Bound<'_, PyAny>>,
+    payloads: Bound<'_, pyo3::types::PyList>,
+) -> PyResult<Vec<usize>> {
+    let py_callable = callable.map(|c| c.into_any().unbind());
+    let mut py_payloads = Vec::with_capacity(payloads.len());
+    let mut py_callables = Vec::with_capacity(payloads.len());
+
+    for item in payloads.iter() {
+        py_payloads.push(item.into_any().unbind());
+        py_callables.push(py_callable.as_ref().map(|c| c.clone_ref(py)));
+    }
+
+    let task_ids = py.detach(move || broker::submit_batch(py_callables, py_payloads));
+
+    Ok(task_ids)
+}
+
+/// This function cancels a task with the given ID.
+#[pyfunction]
+fn cancel_task(task_id: usize) -> PyResult<bool> {
+    Ok(broker::cancel_task(task_id))
+}
+
 /// This function returns the status of the task with the given ID.
 #[pyfunction]
 fn get_status(task_id: usize) -> PyResult<String> {
@@ -72,11 +100,13 @@ fn get_slab_size() -> usize {
 #[pymodule]
 fn _pyroxide(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(submit_task, m)?)?;
+    m.add_function(wrap_pyfunction!(submit_batch, m)?)?;
     m.add_function(wrap_pyfunction!(get_status, m)?)?;
     m.add_function(wrap_pyfunction!(wait_status, m)?)?;
     m.add_function(wrap_pyfunction!(get_result, m)?)?;
     m.add_function(wrap_pyfunction!(free_task, m)?)?;
     m.add_function(wrap_pyfunction!(get_slab_size, m)?)?;
+    m.add_function(wrap_pyfunction!(cancel_task, m)?)?;
 
     Ok(())
 }

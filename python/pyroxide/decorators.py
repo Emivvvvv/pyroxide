@@ -42,4 +42,15 @@ def task(func: Optional[Callable[[P], R]] = None, *, native: bool = False) -> An
         task_id = submit_task(callable_to_pass, payload)
         return TaskHandle(task_id)
 
+    def batch(payloads: list) -> list[TaskHandle]:
+        """
+        Submits a batch of payloads under a single write lock.
+        """
+        from ._pyroxide import submit_batch
+
+        callable_to_pass = None if native else func
+        task_ids = submit_batch(callable_to_pass, payloads)
+        return [TaskHandle(tid) for tid in task_ids]
+
+    wrapper.batch = batch
     return wrapper

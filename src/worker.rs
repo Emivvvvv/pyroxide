@@ -17,9 +17,23 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
         };
 
         if let Some(task) = task {
-            // 2. Set status to Running atomically
-            task.status
-                .store(TaskStatus::Running as u8, Ordering::Release);
+            // Check cancellation before starting
+            if task.cancelled.load(Ordering::Acquire) {
+                continue;
+            }
+
+            // Try to transition status from Pending to Running. If it fails, task was cancelled.
+            match task.status.compare_exchange(
+                TaskStatus::Pending as u8,
+                TaskStatus::Running as u8,
+                Ordering::Release,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {}
+                Err(_) => {
+                    continue;
+                }
+            }
 
             // 3. Execute the task (Python Callable or Native Execution) with panic safety
             let task_clone = Arc::clone(&task);
@@ -33,11 +47,19 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
 
                         match bound_cb.call1((bound_payload,)) {
                             Ok(val) => Ok(val.into_any().unbind()),
-                            Err(err) => Err(format!("{err}")),
+                            Err(err) => {
+                                let tb_str = match err.traceback(py) {
+                                    Some(tb) => tb
+                                        .format()
+                                        .unwrap_or_else(|_| "No traceback available".to_string()),
+                                    None => "No traceback available".to_string(),
+                                };
+                                Err(format!("{err}\n\nOriginal Background Traceback:\n{tb_str}"))
+                            }
                         }
                     })
                 } else {
-                    // Native Execution (GIL-free)
+                    // Native Execution:
                     // 1. Extract payload with GIL held
                     let extracted = Python::attach(|py| {
                         let bound_payload = task_clone.payload.bind(py);
@@ -51,25 +73,40 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                     });
 
                     // 2. Process payload without GIL (outside Python::attach)
-                    let processed = extracted.map(|payload| match payload {
+                    let processed = extracted.and_then(|payload| match payload {
                         NativePayload::Str(s) => {
                             if s == "TRIGGER_PANIC" {
                                 panic!("Simulated Rust worker panic!");
                             }
                             if let Some(stripped) = s.strip_prefix("SLEEP:") {
                                 if let Ok(ms) = stripped.parse::<u64>() {
-                                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                                    let sleep_chunk = std::time::Duration::from_millis(10);
+                                    let mut elapsed = std::time::Duration::ZERO;
+                                    let total = std::time::Duration::from_millis(ms);
+                                    while elapsed < total {
+                                        if task_clone.cancelled.load(Ordering::Acquire) {
+                                            return Err("Task cancelled".to_string());
+                                        }
+                                        std::thread::sleep(sleep_chunk);
+                                        elapsed += sleep_chunk;
+                                    }
                                 }
                             } else {
                                 std::thread::sleep(std::time::Duration::from_millis(1));
                             }
+                            if task_clone.cancelled.load(Ordering::Acquire) {
+                                return Err("Task cancelled".to_string());
+                            }
                             let upper = s.to_uppercase();
-                            NativePayload::Str(upper)
+                            Ok(NativePayload::Str(upper))
                         }
                         NativePayload::Bytes(mut b) => {
                             std::thread::sleep(std::time::Duration::from_millis(1));
+                            if task_clone.cancelled.load(Ordering::Acquire) {
+                                return Err("Task cancelled".to_string());
+                            }
                             b.make_ascii_uppercase();
-                            NativePayload::Bytes(b)
+                            Ok(NativePayload::Bytes(b))
                         }
                     });
 
@@ -93,18 +130,31 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                 Err(_) => Err("Rust worker panicked during task execution".to_string()),
             };
 
-            // 4. Update result and status
-            let final_status = match &resolved_result {
-                Ok(_) => TaskStatus::Completed,
-                Err(_) => TaskStatus::Failed,
-            };
+            // 4. Update result and status (preserving Cancelled status)
+            let mut current = task.status.load(Ordering::Acquire);
+            loop {
+                if current == TaskStatus::Cancelled as u8 {
+                    break;
+                }
+                let final_status = match &resolved_result {
+                    Ok(_) => TaskStatus::Completed as u8,
+                    Err(_) => TaskStatus::Failed as u8,
+                };
+                match task.status.compare_exchange_weak(
+                    current,
+                    final_status,
+                    Ordering::Release,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => current = actual,
+                }
+            }
 
             {
                 let mut res_guard = task.result.lock().unwrap();
                 *res_guard = Some(resolved_result);
             }
-
-            task.status.store(final_status as u8, Ordering::Release);
 
             // 5. Signal the Condvar to wake up waiting Python thread
             {

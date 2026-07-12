@@ -12,6 +12,15 @@ class TaskHandle:
         """Queries the current status from the Rust Slab."""
         return get_status(self.task_id)
 
+    def cancel(self) -> bool:
+        """
+        Attempts to cancel the task. Returns True if successfully cancelled,
+        False if the task is already finished or cancelled.
+        """
+        from ._pyroxide import cancel_task
+
+        return cancel_task(self.task_id)
+
     def wait(
         self, poll_interval_ms: int = 10, timeout_sec: Optional[float] = None
     ) -> str:
@@ -46,6 +55,19 @@ class TaskHandle:
             free_task(self.task_id)
             self._consumed = True
         return res
+
+    async def result_async(
+        self, timeout_sec: Optional[float] = None, consume: bool = True
+    ) -> Any:
+        """
+        Asynchronously awaits the task result, yielding control to the event loop.
+        """
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        # Offload the blocking wait() call to the loop's default thread pool executor
+        await loop.run_in_executor(None, self.wait, 10, timeout_sec)
+        return self.result(timeout_sec=0, consume=consume)
 
     def __del__(self) -> None:
         """

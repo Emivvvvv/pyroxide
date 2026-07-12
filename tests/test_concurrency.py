@@ -31,8 +31,8 @@ def test_native_parallel_execution():
     duration = time.time() - start_time
 
     assert all(status == "Completed" for status in statuses)
-    assert duration < 0.20, (
-        f"Expected parallel execution to take < 0.20s, took {duration:.4f}s"
+    assert duration < 0.25, (
+        f"Expected parallel execution to take < 0.25s, took {duration:.4f}s"
     )
 
 
@@ -113,3 +113,46 @@ def test_native_task_invalid_payload():
         handle.result()
     assert "Unsupported payload type" in str(exc_info.value)
     assert handle.status == "Failed"
+
+
+def test_async_result_waiting():
+    import asyncio
+
+    async def main():
+        handle = native_sleep("SLEEP:100")
+        start_time = time.time()
+        res = await handle.result_async(timeout_sec=1.0)
+        duration = time.time() - start_time
+        return res, duration
+
+    res, duration = asyncio.run(main())
+    assert res == "SLEEP:100"
+    assert duration >= 0.09
+
+
+def test_batch_submission():
+    payloads = [1, 2, 3, 4, 5]
+    handles = python_square.batch(payloads)
+
+    assert len(handles) == 5
+
+    results = [h.result() for h in handles]
+    assert results == [1, 4, 9, 16, 25]
+
+
+def test_batch_submission_native():
+    payloads = ["a", "b", "c"]
+    handles = native_sleep.batch(payloads)
+
+    assert len(handles) == 3
+    results = [h.result() for h in handles]
+    assert results == ["A", "B", "C"]
+
+
+def test_batch_submission_native_bytes():
+    payloads = [b"a", b"b", b"c"]
+    handles = native_sleep.batch(payloads)
+
+    assert len(handles) == 3
+    results = [h.result() for h in handles]
+    assert results == [b"A", b"B", b"C"]

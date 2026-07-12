@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 use std::thread;
 use std::thread::JoinHandle;
@@ -15,6 +15,7 @@ pub(crate) enum TaskStatus {
     Running = 1,
     Completed = 2,
     Failed = 3,
+    Cancelled = 4,
 }
 
 impl TaskStatus {
@@ -24,6 +25,7 @@ impl TaskStatus {
             1 => "Running".to_string(),
             2 => "Completed".to_string(),
             3 => "Failed".to_string(),
+            4 => "Cancelled".to_string(),
             _ => "Unknown".to_string(),
         }
     }
@@ -36,6 +38,7 @@ pub(crate) struct Task {
     pub(crate) result: Mutex<Option<Result<Py<PyAny>, String>>>,
     pub(crate) completed_cvar: Condvar,
     pub(crate) completed_mutex: Mutex<bool>,
+    pub(crate) cancelled: AtomicBool,
 }
 
 pub(crate) struct Broker {
@@ -96,6 +99,7 @@ pub(crate) fn submit_task(callable: Option<Py<PyAny>>, payload: Py<PyAny>) -> us
         result: Mutex::new(None),
         completed_cvar: Condvar::new(),
         completed_mutex: Mutex::new(false),
+        cancelled: AtomicBool::new(false),
     });
 
     let task_id = {
@@ -106,6 +110,75 @@ pub(crate) fn submit_task(callable: Option<Py<PyAny>>, payload: Py<PyAny>) -> us
     engine.sender.send(task_id).expect("Failed to send task ID");
 
     task_id
+}
+
+pub(crate) fn submit_batch(
+    callables: Vec<Option<Py<PyAny>>>,
+    payloads: Vec<Py<PyAny>>,
+) -> Vec<usize> {
+    let engine = get_engine();
+    let mut ids = Vec::with_capacity(payloads.len());
+
+    let mut slab = engine.broker.tasks.write().expect("Lock poisoned");
+
+    for (callable, payload) in callables.into_iter().zip(payloads.into_iter()) {
+        let task = Arc::new(Task {
+            status: AtomicU8::new(TaskStatus::Pending as u8),
+            callable,
+            payload,
+            result: Mutex::new(None),
+            completed_cvar: Condvar::new(),
+            completed_mutex: Mutex::new(false),
+            cancelled: AtomicBool::new(false),
+        });
+        let task_id = slab.insert(task);
+        ids.push(task_id);
+        engine.sender.send(task_id).expect("Failed to send task ID");
+    }
+
+    ids
+}
+
+pub(crate) fn cancel_task(task_id: usize) -> bool {
+    let engine = get_engine();
+    let task = {
+        let slab = engine.broker.tasks.read().expect("Lock poisoned");
+        slab.get(task_id).cloned()
+    };
+
+    if let Some(task) = task {
+        let mut current = task.status.load(Ordering::Acquire);
+        loop {
+            if current == TaskStatus::Completed as u8
+                || current == TaskStatus::Failed as u8
+                || current == TaskStatus::Cancelled as u8
+            {
+                return false;
+            }
+            match task.status.compare_exchange_weak(
+                current,
+                TaskStatus::Cancelled as u8,
+                Ordering::Release,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    task.cancelled.store(true, Ordering::Release);
+                    {
+                        let mut res_guard = task.result.lock().unwrap();
+                        *res_guard = Some(Err("Task cancelled".to_string()));
+                    }
+                    {
+                        let mut completed = task.completed_mutex.lock().unwrap();
+                        *completed = true;
+                    }
+                    task.completed_cvar.notify_all();
+                    return true;
+                }
+                Err(actual) => current = actual,
+            }
+        }
+    }
+    false
 }
 
 pub(crate) fn get_task_status(task_id: usize) -> Option<String> {
