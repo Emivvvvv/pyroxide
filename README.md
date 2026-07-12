@@ -19,7 +19,7 @@
     <a href="https://emivvvvv.github.io/pyroxide/"><strong>Explore the Docs »</strong></a>
     <br />
     <br />
-    <a href="https://emivvvvv.github.io/pyroxide/api/">API Reference</a>
+    <a href="https://emivvvvv.github.io/pyroxide/api/pyroxide.html">API Reference</a>
     &middot;
     <a href="https://github.com/emivvvvv/pyroxide/tree/main/examples">See Examples</a>
     &middot;
