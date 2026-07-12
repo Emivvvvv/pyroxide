@@ -175,11 +175,7 @@ print(to_upper_zig("hello from zig").result())  # "HELLO FROM ZIG"
 If you already have a compiled shared library file (`.so` / `.dylib` / `.dll`), you can bypass the compilation phase entirely and load it directly using `register_dylib`.
 
 ### Supported Languages
-Because `register_dylib` expects a standard C-ABI shared library, you can write the library in **any language** that supports compiling to a C shared library:
-- **Rust**
-- **C / C++**
-- **Zig**
-- **Go** (via `-buildmode=c-shared`)
+Because `register_dylib` expects a standard C-ABI shared library, you can write the library in **any language** that supports compiling to a C-compatible shared library (including **Rust**, **C/C++**, **Zig**, **Go** via `-buildmode=c-shared`, **Nim**, **Fortran**, and others).
 
 ### Pre-Compiled Example (C Language)
 
