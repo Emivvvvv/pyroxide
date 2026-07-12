@@ -53,11 +53,7 @@ pip install pyro3
 
 ### Build and Install locally
 
-Ensure you have Rust, Python (3.8+), and `maturin` installed.
-
-### Build and Install locally
-
-Compile and install the C-extension into your active virtual environment:
+Ensure you have Rust, Python (3.8+), and `maturin` installed. Compile and install the C-extension into your active virtual environment:
 
 ```bash
 # Clone the repository
