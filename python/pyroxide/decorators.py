@@ -1,18 +1,45 @@
 import functools
+from typing import Callable, TypeVar, Any, overload, Optional
 from ._pyroxide import submit_task
 from .types import TaskHandle
 
-def task(func):
-    """
-    Decorator to offload a function's heavy work entirely to the Rust engine core.
-    Assumes the payload passed to the function is a string.
-    """
-    @functools.wraps(func)
-    def wrapper(payload: str, *args, **kwargs) -> TaskHandle:
-        # Fire the payload straight through the PyO3 boundary into Rust
-        task_id = submit_task(payload)
+P = TypeVar("P")
+R = TypeVar("R")
 
-        # Immediately hand back a pollable handle to the caller
+
+@overload
+def task(func: Callable[[P], R]) -> Callable[[P], TaskHandle]: ...
+
+
+@overload
+def task(
+    *, native: bool = ...
+) -> Callable[[Callable[[P], R]], Callable[[P], TaskHandle]]: ...
+
+
+def task(func: Optional[Callable[[P], R]] = None, *, native: bool = False) -> Any:
+    """
+    Decorator to offload a function's work to the Rust engine core.
+
+    Usage:
+        @task
+        def process_data(payload: str) -> str:
+            # Executed in a background thread by the Rust engine (with GIL temporarily acquired).
+            return payload.upper()
+
+        @task(native=True)
+        def process_natively(payload: str) -> None:
+            # Executed natively by Rust, completely GIL-free.
+            pass
+    """
+    if func is None:
+        return lambda f: task(f, native=native)
+
+    @functools.wraps(func)
+    def wrapper(payload: P, *args: Any, **kwargs: Any) -> TaskHandle:
+        # If native, we pass None as the callable to trigger native execution.
+        callable_to_pass = None if native else func
+        task_id = submit_task(callable_to_pass, payload)
         return TaskHandle(task_id)
 
     return wrapper

@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  lint-format:
+    name: Lint & Format (Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust Format Check
+        run: cargo fmt --all -- --check
+
+      - name: Cargo Clippy Check
+        run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    name: Run Verification Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install maturin pyarrow
+
+      - name: Build Pyroxide (Maturin)
+        run: maturin develop
+
+      - name: Run Dynamic Execution Tests
+        run: python examples/test_dynamic.py
+
+      - name: Run Production Verification Tests
+        run: python examples/test_prod.py
+
+      - name: Run Refinements Verification Tests
+        run: python examples/test_refinements.py

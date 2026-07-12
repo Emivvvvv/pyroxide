@@ -1,8 +1,10 @@
 from pyroxide import task
 
+
 @task
 def process_data(payload):
-    pass # Managed natively by Rust now!
+    pass  # Managed natively by Rust now!
+
 
 handle = process_data("Huge enterprise dataset string")
 print(f"Task running... Status: {handle.status}")

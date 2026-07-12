@@ -1,0 +1,11 @@
+=== Pyroxide Performance Benchmark (Baseline) ===
+
+1. Single Threaded Task Submission & Waiting:
+   Tasks:   10 | Total Time: 1.0180s | Avg Latency: 101.80ms
+   Tasks:   20 | Total Time: 1.5200s | Avg Latency: 76.00ms
+   Tasks:   50 | Total Time: 3.5289s | Avg Latency: 70.58ms
+
+2. Multi-Threaded Concurrent Submission (Lock Contention & Polling):
+   Tasks:   40 | Threads:  2 | Total Time: 10.1848s
+   Tasks:   40 | Threads:  4 | Total Time: 5.1193s
+   Tasks:   40 | Threads:  8 | Total Time: 2.5624s
