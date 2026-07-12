@@ -12,7 +12,7 @@ Exports:
     - compile_dylib / dylib_task: Dynamic shared library compilation and execution.
 """
 
-from ._pyroxide import submit_task, get_status
+from ._pyroxide import submit_task, get_status, register_dylib
 from .decorators import task
 from .types import TaskHandle
 from .wasm import register_wasm, wasm_task
@@ -21,6 +21,7 @@ from .plugins import compile_dylib, dylib_task
 __all__ = [
     "submit_task",
     "get_status",
+    "register_dylib",
     "task",
     "TaskHandle",
     "register_wasm",

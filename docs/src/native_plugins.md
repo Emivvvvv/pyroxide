@@ -113,9 +113,66 @@ print(handle.result())  # "Logged: User login at 12:00"
 
 ---
 
+## Using Pre-Compiled Shared Libraries
+
+If you already have a compiled shared library file (`.so` / `.dylib` / `.dll`), you can bypass the compilation phase entirely and load it directly using `register_dylib`.
+
+### Supported Languages
+Because `register_dylib` expects a standard C-ABI shared library, you can write the library in **any language** that supports compiling to a C shared library:
+- **Rust**
+- **C / C++**
+- **Zig**
+- **Go** (via `-buildmode=c-shared`)
+
+### Pre-Compiled Example (C Language)
+
+Here is a C library example (`my_math.c`):
+
+```c
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+// Required run symbol matching Pyroxide's expectations
+uint8_t* pyroxide_plugin_run(const uint8_t* ptr, size_t len, size_t* out_len) {
+    // Basic echo with C-ABI
+    uint8_t* result = (uint8_t*)malloc(len);
+    memcpy(result, ptr, len);
+    *out_len = len;
+    return result;
+}
+
+// Required free symbol
+void pyroxide_plugin_free(uint8_t* ptr, size_t len) {
+    free(ptr);
+}
+```
+
+Compile it to a shared library:
+```bash
+gcc -shared -o libmy_math.so -fPIC my_math.c
+```
+
+Load and execute it in Python:
+```python
+from pyroxide import register_dylib, dylib_task
+
+# Load the pre-compiled C library directly
+register_dylib("c_math", "./libmy_math.so")
+
+@dylib_task("c_math")
+def process_data(payload: bytes) -> bytes:
+    pass
+
+handle = process_data(b"hello C-ABI")
+print(handle.result())  # b"hello C-ABI"
+```
+
+---
+
 ## Security Warning
 
 > [!CAUTION]
 > Dynamically loaded shared libraries run directly inside CPython's process memory.
 > An unhandled segfault, null pointer dereference, or buffer overflow **will crash the entire Python process**.
-> Only load trusted code via `compile_dylib()`.
+> Only load trusted code via `compile_dylib()` or `register_dylib()`.
