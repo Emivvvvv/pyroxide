@@ -48,3 +48,16 @@ Pyroxide coordinates the main Python thread and background OS worker threads usi
 
 4. **GIL-Free Execution:**
    Tasks submitted via `@wasm_task` (WebAssembly sandbox) or `@dylib_task` (dynamic shared library) are executed on background threads without acquiring the Python GIL. This allows fully parallel multi-core CPU utilization (ideal for parsing, calculations, or IO-heavy operations).
+
+---
+
+## Alternative Solutions at a Glance
+
+| Broker / Engine | GIL Bypass | IPC / Serialization Cost | Infrastructure Overhead | Best For |
+| :--- | :--- | :--- | :--- | :--- |
+| **Pyroxide** | **Yes** (WASM/dylib) | **None** (In-process memory) | **None** (Embedded) | In-process high-perf background pipelines |
+| **Multiprocessing** | Yes | High (Pickling) | Low (Spawns processes) | Parallel CPU-heavy pure Python tasks |
+| **Celery / RQ** | Yes | High (Network/Redis) | High (Requires Redis/RabbitMQ) | Distributed cross-server work queues |
+| **Raw PyO3 C-Extension** | Yes | Medium (C-API boundary) | Medium (Requires full rebuilds) | Fixed native bindings (static packages) |
+
+For a detailed analysis of when to use Pyroxide vs. other libraries, see the [Library Comparison](comparison.md) page.

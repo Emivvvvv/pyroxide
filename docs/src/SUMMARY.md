@@ -1,6 +1,7 @@
 # Summary
 
 - [Introduction](introduction.md)
+- [Library Comparison](comparison.md)
 - [Installation](installation.md)
 - [Getting Started](getting_started.md)
 - [Concurrency & Asyncio](concurrency_async.md)
