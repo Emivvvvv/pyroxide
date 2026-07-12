@@ -1,11 +1,10 @@
 # Dynamic Shared Libraries (dylib)
 
-For use cases that require maximum performance and **unrestricted system access** (such as database connections, direct socket I/O, or local file access) but must avoid rebuilding Pyroxide itself, Pyroxide supports **Dynamic Shared Library** execution via `compile_dylib()` and `@dylib_task`.
+For use cases that require maximum performance and **unrestricted system access** (such as database connections, direct socket I/O, or local file access) but must avoid rebuilding Pyroxide itself, Pyroxide supports **Dynamic Shared Library** execution.
 
 With this architecture:
-- Users write Rust source code as a Python string.
-- Pyroxide compiles it **on-the-fly at runtime** using the developer's local `cargo` toolchain.
-- The compiled shared library (`.so` / `.dylib` / `.dll`) is dynamically loaded into the process and executed completely **GIL-free**.
+- Workloads are executed completely **GIL-free** on background OS threads.
+- You can compile source code **on-the-fly** at runtime, or load **pre-compiled** binaries directly.
 
 ---
 
@@ -13,18 +12,18 @@ With this architecture:
 
 | Feature | `@task` | `@wasm_task` | `@dylib_task` |
 | :--- | :--- | :--- | :--- |
-| **Language** | Python | Any → WASM bytecode | Rust (compiled on-the-fly) |
+| **Language** | Python | Any → WASM bytecode | Rust, C, Zig (C-ABI) |
 | **GIL Status** | Held during callback | **GIL-Free** | **GIL-Free** |
 | **System Access** | Full (Files, DB, Network) | Sandboxed (no OS access) | **Full (Files, DB, Network)** |
 | **Safety** | High (exceptions caught) | **High** (sandbox traps caught) | Low (crash can segfault) |
-| **Rebuild Required** | None | None | **None (auto-compiled)** |
+| **Rebuild Required** | None | None | **None (auto-compiled / dynamic)** |
 | **Best For** | General Python logic | Safe computation, untrusted code | High-perf DB/IO/algorithms |
 
 ---
 
 ## The ABI Contract
 
-Dynamic libraries must export exactly two C-compatible functions:
+Any dynamic shared library loaded by Pyroxide (whether compiled on-the-fly or pre-compiled) must export exactly two C-compatible functions:
 
 ```rust
 /// Executes the plugin logic. Receives input bytes, returns output bytes.
@@ -49,43 +48,12 @@ pub unsafe extern "C" fn pyroxide_plugin_free(
 
 ---
 
-## Python API
+## 1. On-the-Fly Compilation
 
-### `compile_dylib(name, source_code, dependencies=None)`
+On-the-fly compilation compiles source code strings into shared libraries at runtime using your local toolchain, then registers them with the engine.
 
-Compiles Rust source code into a shared library and registers it with the engine.
-
-| Parameter | Type | Description |
-| :--- | :--- | :--- |
-| `name` | `str` | Unique identifier for this dylib |
-| `source_code` | `str` | Raw Rust source code string |
-| `dependencies` | `dict` | Optional Cargo dependencies, e.g. `{"serde": "1.0"}` |
-
-### `compile_c(name, source_code)`
-
-Compiles C source code on-the-fly into a shared library and registers it with the engine.
-
-| Parameter | Type | Description |
-| :--- | :--- | :--- |
-| `name` | `str` | Unique identifier for this dylib |
-| `source_code` | `str` | Raw C source code string exporting `pyroxide_plugin_run` and `pyroxide_plugin_free` |
-
-### `compile_zig(name, source_code)`
-
-Compiles Zig source code on-the-fly into a shared library and registers it with the engine.
-
-| Parameter | Type | Description |
-| :--- | :--- | :--- |
-| `name` | `str` | Unique identifier for this dylib |
-| `source_code` | `str` | Raw Zig source code string exporting `pyroxide_plugin_run` and `pyroxide_plugin_free` |
-
-### `@dylib_task(dylib_name)`
-
-Decorator that routes payloads to the named dylib for GIL-free execution.
-
----
-
-## Complete Example: File-Writing Native Logger
+### Rust (`compile_dylib`)
+Uses your local `cargo` toolchain under the hood to compile Rust source code. You can also specify Cargo dependencies.
 
 ```python
 from pyroxide import compile_dylib, dylib_task
@@ -99,7 +67,6 @@ pub unsafe extern "C" fn pyroxide_plugin_run(ptr: *const u8, len: usize, out_len
     let input = std::slice::from_raw_parts(ptr, len);
     let message = std::str::from_utf8(input).unwrap_or("invalid utf8");
 
-    // Dynamic libraries have full filesystem access
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("app.log") {
         let _ = writeln!(file, "[Log] {}", message);
     }
@@ -119,22 +86,16 @@ pub unsafe extern "C" fn pyroxide_plugin_free(ptr: *mut u8, len: usize) {
 # Compile and register. Optional Cargo dependencies can be provided.
 compile_dylib("file_logger", RUST_LOGGER)
 
-# Decorate a stub to submit tasks to the dylib
 @dylib_task("file_logger")
 def log_event(message: str) -> str:
     pass
 
-# Execute GIL-free with full OS access!
-handle = log_event("User login at 12:00")
-print(handle.result())  # "Logged: User login at 12:00"
+# Execute GIL-free
+print(log_event("User login").result())  # "Logged: User login"
 ```
 
----
-
-## On-the-Fly Compilation: C & Zig
-
-### C Example
-You can compile C code directly on-the-fly. Pyroxide automatically invokes the local C compiler (`clang` or `gcc` via subprocess).
+### C (`compile_c`)
+Uses your local C compiler (`clang` or `gcc` via `CC` environment variable) to compile a C source string.
 
 ```python
 from pyroxide import compile_c, dylib_task
@@ -170,8 +131,8 @@ def to_upper_c(payload: str) -> str:
 print(to_upper_c("hello from c").result())  # "HELLO FROM C"
 ```
 
-### Zig Example
-If you have `zig` installed on your path, you can compile Zig code on-the-fly:
+### Zig (`compile_zig`)
+Uses your local `zig build-lib` toolchain to compile a Zig source string.
 
 ```python
 from pyroxide import compile_zig, dylib_task
@@ -209,7 +170,7 @@ print(to_upper_zig("hello from zig").result())  # "HELLO FROM ZIG"
 
 ---
 
-## Using Pre-Compiled Shared Libraries
+## 2. Using Pre-Compiled Shared Libraries
 
 If you already have a compiled shared library file (`.so` / `.dylib` / `.dll`), you can bypass the compilation phase entirely and load it directly using `register_dylib`.
 
@@ -231,7 +192,6 @@ Here is a C library example (`my_math.c`):
 
 // Required run symbol matching Pyroxide's expectations
 uint8_t* pyroxide_plugin_run(const uint8_t* ptr, size_t len, size_t* out_len) {
-    // Basic echo with C-ABI
     uint8_t* result = (uint8_t*)malloc(len);
     memcpy(result, ptr, len);
     *out_len = len;
@@ -271,4 +231,4 @@ print(handle.result())  # b"hello C-ABI"
 > [!CAUTION]
 > Dynamically loaded shared libraries run directly inside CPython's process memory.
 > An unhandled segfault, null pointer dereference, or buffer overflow **will crash the entire Python process**.
-> Only load trusted code via `compile_dylib()` or `register_dylib()`.
+> Only load trusted code via compilation helpers or `register_dylib()`.
