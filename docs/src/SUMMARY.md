@@ -1,7 +1,6 @@
 # Summary
 
 - [Introduction](introduction.md)
-- [Library Comparison](comparison.md)
 - [Installation](installation.md)
 - [Getting Started](getting_started.md)
 - [Concurrency & Asyncio](concurrency_async.md)
@@ -11,4 +10,5 @@
 - [Dynamic Shared Libraries (dylib)](native_plugins.md)
 - [WebAssembly Execution Engine](wasm_engine.md)
 - [Performance & Benchmarks](benchmarks.md)
+- [Library Comparison](comparison.md)
 - [Python API Reference](api/pyroxide.html)

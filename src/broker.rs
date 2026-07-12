@@ -125,23 +125,27 @@ pub(crate) fn submit_batch(
     let engine = get_engine();
     let mut ids = Vec::with_capacity(payloads.len());
 
-    let mut slab = engine.broker.tasks.write().expect("Lock poisoned");
+    {
+        let mut slab = engine.broker.tasks.write().expect("Lock poisoned");
+        for (callable, payload) in callables.into_iter().zip(payloads) {
+            let task = Arc::new(Task {
+                status: AtomicU8::new(TaskStatus::Pending as u8),
+                callable,
+                payload,
+                result: Mutex::new(None),
+                completed_cvar: Condvar::new(),
+                completed_mutex: Mutex::new(false),
+                cancelled: AtomicBool::new(false),
+                wasm_module: None,
+                wasm_func: None,
+                dylib: None,
+            });
+            let task_id = slab.insert(task);
+            ids.push(task_id);
+        }
+    } // Write lock dropped here
 
-    for (callable, payload) in callables.into_iter().zip(payloads) {
-        let task = Arc::new(Task {
-            status: AtomicU8::new(TaskStatus::Pending as u8),
-            callable,
-            payload,
-            result: Mutex::new(None),
-            completed_cvar: Condvar::new(),
-            completed_mutex: Mutex::new(false),
-            cancelled: AtomicBool::new(false),
-            wasm_module: None,
-            wasm_func: None,
-            dylib: None,
-        });
-        let task_id = slab.insert(task);
-        ids.push(task_id);
+    for &task_id in &ids {
         engine.sender.send(task_id).expect("Failed to send task ID");
     }
 

@@ -53,11 +53,11 @@ Pyroxide coordinates the main Python thread and background OS worker threads usi
 
 ## Alternative Solutions at a Glance
 
-| Broker / Engine | GIL Bypass | IPC / Serialization Cost | Infrastructure Overhead | Best For |
-| :--- | :--- | :--- | :--- | :--- |
-| **Pyroxide** | **Yes** (WASM/dylib) | **None** (In-process memory) | **None** (Embedded) | In-process high-perf background pipelines |
-| **Multiprocessing** | Yes | High (Pickling) | Low (Spawns processes) | Parallel CPU-heavy pure Python tasks |
-| **Celery / RQ** | Yes | High (Network/Redis) | High (Requires Redis/RabbitMQ) | Distributed cross-server work queues |
-| **Raw PyO3 C-Extension** | Yes | Medium (C-API boundary) | Medium (Requires full rebuilds) | Fixed native bindings (static packages) |
+| Feature / Metric | Pyroxide | Threading (std) | Multiprocessing | Celery / RQ | Raw PyO3 Extension |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **GIL Bypass** | **✅ Yes** (WASM/dylib) | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
+| **IPC / Serialization** | **✅ None** (Shared Memory) | ✅ None | ❌ High (Pickling) | ❌ High (Network/Redis) | ⚠️ Medium (C-API boundary) |
+| **Infrastructure** | **✅ None** (Embedded) | ✅ None | ⚠️ Low (Spawns processes) | ❌ High (Redis/RabbitMQ) | ⚠️ Medium (Rebuild required) |
+| **Best For** | **🔥 High-perf in-process pipelines** | I/O-bound Python | CPU-heavy Python | Distributed tasks | Fixed static bindings |
 
 For a detailed analysis of when to use Pyroxide vs. other libraries, see the [Library Comparison](comparison.md) page.

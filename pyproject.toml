@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pyro3"
-version = "0.3.2"
+version = "0.3.3"
 description = "A lock-free, high-concurrency task broker for Python, powered by Rust."
 readme = "README.md"
 requires-python = ">=3.8"
@@ -34,3 +34,4 @@ Repository = "https://github.com/emivvvvv/pyroxide"
 [tool.maturin]
 python-source = "python"
 module-name = "pyroxide._pyroxide"
+features = ["pyo3/abi3-py38"]

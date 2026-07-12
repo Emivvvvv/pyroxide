@@ -1,6 +1,6 @@
 # Library Comparison
 
-Choosing the right concurrency model or task broker is critical for your application's performance, stability, and developer velocity. This guide outlines how Pyroxide compares with other common Python concurrency patterns.
+Choosing the right concurrency model or task broker is critical for your application's performance, stability, and developer velocity. This guide compares Pyroxide with other common Python concurrency patterns, backed by the empirical measurements detailed in the [Performance & Benchmarks](benchmarks.md) chapter.
 
 ---
 
@@ -9,21 +9,21 @@ Choosing the right concurrency model or task broker is critical for your applica
 Python's built-in `multiprocessing` module (and `ProcessPoolExecutor`) runs tasks in separate Python interpreter processes to bypass the Global Interpreter Lock (GIL).
 
 ### Comparison
-*   **Memory Overhead**: `multiprocessing` duplicates Python interpreter processes, increasing startup latency. **Pyroxide** runs lightweight background OS threads in the same process with negligible overhead.
-*   **IPC Cost**: Data sent to a subprocess must be pickled and sent over OS pipes. For 100 tasks, this IPC/serialization overhead takes **1.63 seconds** on an Apple M1 Pro. **Pyroxide** shares process memory directly; passing byte arrays or memoryviews is zero-copy, completing 100 tasks in **0.004 seconds** (380x faster).
-*   **Task Management**: Subprocesses are slow to cancel and cannot gracefully catch panics without process death. **Pyroxide** uses atomic state slots and thread-safe signaling for cancellation.
+*   **Memory Overhead**: `multiprocessing` forks or spawns brand new OS processes, which duplicate Python interpreter memory and increase startup latency. **Pyroxide** runs lightweight background OS threads in the same process with negligible overhead.
+*   **IPC (Inter-Process Communication)**: Data sent to a subprocess must be serialized (using `pickle`) and sent over OS pipes/sockets. As shown in **[Benchmark Scenario E](benchmarks.md#scenario-e-pyroxide-vs-python-threadpool--multiprocessing)**, running 100 tasks under `ProcessPoolExecutor` takes **1.6483 seconds** due to serialization overhead on an Apple M1 Pro. In contrast, Pyroxide `@dylib_task` completes the identical workload in **0.0040 seconds (over 380x faster)** by utilizing direct, zero-copy shared memory.
+*   **Task Management**: Subprocesses are slow to cancel and cannot gracefully catch native crashes without process death. **Pyroxide** utilizes atomic state flags and OS thread-safe signaling for cancellation.
 
 ### Decision Matrix
 > [!TIP]
 > **Use Python Multiprocessing when:**
 > - You are executing pure Python code that is CPU-heavy.
-> - You do not want to write or compile any compiled code (Rust, C, Zig).
-> - You have simple payloads that pickle quickly.
+> - You do not want to write or compile any native compiled code (Rust, C, Zig).
+> - You have simple payloads that serialize (`pickle`) quickly.
 >
 > **Use Pyroxide when:**
 > - You have large byte/string payloads and need zero-copy memory performance.
-> - You want low-latency background offloading (microseconds instead of milliseconds).
-> - You want to run Rust, C, Zig, or WebAssembly sandbox plugins GIL-free.
+> - You want to offload I/O-bound or blocking Python callbacks using a low-overhead, in-process thread pool.
+> - You want to run Rust, C, Zig, or WebAssembly sandbox plugins GIL-free with microsecond-level dispatch latencies.
 
 ---
 
@@ -33,7 +33,7 @@ Celery and RQ are distributed task queues designed to run jobs on separate worke
 
 ### Comparison
 *   **Complexity**: Celery requires setting up a message broker (like Redis or RabbitMQ) and running separate worker daemon processes. **Pyroxide** is embedded inside your Python process; it has **zero** infrastructure dependencies.
-*   **Latency**: Celery tasks suffer from TCP round-trips, broker serialization, and polling delay, taking **4.8 ms to 12.5 ms** even on localhost. **Pyroxide** task dispatch and completion signaling takes **25 microseconds** (200x to 500x faster).
+*   **Latency**: Celery tasks suffer from TCP round-trips, broker serialization, and polling delay, taking **4.8 ms to 12.5 ms** even on localhost, as shown in **[Benchmark Scenario F](benchmarks.md#scenario-f-pyroxide-vs-celery--rq-distributed-task-queues)**. **Pyroxide** task dispatch and completion signaling takes **25 microseconds (200x to 500x faster)** because it executes entirely in-process using OS futex signaling.
 
 ### Decision Matrix
 > [!TIP]
@@ -54,9 +54,9 @@ Celery and RQ are distributed task queues designed to run jobs on separate worke
 Writing a custom Rust C-Extension using PyO3 is the standard way to speed up Python with Rust.
 
 ### Comparison
-*   **Development Speed**: With raw PyO3, any change to your native code requires compiling a new wheel, rebuilding the Python environment, and re-deploying. **Pyroxide** compiles and loads dynamic code on-the-fly (`compile_dylib()`, `compile_c()`, `compile_zig()`), providing rapid iteration directly in Python script files.
+*   **Development Speed**: With raw PyO3, any change to your native code requires compiling a new wheel, rebuilding the Python environment, and re-deploying. **Pyroxide** compiles and loads dynamic code on-the-fly (`compile_dylib()`), providing rapid iteration directly in Python script files.
 *   **GIL Offloading**: PyO3 requires manually calling `py.allow_threads(...)` to release the GIL, and managing cross-thread safety. **Pyroxide** abstracts all thread dispatching, lock-free status monitoring, and GIL-release boundaries automatically.
-*   **Call Overhead**: A raw PyO3 function call has an overhead of **0.2 µs - 0.8 µs**. Pyroxide `@dylib_task` runs at **1.0 µs** call overhead, meaning Pyroxide matches raw PyO3 speeds with **zero runtime penalty**.
+*   **Call Overhead**: Statically compiled raw PyO3 function calls have an overhead of **0.2 µs - 0.8 µs**. As measured in **[Benchmark Scenario G](benchmarks.md#scenario-g-pyroxide-vs-raw-pyo3-c-extension)**, Pyroxide `@dylib_task` runs at **1.0 µs** call overhead, meaning Pyroxide matches raw PyO3 speeds with **zero runtime penalty** while gaining dynamic compilation.
 
 ### Decision Matrix
 > [!TIP]

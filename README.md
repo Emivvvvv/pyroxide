@@ -33,19 +33,6 @@
 
 Pyroxide (`pyro3`) is a lightweight, ultra-high-performance background task broker designed to bridge Python and Rust. It allows CPU-bound or blocking workloads to bypass the Python Global Interpreter Lock (GIL) with minimal memory overhead and zero CPU-sleep polling.
 
-## Pyroxide vs. Alternatives
-
-| Broker / Engine | GIL Bypass | IPC / Serialization Cost | Infrastructure | Best For |
-| :--- | :--- | :--- | :--- | :--- |
-| **Pyroxide** | **Yes** (WASM/dylib) | **None** (Shared memory) | **None** (Embedded) | In-process high-perf background pipelines |
-| **Multiprocessing** | Yes | High (Pickling) | Low (Spawns processes) | Parallel CPU-heavy pure Python tasks |
-| **Celery / RQ** | Yes | High (Network/Redis) | High (Redis/RabbitMQ) | Distributed cross-server work queues |
-| **Raw PyO3 Extension** | Yes | Medium (C-API boundary) | Medium (Rebuild required) | Fixed native bindings (static packages) |
-
-For a detailed analysis, check out the [Library Comparison Guide](https://emivvvvv.github.io/pyroxide/comparison.html).
-
----
-
 ## Why Pyroxide?
 
 *   🚀 **Bypass the GIL (GIL-Free)**: Execute CPU-intensive compiled tasks on background OS threads without holding the Python GIL.
@@ -53,6 +40,19 @@ For a detailed analysis, check out the [Library Comparison Guide](https://emivvv
 *   📦 **Zero Infrastructure**: Runs completely in-process. No Redis, RabbitMQ, or Celery worker daemons to configure or maintain.
 *   💾 **Zero-Copy Serialization**: Pass large byte arrays, memoryviews, or columnar buffers across the C-ABI boundary without copy or `pickle` overhead.
 *   🛠️ **On-the-Fly Native Compilers**: Write code as Python strings and compile them to dynamic libraries on-the-fly (**Rust**, **C**, and **Zig** supported!).
+
+---
+
+## Pyroxide vs. Alternatives
+
+| Feature / Metric | Pyroxide | Threading (std) | Multiprocessing | Celery / RQ |
+| :--- | :---: | :---: | :---: | :---: |
+| **GIL Bypass** | **✅ Yes** (WASM/dylib) | ❌ No | ✅ Yes | ✅ Yes |
+| **IPC / Serialization** | **✅ None** (Shared Memory) | ✅ None | ❌ High (Pickling) | ❌ High (Network/Redis) |
+| **Infrastructure** | **✅ None** (Embedded) | ✅ None | ⚠️ Low (Spawns processes) | ❌ High (Redis/RabbitMQ) |
+| **Best For** | **🔥 High-perf in-process pipelines** | I/O-bound Python | CPU-heavy Python | Distributed tasks |
+
+For a detailed analysis, check out the [Library Comparison Guide](https://emivvvvv.github.io/pyroxide/comparison.html).
 
 ---
 
@@ -111,32 +111,33 @@ print(rot13_cipher("hello").result()) # "uryyb"
 ### 3. Dynamic Shared Libraries (On-the-Fly Compilation)
 Compile and load native code strings on-the-fly. **Rust** (`compile_dylib`), **C** (`compile_c`), and **Zig** (`compile_zig`) are supported:
 ```python
-from pyroxide import compile_c, dylib_task
+from pyroxide import compile_dylib, dylib_task
 
-C_SRC = """
-#include <stdint.h>
-#include <stdlib.h>
-
-uint8_t* pyroxide_plugin_run(const uint8_t* ptr, size_t len, size_t* out_len) {
-    uint8_t* res = (uint8_t*)malloc(len);
-    for (size_t i = 0; i < len; i++) {
-        res[i] = (ptr[i] >= 'a' && ptr[i] <= 'z') ? (ptr[i] - 32) : ptr[i];
-    }
-    *out_len = len;
-    return res;
+RUST_SRC = """
+#[no_mangle]
+pub unsafe extern "C" fn pyroxide_plugin_run(ptr: *const u8, len: usize, out_len: *mut usize) -> *mut u8 {
+    let input = std::slice::from_raw_parts(ptr, len);
+    let s = std::str::from_utf8(input).unwrap_or("");
+    let result = s.to_uppercase().into_bytes();
+    *out_len = result.len();
+    let boxed = result.into_boxed_slice();
+    Box::into_raw(boxed) as *mut u8
 }
 
-void pyroxide_plugin_free(uint8_t* ptr, size_t len) { free(ptr); }
+#[no_mangle]
+pub unsafe extern "C" fn pyroxide_plugin_free(ptr: *mut u8, len: usize) {
+    let _ = Box::from_raw(std::slice::from_raw_parts_mut(ptr, len));
+}
 """
 
-# Compile, register and load the C library on-the-fly!
-compile_c("c_upper", C_SRC)
+# Compile, register and load the Rust library on-the-fly!
+compile_dylib("rust_upper", RUST_SRC)
 
-@dylib_task("c_upper")
-def to_upper_c(payload: str) -> str:
+@dylib_task("rust_upper")
+def to_upper_rust(payload: str) -> str:
     pass
 
-print(to_upper_c("hello from c").result())  # "HELLO FROM C"
+print(to_upper_rust("hello from rust").result())  # "HELLO FROM RUST"
 ```
 
 ---
@@ -155,16 +156,23 @@ Detailed documentation, guides, and implementation examples are available in our
 
 ## Performance At-a-Glance
 
-For **200 concurrent tasks** (gathered on CPython 3.11, Apple M1 Pro):
+We benchmarked Pyroxide against CPython's standard concurrency pools using identical compute payloads (recursive Fibonacci 20 workload) on **Apple M1 Pro (8 cores, 16GB RAM)**:
 
-| Submission Mode | Tasks | Total Time | Avg Latency | Highlights |
-|---|---|---|---|---|
-| **Single Task** | 200 | 0.0051s | 25 µs (0.02ms) | Microsecond-level OS dispatch |
-| **Batch Submission** | 200 | 0.0038s | 19 µs (0.01ms) | **Lock-free batch optimization** |
-| **Asyncio Parallel** | 200 | 0.0120s | 60 µs (0.06ms) | Event-loop non-blocking await |
+| Metric (500 Tasks) | Pyroxide `@dylib_task` | Pyroxide `@task` | Threading (std) | Multiprocessing |
+| :--- | :---: | :---: | :---: | :---: |
+| **Execution Time** | **`0.0200 s`** | `0.3878 s` | `0.3742 s` | `2.0786 s` |
+| **GIL Bypass** | **✅ Yes (GIL-Free)** | ❌ No | ❌ No | ✅ Yes |
+| **IPC / Serialization** | **✅ None (Shared Memory)** | ✅ None | ✅ None | ❌ High (`pickle` cost) |
+| **Relative Speedup** | **🔥 100x faster** (18x faster than threads) | 5x faster | 5x faster | Baseline (1x) |
 
-To run the performance suite locally:
+*   **Bypassing the Multiprocessing Bottleneck**: While Python's `ProcessPoolExecutor` takes **over 2 seconds** due to slow process spawning and heavy `pickle` IPC serialization, Pyroxide's `@dylib_task` runs native compiled plugins in just **20 milliseconds**—offering a **100x speedup** with zero-copy shared memory.
+
+To run the comparative and basic benchmark suites locally:
 ```bash
+# 1. Run detailed comparative benchmarks against CPython concurrency pools
+python examples/benchmark_vs_alternatives.py
+
+# 2. Run basic scheduling latency and asyncio benchmarks
 python examples/benchmark.py
 ```
 
