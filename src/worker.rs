@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use crate::broker::{Broker, TaskStatus};
+use std::sync::Arc;
 
 fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>) {
     while let Ok(task_id) = receiver.recv() {
@@ -24,10 +24,11 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
     }
 }
 
-pub(crate) fn spawn_workers(count: usize,
-                     broker: Arc<Broker>,
-                     receiver: crossbeam_channel::Receiver<usize>)
-    -> Vec<std::thread::JoinHandle<()>> {
+pub(crate) fn spawn_workers(
+    count: usize,
+    broker: Arc<Broker>,
+    receiver: crossbeam_channel::Receiver<usize>,
+) -> Vec<std::thread::JoinHandle<()>> {
     (0..count)
         .map(|_| {
             let broker = broker.clone();
