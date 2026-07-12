@@ -51,43 +51,39 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                     });
 
                     // 2. Process payload without GIL (outside Python::attach)
-                    let processed = extracted.and_then(|payload| {
-                        match payload {
-                            NativePayload::Str(s) => {
-                                if s == "TRIGGER_PANIC" {
-                                    panic!("Simulated Rust worker panic!");
-                                }
-                                if s.starts_with("SLEEP:") {
-                                    if let Ok(ms) = s["SLEEP:".len()..].parse::<u64>() {
-                                        std::thread::sleep(std::time::Duration::from_millis(ms));
-                                    }
-                                } else {
-                                    std::thread::sleep(std::time::Duration::from_millis(1));
-                                }
-                                let upper = s.to_uppercase();
-                                Ok(NativePayload::Str(upper))
+                    let processed = extracted.map(|payload| match payload {
+                        NativePayload::Str(s) => {
+                            if s == "TRIGGER_PANIC" {
+                                panic!("Simulated Rust worker panic!");
                             }
-                            NativePayload::Bytes(mut b) => {
+                            if let Some(stripped) = s.strip_prefix("SLEEP:") {
+                                if let Ok(ms) = stripped.parse::<u64>() {
+                                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                                }
+                            } else {
                                 std::thread::sleep(std::time::Duration::from_millis(1));
-                                b.make_ascii_uppercase();
-                                Ok(NativePayload::Bytes(b))
                             }
+                            let upper = s.to_uppercase();
+                            NativePayload::Str(upper)
+                        }
+                        NativePayload::Bytes(mut b) => {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                            b.make_ascii_uppercase();
+                            NativePayload::Bytes(b)
                         }
                     });
 
                     // 3. Re-acquire GIL to construct the Python return value
-                    Python::attach(|py| {
-                        match processed {
-                            Ok(NativePayload::Str(s)) => {
-                                let py_str = pyo3::types::PyString::new(py, &s);
-                                Ok(py_str.into_any().unbind())
-                            }
-                            Ok(NativePayload::Bytes(b)) => {
-                                let py_bytes = pyo3::types::PyBytes::new(py, &b);
-                                Ok(py_bytes.into_any().unbind())
-                            }
-                            Err(err) => Err(err),
+                    Python::attach(|py| match processed {
+                        Ok(NativePayload::Str(s)) => {
+                            let py_str = pyo3::types::PyString::new(py, &s);
+                            Ok(py_str.into_any().unbind())
                         }
+                        Ok(NativePayload::Bytes(b)) => {
+                            let py_bytes = pyo3::types::PyBytes::new(py, &b);
+                            Ok(py_bytes.into_any().unbind())
+                        }
+                        Err(err) => Err(err),
                     })
                 }
             }));
