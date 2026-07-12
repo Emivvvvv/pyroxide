@@ -126,17 +126,14 @@ To evaluate Pyroxide against Python's native concurrency libraries (`concurrent.
 
 The results gathered on **Apple M1 Pro (8 cores, 16GB RAM)**:
 
-#### Task Execution Times (100 Tasks)
-- **`ProcessPoolExecutor` (8 Workers)**: `1.6323 s` (Spawning processes and pickling/IPC serialization overhead)
-- **`ThreadPoolExecutor` (8 Workers)**: `0.0943 s` (GIL-locked thread execution)
-- **Pyroxide `@task` (8 Workers)**: `0.0890 s` (Lightweight Python worker threads)
-- **Pyroxide `@dylib_task` (C-ABI)**: **`0.0043 s`** (GIL-Free native compilation and execution)
-
-#### Task Execution Times (500 Tasks)
-- **`ProcessPoolExecutor` (8 Workers)**: `1.5144 s`
-- **`ThreadPoolExecutor` (8 Workers)**: `0.3712 s`
-- **Pyroxide `@task` (8 Workers)**: `0.3865 s`
-- **Pyroxide `@dylib_task` (C-ABI)**: **`0.0231 s`** (GIL-Free native execution)
+#### Task Execution Times
+| Execution Strategy | 100 Tasks | 500 Tasks |
+| :--- | :--- | :--- |
+| **ThreadPoolExecutor** (Python) | 0.0773s | 0.3818s |
+| **ProcessPoolExecutor** (Python) | 1.5217s | 2.9161s |
+| **Pyroxide `@task`** (Threads) | 0.0910s | 0.3979s |
+| **Pyroxide `@task(isolated=True)`** | **0.0701s** | **0.0769s** |
+| **Pyroxide `@dylib_task` (C)** | **0.0046s** | **0.0229s** |
 
 **Analysis**:
 - For 500 tasks, Pyroxide `@dylib_task` is **16x faster** than Python's standard `ThreadPoolExecutor` and **65x faster** than `ProcessPoolExecutor` (multiprocessing).

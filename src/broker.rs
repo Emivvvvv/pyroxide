@@ -42,6 +42,7 @@ pub(crate) struct Task {
     pub(crate) wasm_module: Option<String>,
     pub(crate) wasm_func: Option<String>,
     pub(crate) dylib: Option<String>,
+    pub(crate) isolated: bool,
 }
 
 pub(crate) struct Broker {
@@ -92,7 +93,11 @@ fn get_engine() -> &'static Engine {
     })
 }
 
-pub(crate) fn submit_task(callable: Option<Py<PyAny>>, payload: Py<PyAny>) -> usize {
+pub(crate) fn submit_task(
+    callable: Option<Py<PyAny>>,
+    payload: Py<PyAny>,
+    isolated: bool,
+) -> usize {
     let engine = get_engine();
 
     let task = Arc::new(Task {
@@ -106,6 +111,7 @@ pub(crate) fn submit_task(callable: Option<Py<PyAny>>, payload: Py<PyAny>) -> us
         wasm_module: None,
         wasm_func: None,
         dylib: None,
+        isolated,
     });
 
     let task_id = {
@@ -121,6 +127,7 @@ pub(crate) fn submit_task(callable: Option<Py<PyAny>>, payload: Py<PyAny>) -> us
 pub(crate) fn submit_batch(
     callables: Vec<Option<Py<PyAny>>>,
     payloads: Vec<Py<PyAny>>,
+    isolated: bool,
 ) -> Vec<usize> {
     let engine = get_engine();
     let mut ids = Vec::with_capacity(payloads.len());
@@ -139,6 +146,7 @@ pub(crate) fn submit_batch(
                 wasm_module: None,
                 wasm_func: None,
                 dylib: None,
+                isolated,
             });
             let task_id = slab.insert(task);
             ids.push(task_id);
@@ -156,6 +164,7 @@ pub(crate) fn submit_wasm_task(
     module_name: String,
     func_name: String,
     payload: Py<PyAny>,
+    isolated: bool,
 ) -> usize {
     let engine = get_engine();
 
@@ -170,6 +179,7 @@ pub(crate) fn submit_wasm_task(
         wasm_module: Some(module_name),
         wasm_func: Some(func_name),
         dylib: None,
+        isolated,
     });
 
     let task_id = {
@@ -182,7 +192,7 @@ pub(crate) fn submit_wasm_task(
     task_id
 }
 
-pub(crate) fn submit_dylib_task(plugin_name: String, payload: Py<PyAny>) -> usize {
+pub(crate) fn submit_dylib_task(plugin_name: String, payload: Py<PyAny>, isolated: bool) -> usize {
     let engine = get_engine();
 
     let task = Arc::new(Task {
@@ -196,6 +206,7 @@ pub(crate) fn submit_dylib_task(plugin_name: String, payload: Py<PyAny>) -> usiz
         wasm_module: None,
         wasm_func: None,
         dylib: Some(plugin_name),
+        isolated,
     });
 
     let task_id = {

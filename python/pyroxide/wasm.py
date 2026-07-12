@@ -9,14 +9,14 @@ def register_wasm(module_name: str, wasm_bytes: bytes):
     register_wasm_module(module_name, wasm_bytes)
 
 
-def wasm_task(module_name: str, func_name: str = "run"):
+def wasm_task(module_name: str, func_name: str = "run", *, isolated: bool = False):
     """
     Decorator to submit string or byte payloads to be processed by a registered WASM module.
     """
 
     def decorator(func):
         def wrapper(payload) -> TaskHandle:
-            task_id = submit_wasm_task(module_name, func_name, payload)
+            task_id = submit_wasm_task(module_name, func_name, payload, isolated=isolated)
             return TaskHandle(task_id)
 
         return wrapper

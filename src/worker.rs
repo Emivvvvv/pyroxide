@@ -1,9 +1,9 @@
-use crate::broker::{Broker, TaskStatus};
+use crate::broker::{Broker, Task, TaskStatus};
 use pyo3::prelude::*;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-enum NativePayload {
+pub(crate) enum NativePayload {
     Str(String),
     Bytes(Vec<u8>),
 }
@@ -33,6 +33,15 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                 Err(_) => {
                     continue;
                 }
+            }
+
+            // Route isolated tasks to the process pool
+            if task.isolated {
+                let task_clone = Arc::clone(&task);
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    execute_isolated_task(&task_clone);
+                }));
+                continue;
             }
 
             // 3. Execute the task (Python Callable or Native Execution) with panic safety
@@ -326,4 +335,207 @@ pub(crate) fn spawn_workers(
             std::thread::spawn(move || worker_loop(broker, receiver))
         })
         .collect()
+}
+
+use pyo3::types::PyBytes;
+
+fn execute_isolated_task(task: &Arc<Task>) {
+    let result = execute_isolated_task_inner(task);
+
+    // Update result and status (preserving Cancelled status)
+    let mut current = task.status.load(Ordering::Acquire);
+    loop {
+        if current == TaskStatus::Cancelled as u8 {
+            break;
+        }
+        let final_status = match &result {
+            Ok(_) => TaskStatus::Completed as u8,
+            Err(_) => TaskStatus::Failed as u8,
+        };
+        match task.status.compare_exchange_weak(
+            current,
+            final_status,
+            Ordering::Release,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => break,
+            Err(actual) => current = actual,
+        }
+    }
+
+    {
+        let mut res_guard = task.result.lock().unwrap();
+        *res_guard = Some(result);
+    }
+
+    // Signal Condvar
+    {
+        let mut completed = task.completed_mutex.lock().unwrap();
+        *completed = true;
+    }
+    task.completed_cvar.notify_all();
+}
+
+fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
+    use std::io::{Read, Write};
+
+    // 1. Prepare serialization payload based on task type
+    let (task_type, metadata, payload_bytes) =
+        Python::attach(|py| -> Result<(u8, String, Vec<u8>), String> {
+            if let Some(ref cb) = task.callable {
+                // Python callable
+                let pickle = PyModule::import(py, "pickle").map_err(|e| e.to_string())?;
+                let pickled_func = pickle
+                    .call_method1("dumps", (cb,))
+                    .map_err(|e| e.to_string())?;
+                let pickled_arg = pickle
+                    .call_method1("dumps", (task.payload.clone_ref(py),))
+                    .map_err(|e| e.to_string())?;
+                let tuple = pyo3::types::PyTuple::new(py, &[pickled_func, pickled_arg])
+                    .map_err(|e| e.to_string())?;
+                let pickled_tuple = pickle
+                    .call_method1("dumps", (tuple,))
+                    .map_err(|e| e.to_string())?;
+                let bytes: Vec<u8> = pickled_tuple
+                    .extract()
+                    .map_err(|e: pyo3::PyErr| e.to_string())?;
+
+                Ok((0u8, "".to_string(), bytes))
+            } else if let Some(ref module_name) = task.wasm_module {
+                // WASM
+                let func_name = task.wasm_func.clone().unwrap_or_else(|| "run".to_string());
+                let metadata = format!("{module_name}:{func_name}");
+                let bound_payload = task.payload.bind(py);
+                let bytes = if let Ok(s) = bound_payload.extract::<String>() {
+                    s.into_bytes()
+                } else if let Ok(b) = bound_payload.extract::<Vec<u8>>() {
+                    b
+                } else {
+                    return Err("Unsupported payload type for WASM".to_string());
+                };
+                Ok((1u8, metadata, bytes))
+            } else if let Some(ref plugin_name) = task.dylib {
+                // Dylib
+                let metadata = plugin_name.clone();
+                let bound_payload = task.payload.bind(py);
+                let bytes = if let Ok(s) = bound_payload.extract::<String>() {
+                    s.into_bytes()
+                } else if let Ok(b) = bound_payload.extract::<Vec<u8>>() {
+                    b
+                } else {
+                    return Err("Unsupported payload type for dynamic library".to_string());
+                };
+                Ok((2u8, metadata, bytes))
+            } else {
+                Err("No execution task type specified".to_string())
+            }
+        })?;
+
+    // 2. Acquire a process pool worker
+    let pool = crate::process_pool::get_process_pool();
+    let mut worker = pool
+        .acquire_worker()
+        .map_err(|e| format!("Failed to acquire worker process: {e}"))?;
+
+    // Lazy sync registries to worker if missing
+    if let Some(ref wasm_module) = task.wasm_module {
+        if !worker.registered_wasms.contains(wasm_module) {
+            let wasm_bytes = crate::get_wasm_bytes()
+                .get(wasm_module)
+                .cloned()
+                .ok_or_else(|| format!("WASM module '{wasm_module}' not found in registry"))?;
+
+            crate::process_pool::send_registration_task(
+                &mut worker.stream,
+                10,
+                wasm_module,
+                &wasm_bytes,
+            )
+            .map_err(|e| format!("Failed to sync WASM module {wasm_module}: {e}"))?;
+            worker.registered_wasms.insert(wasm_module.clone());
+        }
+    } else if let Some(ref plugin_name) = task.dylib
+        && !worker.registered_dylibs.contains(plugin_name)
+    {
+        let library_path = crate::get_dylib_paths()
+            .get(plugin_name)
+            .cloned()
+            .ok_or_else(|| format!("Dylib '{plugin_name}' not found in registry"))?;
+
+        crate::process_pool::send_registration_task(
+            &mut worker.stream,
+            11,
+            plugin_name,
+            library_path.as_bytes(),
+        )
+        .map_err(|e| format!("Failed to sync dylib {plugin_name}: {e}"))?;
+        worker.registered_dylibs.insert(plugin_name.clone());
+    }
+
+    // 3. Write request frame: [Type: 1 byte] [Extra Len: 4 bytes] [Payload Len: 8 bytes] [Metadata] [Payload]
+    let mut header = vec![task_type];
+    header.extend_from_slice(&(metadata.len() as u32).to_be_bytes());
+    header.extend_from_slice(&(payload_bytes.len() as u64).to_be_bytes());
+
+    let write_result = (|| -> std::io::Result<()> {
+        worker.stream.write_all(&header)?;
+        worker.stream.write_all(metadata.as_bytes())?;
+        worker.stream.write_all(&payload_bytes)?;
+        worker.stream.flush()?;
+        Ok(())
+    })();
+
+    if let Err(e) = write_result {
+        return Err(format!("IPC write error: {e}"));
+    }
+
+    // 4. Read response frame: [Success: 1 byte] [Data Len: 8 bytes] [Data Bytes]
+    let mut resp_header = [0u8; 9];
+    let read_result = worker.stream.read_exact(&mut resp_header);
+    if let Err(e) = read_result {
+        // Child crashed or socket closed
+        return Err(format!("Worker process crashed or closed connection: {e}"));
+    }
+
+    let success = resp_header[0] == 1;
+    let data_len = u64::from_be_bytes(resp_header[1..9].try_into().unwrap()) as usize;
+
+    let mut data_bytes = vec![0u8; data_len];
+    if let Err(e) = worker.stream.read_exact(&mut data_bytes) {
+        return Err(format!("IPC read error: {e}"));
+    }
+
+    // Update worker task count
+    worker.tasks_run += 1;
+    pool.release_worker(worker);
+
+    // 5. Unpack response
+    if success {
+        Python::attach(|py| -> Result<Py<PyAny>, String> {
+            if task.callable.is_some() {
+                // Deserialise pickled python result
+                let pickle = PyModule::import(py, "pickle").map_err(|e| e.to_string())?;
+                let val = pickle
+                    .call_method1("loads", (PyBytes::new(py, &data_bytes),))
+                    .map_err(|e| e.to_string())?;
+                Ok(val.unbind())
+            } else {
+                // Return string or bytes based on task payload type
+                let is_str = task.payload.bind(py).extract::<String>().is_ok();
+                if is_str {
+                    let s = String::from_utf8(data_bytes)
+                        .map_err(|e| format!("Invalid UTF-8 output from worker: {e}"))?;
+                    let py_str = pyo3::types::PyString::new(py, &s);
+                    Ok(py_str.into_any().unbind())
+                } else {
+                    let py_bytes = pyo3::types::PyBytes::new(py, &data_bytes);
+                    Ok(py_bytes.into_any().unbind())
+                }
+            }
+        })
+    } else {
+        let err_msg =
+            String::from_utf8(data_bytes).unwrap_or_else(|_| "Unknown worker error".to_string());
+        Err(err_msg)
+    }
 }

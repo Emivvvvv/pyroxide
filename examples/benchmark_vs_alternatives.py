@@ -39,22 +39,13 @@ def pyroxide_dylib_task(payload: bytes) -> bytes:
     pass
 
 
-# Python-equivalent work function
-def fib_py(n):
-    if n <= 1:
-        return n
-    return fib_py(n - 1) + fib_py(n - 2)
-
-
-def python_compute_payload(payload):
-    # Perform Fibonacci 20
-    fib_py(20)
-    return payload
-
+from bench_helper import python_compute_payload
 
 @task
 def pyroxide_python_task(payload):
     return python_compute_payload(payload)
+
+
 
 
 def run_benchmark(num_tasks):
@@ -98,19 +89,35 @@ def run_benchmark(num_tasks):
     print(f"Pyroxide @task (8 workers)     : {t_pyroxide_py:.4f}s")
 
     # ==========================================
-    # 4. Pyroxide Dylib Task (@dylib_task)
+    # 4. Pyroxide Python Callable Task (@task isolated=True)
+    # ==========================================
+    from pyroxide._pyroxide import submit_batch
+    start = time.time()
+    task_ids = submit_batch(python_compute_payload, payloads, isolated=True)
+    from pyroxide.types import TaskHandle
+    handles = [TaskHandle(tid) for tid in task_ids]
+    [h.result() for h in handles]
+    t_pyroxide_py_isolated = time.time() - start
+    print(f"Pyroxide @task isolated (8 process): {t_pyroxide_py_isolated:.4f}s")
+
+    # ==========================================
+    # 5. Pyroxide Dylib Task (@dylib_task)
     # ==========================================
     start = time.time()
     handles = pyroxide_dylib_task.batch(payloads)
     [h.result() for h in handles]
     t_pyroxide_dylib = time.time() - start
-    print(f"Pyroxide @dylib_task (C-ABI)   : {t_pyroxide_dylib:.4f}s")
+    print(f"Pyroxide @dylib_task (C-ABI)       : {t_pyroxide_dylib:.4f}s")
+
 
 
 if __name__ == "__main__":
     # Warmup
     python_compute_payload(b"warmup")
     pyroxide_python_task(b"warmup").wait()
+    from pyroxide._pyroxide import submit_task
+    from pyroxide.types import TaskHandle
+    TaskHandle(submit_task(python_compute_payload, b"warmup", isolated=True)).wait()
     pyroxide_dylib_task(b"warmup").wait()
 
     run_benchmark(100)

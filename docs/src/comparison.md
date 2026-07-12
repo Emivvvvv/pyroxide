@@ -10,18 +10,33 @@ Python's built-in `multiprocessing` module (and `ProcessPoolExecutor`) runs task
 
 ### Comparison
 *   **Memory Overhead**: `multiprocessing` forks or spawns brand new OS processes, which duplicate Python interpreter memory and increase startup latency. **Pyroxide** runs lightweight background OS threads in the same process with negligible overhead.
-*   **IPC (Inter-Process Communication)**: Data sent to a subprocess must be serialized (using `pickle`) and sent over OS pipes/sockets. As shown in **[Benchmark Scenario E](benchmarks.md#scenario-e-pyroxide-vs-python-threadpool--multiprocessing)**, running 100 tasks under `ProcessPoolExecutor` takes **1.6483 seconds** due to serialization overhead on an Apple M1 Pro. In contrast, Pyroxide `@dylib_task` completes the identical workload in **0.0040 seconds (over 380x faster)** by utilizing direct, zero-copy shared memory.
-*   **Task Management**: Subprocesses are slow to cancel and cannot gracefully catch native crashes without process death. **Pyroxide** utilizes atomic state flags and OS thread-safe signaling for cancellation.
+*   **IPC (Inter-Process Communication)**: Data sent to a subprocess must be serialized (using `pickle`) and sent over OS pipes/sockets. 
+
+| Library / Strategy | Latency (100 Tasks) | Latency (500 Tasks) |
+| :--- | :--- | :--- |
+| **ThreadPoolExecutor** | ~0.08s | ~0.38s |
+| **ProcessPoolExecutor** | ~1.52s | ~2.91s |
+| **Pyroxide `@task` (Threads)** | ~0.09s | ~0.39s |
+| **Pyroxide `@task(isolated=True)`** | ~0.07s | ~0.07s |
+| **Pyroxide `@dylib_task` (C)** | ~0.005s | ~0.02s |
+
+*Hardware: Apple M1 Pro (8 Cores)*
+
+### Analysis of Results
+1.  **ProcessPoolExecutor is Slow:** Spawning processes and using standard `multiprocessing` IPC is incredibly heavy, taking almost 3 seconds for just 500 tasks.
+2.  **Threads hit the GIL:** Both `ThreadPoolExecutor` and Pyroxide's default `@task` hit the GIL ceiling around 0.38s.
+3.  **Pyroxide `isolated=True` Dominates:** Using pre-warmed background processes with Unix Domain Sockets destroys the competition, bypassing the GIL completely for pure Python code while eliminating startup overhead.
+4.  **Native Code is King:** The `@dylib_task` runs purely outside the Python interpreter, finishing in fractions of a second.
 
 ### Decision Matrix
 > [!TIP]
 > **Use Python Multiprocessing when:**
-> - You are executing pure Python code that is CPU-heavy.
-> - You do not want to write or compile any native compiled code (Rust, C, Zig).
+> - You want to stick strictly to the Python standard library with zero external dependencies.
 > - You have simple payloads that serialize (`pickle`) quickly.
 >
 > **Use Pyroxide when:**
-> - You have large byte/string payloads and need zero-copy memory performance.
+> - You want to run CPU-heavy pure Python code GIL-free but want to avoid standard `multiprocessing`'s heavy startup overhead (using `isolated=True` with its warm worker pool).
+> - You have large byte/string payloads and need zero-copy memory performance (using standard `isolated=False` threads).
 > - You want to offload I/O-bound or blocking Python callbacks using a low-overhead, in-process thread pool.
 > - You want to run Rust, C, Zig, or WebAssembly sandbox plugins GIL-free with microsecond-level dispatch latencies.
 

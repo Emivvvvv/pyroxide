@@ -1,7 +1,15 @@
 [package]
 name = "pyroxide"
-version = "0.3.3"
+version = "0.4.0"
+authors = ["Emirhan TALA <tala.emirhan@gmail.com>"]
+description = "A lock-free, high-concurrency background task broker for Python, powered by Rust."
 edition = "2024"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/emivvvvv/pyroxide"
+documentation = "https://emivvvvv.github.io/pyroxide/"
+keywords = ["rust", "python", "pyo3", "concurrency", "lock-free", "task-broker", "background-tasks", "gil-free", "multithreading", "performance"]
+
 
 [lib]
 # "cdylib" produces the shared library required by Python C-extensions
@@ -16,3 +24,4 @@ slab = "0.4.12"
 strum = { version = "0.28", features = ["derive"] }
 wasmtime = "21.0"
 libloading = "0.8"
+rand = "0.8.5"

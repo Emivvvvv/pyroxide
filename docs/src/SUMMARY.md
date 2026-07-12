@@ -5,6 +5,7 @@
 - [Getting Started](getting_started.md)
 - [Concurrency & Asyncio](concurrency_async.md)
 - [Batch Submission](batch_submission.md)
+- [Isolated Worker Processes](isolated_workers.md)
 - [Task Cancellation](cancellation.md)
 - [Traceback Preservation](tracebacks.md)
 - [Dynamic Shared Libraries (dylib)](native_plugins.md)

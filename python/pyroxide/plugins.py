@@ -192,7 +192,7 @@ def compile_zig(name: str, source_code: str) -> str:
         raise RuntimeError(f"Failed to compile Zig library '{name}': {e}")
 
 
-def dylib_task(dylib_name: str):
+def dylib_task(dylib_name: str, *, isolated: bool = False):
     """
     Decorator that routes task payloads to a registered dynamic shared library (dylib)
     for GIL-free execution on the background Rust worker pool.
@@ -201,18 +201,19 @@ def dylib_task(dylib_name: str):
 
     Args:
         dylib_name: The name of the dylib as registered with ``compile_dylib()``.
+        isolated: Set to True to run in an isolated worker process for crash isolation.
 
     Example:
-        >>> @dylib_task("my_lib")
+        >>> @dylib_task("my_lib", isolated=True)
         ... def process(payload: str) -> str:
-        ...     pass  # Execution is handled by the compiled dylib
+        ...     pass  # Execution is handled by the compiled dylib in a separate process
         >>> handle = process("hello")
         >>> print(handle.result())
     """
 
     def decorator(func: Callable[[Any], Any]) -> Callable[[Any], TaskHandle]:
         def wrapper(payload: Any) -> TaskHandle:
-            task_id = submit_dylib_task(dylib_name, payload)
+            task_id = submit_dylib_task(dylib_name, payload, isolated=isolated)
             return TaskHandle(task_id)
 
         def batch(payloads: list) -> list[TaskHandle]:

@@ -40,6 +40,7 @@ Pyroxide (`pyro3`) is a lightweight, ultra-high-performance background task brok
 *   📦 **Zero Infrastructure**: Runs completely in-process. No Redis, RabbitMQ, or Celery worker daemons to configure or maintain.
 *   💾 **Zero-Copy Serialization**: Pass large byte arrays, memoryviews, or columnar buffers across the C-ABI boundary without copy or `pickle` overhead.
 *   🛠️ **On-the-Fly Native Compilers**: Write code as Python strings and compile them to dynamic libraries on-the-fly (**Rust**, **C**, and **Zig** supported!).
+*   🛡️ **Isolated Worker Processes**: Opt-in `isolated=True` to run tasks in separate processes via ultra-fast Unix Domain Sockets for 100% crash safety and pure Python GIL bypass.
 
 ---
 
@@ -88,6 +89,12 @@ def calculate_square(x: int) -> int:
 handle = calculate_square(12)
 result = handle.result() # Blocks natively (0% CPU) until complete
 print(result) # 144
+
+# Pure Python tasks can fully bypass the GIL with `isolated=True`
+@task(isolated=True)
+def heavy_computation(x: int) -> int:
+    return sum(i * i for i in range(x))
+
 ```
 
 ### 2. Sandboxed WebAssembly (GIL-Free)
@@ -147,6 +154,7 @@ print(to_upper_rust("hello from rust").result())  # "HELLO FROM RUST"
 Detailed documentation, guides, and implementation examples are available in our [Documentation Book](https://emivvvvv.github.io/pyroxide/):
 
 *   **Asynchronous Event Loops**: Non-blockingly await tasks using `await handle.result_async()` in FastAPI/asyncio. [Read Chapter](https://emivvvvv.github.io/pyroxide/concurrency_async.html).
+*   **Isolated Worker Processes**: Sandbox tasks in separate OS processes for crash safety and GIL bypass. [Read Chapter](https://emivvvvv.github.io/pyroxide/isolated_workers.html).
 *   **Batch Submissions**: Submit multiple tasks under a single lock acquisition to avoid thread contention. [Read Chapter](https://emivvvvv.github.io/pyroxide/batch_submission.html).
 *   **Task Cancellation**: Gracefully abort long-running background tasks mid-flight. [Read Chapter](https://emivvvvv.github.io/pyroxide/cancellation.html).
 *   **Traceback Preservation**: Capture stack traces on background worker threads and propagate them to the main thread. [Read Chapter](https://emivvvvv.github.io/pyroxide/tracebacks.html).
