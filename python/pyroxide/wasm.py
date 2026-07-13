@@ -1,3 +1,4 @@
+import functools
 from ._pyroxide import register_wasm_module, submit_wasm_task
 from .types import TaskHandle
 
@@ -15,6 +16,7 @@ def wasm_task(module_name: str, func_name: str = "run", *, isolated: bool = Fals
     """
 
     def decorator(func):
+        @functools.wraps(func)
         def wrapper(payload) -> TaskHandle:
             task_id = submit_wasm_task(module_name, func_name, payload, isolated=isolated)
             return TaskHandle(task_id)

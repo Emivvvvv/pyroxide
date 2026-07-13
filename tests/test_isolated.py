@@ -1,5 +1,4 @@
 import pytest
-import os
 import concurrent.futures
 from pyroxide import register_wasm, wasm_task, compile_c, dylib_task
 from tests.isolated_helper import square_isolated, crash_task, echo_large_payload, get_worker_pid

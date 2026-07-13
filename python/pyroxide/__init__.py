@@ -12,17 +12,16 @@ Exports:
     - compile_dylib / dylib_task: Dynamic shared library compilation and execution.
 """
 
-from ._pyroxide import submit_task, get_status, register_dylib
+from ._pyroxide import submit_task, get_status, register_dylib  # noqa: F401
 from .decorators import task
 from .types import TaskHandle
 from .wasm import register_wasm, wasm_task
 from .plugins import compile_dylib, dylib_task, compile_c, compile_zig
 from .workflows import group, TaskGroup
 
+__version__ = "0.5.1"
+
 __all__ = [
-    "submit_task",
-    "get_status",
-    "register_dylib",
     "task",
     "TaskHandle",
     "register_wasm",

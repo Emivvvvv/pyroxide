@@ -60,15 +60,9 @@ impl Broker {
 struct Engine {
     broker: Arc<Broker>,
     sender: crossbeam_channel::Sender<usize>,
-    workers: Vec<JoinHandle<()>>,
-}
-
-impl Drop for Engine {
-    fn drop(&mut self) {
-        for worker in self.workers.drain(..) {
-            worker.join().expect("Worker thread panicked");
-        }
-    }
+    /// Kept alive for the process lifetime; never explicitly joined since
+    /// Engine lives behind OnceLock. OS cleans up on exit.
+    _workers: Vec<JoinHandle<()>>,
 }
 
 static ENGINE: OnceLock<Engine> = OnceLock::new();
@@ -78,18 +72,29 @@ fn get_engine() -> &'static Engine {
         let (sender, receiver) = crossbeam_channel::bounded::<usize>(10000);
         let broker = Arc::new(Broker::new());
 
-        let num_workers = std::env::var("PYROXIDE_WORKERS")
-            .ok()
-            .and_then(|val| val.parse::<usize>().ok())
-            .unwrap_or_else(|| thread::available_parallelism().unwrap().get());
+        let num_workers = get_worker_count();
 
-        let workers = spawn_workers(num_workers, broker.clone(), receiver);
+        let _workers = spawn_workers(num_workers, broker.clone(), receiver);
 
         Engine {
             broker,
             sender,
-            workers,
+            _workers,
         }
+    })
+}
+
+fn get_worker_count() -> usize {
+    static WORKER_COUNT: OnceLock<usize> = OnceLock::new();
+    *WORKER_COUNT.get_or_init(|| {
+        std::env::var("PYROXIDE_WORKERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| {
+                thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(4)
+            })
     })
 }
 
@@ -115,11 +120,15 @@ pub(crate) fn submit_task(
     });
 
     let task_id = {
-        let mut slab = engine.broker.tasks.write().expect("Lock poisoned");
+        let mut slab = engine
+            .broker
+            .tasks
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         slab.insert(task)
     };
 
-    engine.sender.send(task_id).expect("Failed to send task ID");
+    let _ = engine.sender.send(task_id);
 
     task_id
 }
@@ -133,7 +142,11 @@ pub(crate) fn submit_batch(
     let mut ids = Vec::with_capacity(payloads.len());
 
     {
-        let mut slab = engine.broker.tasks.write().expect("Lock poisoned");
+        let mut slab = engine
+            .broker
+            .tasks
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         for (callable, payload) in callables.into_iter().zip(payloads) {
             let task = Arc::new(Task {
                 status: AtomicU8::new(TaskStatus::Pending as u8),
@@ -151,10 +164,10 @@ pub(crate) fn submit_batch(
             let task_id = slab.insert(task);
             ids.push(task_id);
         }
-    } // Write lock dropped here
+    }
 
     for &task_id in &ids {
-        engine.sender.send(task_id).expect("Failed to send task ID");
+        let _ = engine.sender.send(task_id);
     }
 
     ids
@@ -183,11 +196,15 @@ pub(crate) fn submit_wasm_task(
     });
 
     let task_id = {
-        let mut slab = engine.broker.tasks.write().expect("Lock poisoned");
+        let mut slab = engine
+            .broker
+            .tasks
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         slab.insert(task)
     };
 
-    engine.sender.send(task_id).expect("Failed to send task ID");
+    let _ = engine.sender.send(task_id);
 
     task_id
 }
@@ -210,11 +227,15 @@ pub(crate) fn submit_dylib_task(plugin_name: String, payload: Py<PyAny>, isolate
     });
 
     let task_id = {
-        let mut slab = engine.broker.tasks.write().expect("Lock poisoned");
+        let mut slab = engine
+            .broker
+            .tasks
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         slab.insert(task)
     };
 
-    engine.sender.send(task_id).expect("Failed to send task ID");
+    let _ = engine.sender.send(task_id);
 
     task_id
 }
@@ -222,7 +243,11 @@ pub(crate) fn submit_dylib_task(plugin_name: String, payload: Py<PyAny>, isolate
 pub(crate) fn cancel_task(task_id: usize) -> bool {
     let engine = get_engine();
     let task = {
-        let slab = engine.broker.tasks.read().expect("Lock poisoned");
+        let slab = engine
+            .broker
+            .tasks
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
         slab.get(task_id).cloned()
     };
 
@@ -244,11 +269,14 @@ pub(crate) fn cancel_task(task_id: usize) -> bool {
                 Ok(_) => {
                     task.cancelled.store(true, Ordering::Release);
                     {
-                        let mut res_guard = task.result.lock().unwrap();
+                        let mut res_guard = task.result.lock().unwrap_or_else(|e| e.into_inner());
                         *res_guard = Some(Err("Task cancelled".to_string()));
                     }
                     {
-                        let mut completed = task.completed_mutex.lock().unwrap();
+                        let mut completed = task
+                            .completed_mutex
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
                         *completed = true;
                     }
                     task.completed_cvar.notify_all();
@@ -264,7 +292,11 @@ pub(crate) fn cancel_task(task_id: usize) -> bool {
 pub(crate) fn get_task_status(task_id: usize) -> Option<String> {
     let engine = get_engine();
 
-    let slab = engine.broker.tasks.read().expect("Lock poisoned");
+    let slab = engine
+        .broker
+        .tasks
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
     slab.get(task_id).map(|task| {
         let status_val = task.status.load(Ordering::Acquire);
         TaskStatus::to_status_string(status_val)
@@ -275,17 +307,27 @@ pub(crate) fn wait_task(task_id: usize, timeout_ms: Option<u64>) -> Option<Strin
     let engine = get_engine();
 
     let task = {
-        let slab = engine.broker.tasks.read().expect("Lock poisoned");
+        let slab = engine
+            .broker
+            .tasks
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
         slab.get(task_id).cloned()
     };
 
     if let Some(task) = task {
-        let mut completed = task.completed_mutex.lock().unwrap();
+        let mut completed = task
+            .completed_mutex
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         match timeout_ms {
             None => {
                 while !*completed {
-                    completed = task.completed_cvar.wait(completed).unwrap();
+                    completed = task
+                        .completed_cvar
+                        .wait(completed)
+                        .unwrap_or_else(|e| e.into_inner());
                 }
             }
             Some(ms) => {
@@ -300,7 +342,7 @@ pub(crate) fn wait_task(task_id: usize, timeout_ms: Option<u64>) -> Option<Strin
                     let (new_completed, result) = task
                         .completed_cvar
                         .wait_timeout(completed, remaining)
-                        .unwrap();
+                        .unwrap_or_else(|e| e.into_inner());
                     completed = new_completed;
                     if result.timed_out() {
                         break;
@@ -320,12 +362,16 @@ pub(crate) fn get_task_result(py: Python<'_>, task_id: usize) -> Option<Result<P
     let engine = get_engine();
 
     let task = {
-        let slab = engine.broker.tasks.read().expect("Lock poisoned");
+        let slab = engine
+            .broker
+            .tasks
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
         slab.get(task_id).cloned()
     };
 
     task.and_then(|t| {
-        let res = t.result.lock().unwrap();
+        let res = t.result.lock().unwrap_or_else(|e| e.into_inner());
         res.as_ref().map(|r| match r {
             Ok(val) => Ok(val.clone_ref(py)),
             Err(err) => Err(err.clone()),
@@ -335,7 +381,11 @@ pub(crate) fn get_task_result(py: Python<'_>, task_id: usize) -> Option<Result<P
 
 pub(crate) fn free_task(task_id: usize) {
     let engine = get_engine();
-    let mut slab = engine.broker.tasks.write().expect("Lock poisoned");
+    let mut slab = engine
+        .broker
+        .tasks
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
     if slab.contains(task_id) {
         slab.remove(task_id);
     }
@@ -343,6 +393,10 @@ pub(crate) fn free_task(task_id: usize) {
 
 pub(crate) fn get_slab_size() -> usize {
     let engine = get_engine();
-    let slab = engine.broker.tasks.read().expect("Lock poisoned");
+    let slab = engine
+        .broker
+        .tasks
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
     slab.len()
 }

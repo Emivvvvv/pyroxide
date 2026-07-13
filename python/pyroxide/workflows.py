@@ -6,7 +6,10 @@ class TaskGroup:
     """A collection of tasks that run in parallel and can be managed as a unit."""
     def __init__(self, handles: Iterable[TaskHandle]):
         self.handles = list(handles)
-        
+
+    def __repr__(self) -> str:
+        return f"<TaskGroup handles={self.handles} status={self.status}>"
+
     @property
     def status(self) -> str:
         statuses = [h.status for h in self.handles]
@@ -29,7 +32,8 @@ class TaskGroup:
         
     def cancel(self) -> bool:
         """Cancels all tasks in the group. Returns True if all were successfully cancelled."""
-        return all(h.cancel() for h in self.handles)
+        results = [h.cancel() for h in self.handles]
+        return all(results)
 
 def group(handles: Iterable[TaskHandle]) -> TaskGroup:
     """Wraps multiple task handles into a parallel TaskGroup."""

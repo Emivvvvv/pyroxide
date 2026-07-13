@@ -30,7 +30,7 @@ pub(crate) fn get_dylib_paths() -> HashMap<String, String> {
     DYLIB_PATHS
         .get_or_init(|| RwLock::new(HashMap::new()))
         .read()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .clone()
 }
 
@@ -38,8 +38,18 @@ pub(crate) fn get_wasm_bytes() -> HashMap<String, Vec<u8>> {
     WASM_BYTES
         .get_or_init(|| RwLock::new(HashMap::new()))
         .read()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .clone()
+}
+
+pub(crate) fn get_shm_threshold() -> usize {
+    static SHM_THRESHOLD: OnceLock<usize> = OnceLock::new();
+    *SHM_THRESHOLD.get_or_init(|| {
+        std::env::var("PYROXIDE_SHM_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1024 * 1024)
+    })
 }
 
 pub type PluginRunFn =
@@ -47,6 +57,8 @@ pub type PluginRunFn =
 pub type PluginFreeFn = unsafe extern "C" fn(ptr: *mut u8, len: usize);
 
 pub(crate) fn register_dylib_internal(name: String, library_path: String) -> Result<(), String> {
+    // Safety: the library comes from a user-compiled source, the symbols are checked
+    // by `get()` and return Err on mismatch, and the plugin never escapes the process.
     unsafe {
         let lib = libloading::Library::new(&library_path)
             .map_err(|e| format!("Failed to load dynamic library: {e}"))?;
@@ -98,6 +110,8 @@ pub(crate) fn execute_dylib(name: &str, payload: &[u8]) -> Result<Vec<u8>, Strin
         .get(name)
         .ok_or_else(|| format!("Dynamic library '{name}' not registered"))?;
 
+    // Safety: run_fn/free_fn come from a trusted library, out_ptr is null-checked,
+    // and free_fn is called exactly once with the pointer run_fn gave us.
     unsafe {
         let mut out_len: usize = 0;
         let out_ptr = (plugin.run_fn)(payload.as_ptr(), payload.len(), &mut out_len);

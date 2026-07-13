@@ -7,6 +7,9 @@ class TaskHandle:
         self.task_id: int = task_id
         self._consumed: bool = False
 
+    def __repr__(self) -> str:
+        return f"<TaskHandle id={self.task_id} status={self.status}>"
+
     @property
     def status(self) -> str:
         """Queries the current status from the Rust Slab."""

@@ -47,7 +47,7 @@ impl IsolatedProcessPool {
     /// Acquires a warm worker, or spawns a new one if none is available.
     pub fn acquire_worker(&self) -> Result<IpcWorker, String> {
         {
-            let mut guard = self.workers.lock().unwrap();
+            let mut guard = self.workers.lock().unwrap_or_else(|e| e.into_inner());
             while let Some(mut worker) = guard.pop() {
                 // Check if worker child is still alive
                 if let Ok(None) = worker.child.try_wait() {
@@ -62,11 +62,7 @@ impl IsolatedProcessPool {
     }
 
     pub fn release_worker(&self, mut worker: IpcWorker) {
-        let max_tasks = std::env::var("PYROXIDE_MAX_TASKS_PER_WORKER")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(100);
-        if max_tasks > 0 && worker.tasks_run >= max_tasks {
+        if get_max_tasks_per_worker() > 0 && worker.tasks_run >= get_max_tasks_per_worker() {
             drop(worker); // kills child process and cleans socket file
             return;
         }
@@ -74,7 +70,7 @@ impl IsolatedProcessPool {
         // Check if worker child is still alive
         if let Ok(None) = worker.child.try_wait() {
             worker.last_used = std::time::Instant::now();
-            let mut guard = self.workers.lock().unwrap();
+            let mut guard = self.workers.lock().unwrap_or_else(|e| e.into_inner());
             guard.push(worker);
         } else {
             drop(worker);
@@ -82,10 +78,16 @@ impl IsolatedProcessPool {
     }
 
     fn spawn_new_worker(&self) -> Result<IpcWorker, String> {
-        let python_path = pyo3::Python::attach(|py| -> String {
-            let sys = py.import("sys").unwrap();
-            sys.getattr("executable").unwrap().extract().unwrap()
-        });
+        let python_path = pyo3::Python::attach(|py| -> Result<String, String> {
+            let sys = py
+                .import("sys")
+                .map_err(|e| format!("Failed to import sys: {e}"))?;
+            let exe = sys
+                .getattr("executable")
+                .map_err(|e| format!("Failed to get sys.executable: {e}"))?;
+            exe.extract::<String>()
+                .map_err(|e| format!("Failed to extract sys.executable: {e}"))
+        })?;
 
         let rand_num: u32 = rand::random();
 
@@ -114,11 +116,7 @@ impl IsolatedProcessPool {
 
         let mut stream = None;
         let start = std::time::Instant::now();
-        let timeout_secs = std::env::var("PYROXIDE_WORKER_STARTUP_TIMEOUT_SEC")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(5);
-        let timeout = Duration::from_secs(timeout_secs);
+        let timeout = Duration::from_secs(get_startup_timeout_secs());
 
         while start.elapsed() < timeout {
             if let Ok(Some(status)) = child.try_wait() {
@@ -210,7 +208,7 @@ pub(crate) fn send_registration_task(
         .map_err(|e| format!("Failed to read registration response header: {e}"))?;
     let success = res_header[0] == 1;
     let _res_flags = res_header[1];
-    let data_len = u64::from_be_bytes(res_header[2..10].try_into().unwrap()) as usize;
+    let data_len = u64::from_be_bytes(res_header[2..10].try_into().unwrap_or([0u8; 8])) as usize;
 
     let mut data = vec![0u8; data_len];
     stream.read_exact(&mut data).map_err(|e| e.to_string())?;
@@ -222,17 +220,43 @@ pub(crate) fn send_registration_task(
     Ok(())
 }
 
+fn get_max_tasks_per_worker() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("PYROXIDE_MAX_TASKS_PER_WORKER")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(100)
+    })
+}
+
+fn get_startup_timeout_secs() -> u64 {
+    static VALUE: OnceLock<u64> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("PYROXIDE_WORKER_STARTUP_TIMEOUT_SEC")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5)
+    })
+}
+
+fn get_idle_timeout_secs() -> u64 {
+    static VALUE: OnceLock<u64> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("PYROXIDE_IDLE_TIMEOUT_SEC")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(60)
+    })
+}
+
 fn spawn_idle_reaper(pool: Arc<IsolatedProcessPool>) {
     std::thread::spawn(move || {
         loop {
             // Wake up every 2 seconds to check
             std::thread::sleep(Duration::from_secs(2));
 
-            let timeout_secs = std::env::var("PYROXIDE_IDLE_TIMEOUT_SEC")
-                .ok()
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(60);
-            let idle_timeout = Duration::from_secs(timeout_secs);
+            let idle_timeout = Duration::from_secs(get_idle_timeout_secs());
 
             let mut victims = Vec::new();
 

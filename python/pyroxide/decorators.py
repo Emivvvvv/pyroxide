@@ -1,5 +1,5 @@
 import functools
-from typing import Callable, TypeVar, Any
+from typing import Callable, TypeVar
 from ._pyroxide import submit_task
 from .types import TaskHandle
 
@@ -23,10 +23,10 @@ def task(func_or_none=None, *, isolated: bool = False):
 
     def decorator(func: Callable[[P], R]) -> Callable[[P], TaskHandle]:
         @functools.wraps(func)
-        def wrapper(payload: P, *args: Any, **kwargs: Any) -> TaskHandle:
+        def wrapper(payload: P) -> TaskHandle:
             import os
             if os.environ.get("PYROXIDE_WORKER") == "1":
-                return func(payload, *args, **kwargs)
+                return func(payload)
 
             target_callable = wrapper if isolated else func
             task_id = submit_task(target_callable, payload, isolated=isolated)

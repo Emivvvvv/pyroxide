@@ -103,7 +103,7 @@ def compile_dylib(
         return compiled_path
 
     except Exception as e:
-        raise RuntimeError(f"Failed to compile dylib '{name}' via Cargo: {e}")
+        raise RuntimeError(f"Failed to compile dylib '{name}' via Cargo: {e}") from e
 
 
 def compile_c(name: str, source_code: str) -> str:
@@ -145,7 +145,7 @@ def compile_c(name: str, source_code: str) -> str:
         return compiled_path
 
     except Exception as e:
-        raise RuntimeError(f"Failed to compile C library '{name}': {e}")
+        raise RuntimeError(f"Failed to compile C library '{name}': {e}") from e
 
 
 def compile_zig(name: str, source_code: str) -> str:
@@ -189,7 +189,7 @@ def compile_zig(name: str, source_code: str) -> str:
         return compiled_path
 
     except Exception as e:
-        raise RuntimeError(f"Failed to compile Zig library '{name}': {e}")
+        raise RuntimeError(f"Failed to compile Zig library '{name}': {e}") from e
 
 
 def dylib_task(dylib_name: str, *, isolated: bool = False):

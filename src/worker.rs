@@ -12,7 +12,7 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
     while let Ok(task_id) = receiver.recv() {
         // 1. Get task from Slab using a read lock
         let task = {
-            let slab = broker.tasks.read().unwrap();
+            let slab = broker.tasks.read().unwrap_or_else(|e| e.into_inner());
             slab.get(task_id).cloned()
         };
 
@@ -48,17 +48,20 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
             let task_clone = Arc::clone(&task);
 
             let exec_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                // Simulate Rust worker panic inside the main binary for testing catch_unwind
-                let should_panic = Python::attach(|py| {
-                    let bound_payload = task_clone.payload.bind(py);
-                    if let Ok(s) = bound_payload.extract::<String>() {
-                        s == "TRIGGER_PANIC"
-                    } else {
-                        false
+                // Simulate Rust worker panic for testing catch_unwind.
+                // Only active when PYROXIDE_PANIC_TRIGGER env var is set.
+                if std::env::var("PYROXIDE_PANIC_TRIGGER").is_ok() {
+                    let should_panic = Python::attach(|py| {
+                        let bound_payload = task_clone.payload.bind(py);
+                        if let Ok(s) = bound_payload.extract::<String>() {
+                            s == "TRIGGER_PANIC"
+                        } else {
+                            false
+                        }
+                    });
+                    if should_panic {
+                        panic!("Simulated Rust worker panic!");
                     }
-                });
-                if should_panic {
-                    panic!("Simulated Rust worker panic!");
                 }
 
                 if let Some(ref cb) = task_clone.callable {
@@ -234,7 +237,8 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                             return Err("Task cancelled".to_string());
                         }
 
-                        // Execute the dynamic library function pointer directly
+                        // Safety: run_fn comes from a trusted, already-loaded library,
+                        // input_bytes is a valid slice, and we null-check the result.
                         let out_ptr = unsafe {
                             (plugin.run_fn)(input_bytes.as_ptr(), input_bytes.len(), &mut out_len)
                         };
@@ -243,10 +247,11 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                             return Err("Dylib execution returned null pointer".to_string());
                         }
 
+                        // Safety: library-allocated pointer; free_fn handles cleanup below.
                         let output_bytes =
                             unsafe { std::slice::from_raw_parts(out_ptr, out_len).to_vec() };
 
-                        // Free the memory on the dynamic library's allocator
+                        // Safety: paired dealloc from the same library, called once.
                         unsafe {
                             (plugin.free_fn)(out_ptr, out_len);
                         }
@@ -286,15 +291,25 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                 Err(_) => Err("Rust worker panicked during task execution".to_string()),
             };
 
-            // 4. Update result and status (preserving Cancelled status)
+            // 4. Store result FIRST, then update status.
+            //    This ensures when a reader sees Completed/Failed, the result
+            //    is already available. If cancel_task wins the CAS race below,
+            //    it will overwrite the result with "Task cancelled".
+            {
+                let mut res_guard = task.result.lock().unwrap_or_else(|e| e.into_inner());
+                *res_guard = Some(resolved_result);
+            }
+
+            // 5. Update status (preserving Cancelled status)
             let mut current = task.status.load(Ordering::Acquire);
             loop {
                 if current == TaskStatus::Cancelled as u8 {
                     break;
                 }
-                let final_status = match &resolved_result {
-                    Ok(_) => TaskStatus::Completed as u8,
-                    Err(_) => TaskStatus::Failed as u8,
+                let final_status = match &*task.result.lock().unwrap_or_else(|e| e.into_inner()) {
+                    Some(Ok(_)) => TaskStatus::Completed as u8,
+                    Some(Err(_)) => TaskStatus::Failed as u8,
+                    _ => TaskStatus::Failed as u8,
                 };
                 match task.status.compare_exchange_weak(
                     current,
@@ -307,14 +322,12 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                 }
             }
 
+            // 6. Signal the Condvar to wake up waiting Python thread
             {
-                let mut res_guard = task.result.lock().unwrap();
-                *res_guard = Some(resolved_result);
-            }
-
-            // 5. Signal the Condvar to wake up waiting Python thread
-            {
-                let mut completed = task.completed_mutex.lock().unwrap();
+                let mut completed = task
+                    .completed_mutex
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 *completed = true;
             }
             task.completed_cvar.notify_all();
@@ -342,15 +355,21 @@ use pyo3::types::PyBytes;
 fn execute_isolated_task(task: &Arc<Task>) {
     let result = execute_isolated_task_inner(task);
 
-    // Update result and status (preserving Cancelled status)
+    // Store result FIRST, then update status (see worker_loop for rationale).
+    {
+        let mut res_guard = task.result.lock().unwrap_or_else(|e| e.into_inner());
+        *res_guard = Some(result);
+    }
+
     let mut current = task.status.load(Ordering::Acquire);
     loop {
         if current == TaskStatus::Cancelled as u8 {
             break;
         }
-        let final_status = match &result {
-            Ok(_) => TaskStatus::Completed as u8,
-            Err(_) => TaskStatus::Failed as u8,
+        let final_status = match &*task.result.lock().unwrap_or_else(|e| e.into_inner()) {
+            Some(Ok(_)) => TaskStatus::Completed as u8,
+            Some(Err(_)) => TaskStatus::Failed as u8,
+            _ => TaskStatus::Failed as u8,
         };
         match task.status.compare_exchange_weak(
             current,
@@ -363,14 +382,12 @@ fn execute_isolated_task(task: &Arc<Task>) {
         }
     }
 
-    {
-        let mut res_guard = task.result.lock().unwrap();
-        *res_guard = Some(result);
-    }
-
     // Signal Condvar
     {
-        let mut completed = task.completed_mutex.lock().unwrap();
+        let mut completed = task
+            .completed_mutex
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *completed = true;
     }
     task.completed_cvar.notify_all();
@@ -473,11 +490,7 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
     }
 
     // 3. Write request frame: [Type: 1 byte] [Flags: 1 byte] [Extra Len: 4 bytes] [Payload Len: 8 bytes] [Metadata] [Payload]
-    let shm_threshold = std::env::var("PYROXIDE_SHM_THRESHOLD")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(1024 * 1024);
-    let use_shm = payload_bytes.len() >= shm_threshold;
+    let use_shm = payload_bytes.len() >= crate::get_shm_threshold();
     let mut flags = 0u8;
     let mut actual_payload = payload_bytes.clone();
     let mut _created_shm = None;
@@ -494,6 +507,7 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
             .create()
         {
             Ok(shmem) => {
+                // Safety: both pointers point to valid, non-overlapping regions of the same size.
                 unsafe {
                     std::ptr::copy_nonoverlapping(
                         payload_bytes.as_ptr(),
@@ -536,7 +550,7 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
 
     let success = resp_header[0] == 1;
     let res_flags = resp_header[1];
-    let data_len = u64::from_be_bytes(resp_header[2..10].try_into().unwrap()) as usize;
+    let data_len = u64::from_be_bytes(resp_header[2..10].try_into().unwrap_or([0u8; 8])) as usize;
 
     let mut data_bytes = vec![0u8; data_len];
     if let Err(e) = worker.stream.read_exact(&mut data_bytes) {

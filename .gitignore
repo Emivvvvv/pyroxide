@@ -38,6 +38,8 @@ env/
 
 /target
 
+temp_dylib_marker.txt
+
 # Compiled binaries
 *.so
 *.pyd

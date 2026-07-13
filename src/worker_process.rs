@@ -69,6 +69,7 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
                 .map_err(|e| format!("Failed to open request SHM {shm_name}: {e}"))?;
             let ptr = shmem.as_ptr();
             let size = shmem.len();
+            // Safety: SHM was just opened; data is copied into a Vec before shmem drops.
             unsafe { std::slice::from_raw_parts(ptr, size) }.to_vec()
         } else {
             payload_bytes
@@ -77,11 +78,7 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
         // Process Task
         let (success, response_bytes) = execute_worker_task(task_type, &metadata, actual_payload);
 
-        let shm_threshold = std::env::var("PYROXIDE_SHM_THRESHOLD")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(1024 * 1024);
-        let use_shm = success && response_bytes.len() >= shm_threshold;
+        let use_shm = success && response_bytes.len() >= crate::get_shm_threshold();
         let mut res_flags = 0u8;
         let mut actual_response = response_bytes.clone();
         let mut shm_to_keep = None;
@@ -98,6 +95,7 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
                 .create()
             {
                 Ok(shmem) => {
+                    // Safety: valid, non-overlapping buffers of the same size.
                     unsafe {
                         std::ptr::copy_nonoverlapping(
                             response_bytes.as_ptr(),
