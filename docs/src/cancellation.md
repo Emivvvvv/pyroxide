@@ -7,19 +7,22 @@ Pyroxide supports task cancellation before execution begins or while a task is r
 Use the `.cancel()` method on `TaskHandle` to abort execution:
 
 ```python
-from pyroxide import task
 import time
+from pyroxide import task
 
 @task
-def long_running_sleep(payload: str) -> None:
-    if payload.startswith("SLEEP:"):
-        sec = int(payload.split(":")[1]) / 1000.0
-        time.sleep(sec)
+def long_running_report(n: int) -> int:
+    # Simulates a long-running CPU-bound operation (e.g. a financial report)
+    total = 0
+    for i in range(n):
+        total += i
+    time.sleep(5)  # Simulates waiting for a slow external resource
+    return total
 
 # Submit a long-running task
-handle = long_running_sleep("SLEEP:5000")
+handle = long_running_report(1_000_000)
 
-# Abort the task
+# Abort the task before it finishes
 cancelled = handle.cancel()
 print(f"Cancelled: {cancelled}")  # Returns True if successfully aborted
 

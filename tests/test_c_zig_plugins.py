@@ -1,4 +1,14 @@
+import shutil
+import pytest
 from pyroxide import compile_c, compile_zig, dylib_task
+
+# Check compiler availability
+cc_available = (
+    shutil.which("cc") is not None
+    or shutil.which("gcc") is not None
+    or shutil.which("clang") is not None
+)
+zig_available = shutil.which("zig") is not None
 
 C_SRC = """
 #include <stdint.h>
@@ -50,6 +60,7 @@ export fn pyroxide_plugin_free(ptr: [*]u8, len: usize) void {
 """
 
 
+@pytest.mark.skipif(not cc_available, reason="C compiler (cc/gcc/clang) not found")
 def test_c_compile_and_run():
     """Test C code compilation and execution on-the-fly."""
     compile_c("c_upper", C_SRC)
@@ -63,6 +74,7 @@ def test_c_compile_and_run():
     assert result == "HELLO FROM C LANGUAGE"
 
 
+@pytest.mark.skipif(not zig_available, reason="Zig compiler (zig) not found")
 def test_zig_compile_and_run():
     """Test Zig code compilation and execution on-the-fly."""
     compile_zig("zig_upper", ZIG_SRC)

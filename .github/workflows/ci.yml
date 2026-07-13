@@ -44,10 +44,10 @@ jobs:
           pip install maturin pyarrow pytest
 
       - name: Build Pyroxide (Maturin)
-        run: pip install .
+        run: pip install -e .
 
       - name: Run Pytest Test Suite
-        run: pytest
+        run: python -m pytest
 
       - name: Run Features Examples
         run: |

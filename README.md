@@ -41,6 +41,7 @@ Pyroxide (`pyro3`) is a lightweight, ultra-high-performance background task brok
 *   💾 **Zero-Copy Serialization**: Pass large byte arrays, memoryviews, or columnar buffers across the C-ABI boundary without copy or `pickle` overhead.
 *   🛠️ **On-the-Fly Native Compilers**: Write code as Python strings and compile them to dynamic libraries on-the-fly (**Rust**, **C**, and **Zig** supported!).
 *   🛡️ **Isolated Worker Processes**: Opt-in `isolated=True` to run tasks in separate processes via cross-platform Named Pipes / Domain Sockets. Features bidirectional **Zero-Copy Shared Memory (SHM)** routing for payloads >= 1MB, and an auto-scaling **Scale-to-Zero** pool to reclaim memory.
+*   🔗 **Task Groups & Workflows**: Bundle multiple task handles into parallel groups (`group`) to await or cancel them as a single logical unit.
 
 ---
 
@@ -94,10 +95,33 @@ print(result) # 144
 @task(isolated=True)
 def heavy_computation(x: int) -> int:
     return sum(i * i for i in range(x))
-
 ```
 
-### 2. Sandboxed WebAssembly (GIL-Free)
+### 2. Batch Submission & Task Groups
+Submit tasks in bulk under a single lock acquisition to avoid thread contention, and manage them concurrently:
+```python
+from pyroxide import task, group
+
+@task
+def calculate_square(x: int) -> int:
+    return x * x
+
+payloads = [10, 20, 30, 40]
+
+# 1. Batch submit payloads
+handles = calculate_square.batch(payloads)
+
+# 2. Bundle into a parallel TaskGroup
+tg = group(handles)
+print(tg.status) # "Running"
+
+# 3. Retrieve results (consume=False preserves status metadata)
+results = tg.result(consume=False)
+print(results)   # [100, 400, 900, 1600]
+print(tg.status) # "Completed"
+```
+
+### 3. Sandboxed WebAssembly (GIL-Free)
 Run computations GIL-free in a secure, virtual sandbox without compiling native code:
 ```python
 from pyroxide import register_wasm, wasm_task
@@ -115,7 +139,7 @@ def rot13_cipher(payload: str) -> str:
 print(rot13_cipher("hello").result()) # "uryyb"
 ```
 
-### 3. Dynamic Shared Libraries (On-the-Fly Compilation)
+### 4. Dynamic Shared Libraries (On-the-Fly Compilation)
 Compile and load native code strings on-the-fly. **Rust** (`compile_dylib`), **C** (`compile_c`), and **Zig** (`compile_zig`) are supported:
 ```python
 from pyroxide import compile_dylib, dylib_task
