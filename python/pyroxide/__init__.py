@@ -17,6 +17,7 @@ from .decorators import task
 from .types import TaskHandle
 from .wasm import register_wasm, wasm_task
 from .plugins import compile_dylib, dylib_task, compile_c, compile_zig
+from .workflows import group, TaskGroup
 
 __all__ = [
     "submit_task",
@@ -30,4 +31,6 @@ __all__ = [
     "dylib_task",
     "compile_c",
     "compile_zig",
+    "group",
+    "TaskGroup",
 ]
