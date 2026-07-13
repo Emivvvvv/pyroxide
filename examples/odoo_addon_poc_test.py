@@ -42,7 +42,13 @@ def create_mock_ledger(num_records: int) -> bytes:
 def python_audit(arrow_bytes):
     reader = pa.BufferReader(arrow_bytes)
     table = pa.ipc.open_stream(reader).read_all()
-    return sum(table.column("amount").to_pylist())
+    amounts = table.column("amount").to_pylist()
+    total = sum(amounts)
+    res_table = pa.Table.from_pydict({"audit_total": [total]})
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, res_table.schema) as writer:
+        writer.write_table(res_table)
+    return bytes(sink.getvalue())
 
 # ---------------------------------------------------------
 # Verification Suite
@@ -56,10 +62,12 @@ def run_odoo_poc_suite():
     # Generate test payloads
     small_ledger = create_mock_ledger(100) # ~10 KB
     large_ledger = create_mock_ledger(20000) # ~1.6 MB (exceeds 1MB SHM threshold)
+    massive_ledger = create_mock_ledger(200000) # ~16.2 MB (simulates massive enterprise audit log)
     
     print("\n[Mock Data Generation]")
     print(f"-> Small Ledger Size: {len(small_ledger) / 1024:.2f} KB")
     print(f"-> Large Ledger Size: {len(large_ledger) / (1024*1024):.2f} MB")
+    print(f"-> Massive Ledger Size: {len(massive_ledger) / (1024*1024):.2f} MB")
     
     # ---------------------------------------------------------
     # Step 1: Verify correct calculation of Arrow ledger audits
@@ -92,16 +100,13 @@ def run_odoo_poc_suite():
     assert elapsed < 0.4, f"Threads did not execute concurrently (took {elapsed:.4f}s)"
     print("✔ Step 2 PASSED.")
 
-    # ---------------------------------------------------------
-    # Step 3 & 4: Isolated Process & Zero-Copy SHM Routing
-    # ---------------------------------------------------------
-    print("\n[Step 3 & 4] Verifying Isolated process and Zero-Copy SHM (1.6MB)...")
-    # Submitting large ledger as isolated=True (forces SHM routing)
+    print("\n[Step 3 & 4] Verifying Isolated process and Zero-Copy SHM (16.2MB)...")
+    # Submitting massive ledger as isolated=True (forces SHM routing)
     from pyroxide._pyroxide import submit_task
-    task_id = submit_task(process_financial_data, large_ledger, isolated=True)
+    task_id = submit_task(process_financial_data, massive_ledger, isolated=True)
     handle = TaskHandle(task_id)
     
-    res_bytes = handle.result(timeout_sec=5.0)
+    res_bytes = handle.result(timeout_sec=10.0)
     reader = pa.BufferReader(res_bytes)
     res_table = pa.ipc.open_stream(reader).read_all()
     large_audit_total = res_table.column("audit_total")[0].as_py()
@@ -171,22 +176,22 @@ def run_odoo_poc_suite():
     print("✔ Step 8 PASSED.")
 
     # ---------------------------------------------------------
-    # Step 9: Comparative Performance Benchmarks (Large Payload)
+    # Step 9: Comparative Performance Benchmarks (Massive Payload)
     # ---------------------------------------------------------
     print("\n[Step 9] Running Comparative Benchmarks (ProcessPool vs Pyroxide SHM)...")
-    num_tasks = 30
+    num_tasks = 10
     
     # 1. Python Multiprocessing
     start = time.time()
     with concurrent.futures.ProcessPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(python_audit, large_ledger) for _ in range(num_tasks)]
+        futures = [executor.submit(python_audit, massive_ledger) for _ in range(num_tasks)]
         res_mp = [f.result() for f in futures]
     t_mp = time.time() - start
     print(f"-> ProcessPoolExecutor (4 workers): {t_mp:.4f}s")
 
     # 2. Pyroxide SHM
     start = time.time()
-    handles = [process_financial_data(large_ledger) for _ in range(num_tasks)]
+    handles = [process_financial_data(massive_ledger) for _ in range(num_tasks)]
     res_py = [h.result() for h in handles]
     t_py = time.time() - start
     print(f"-> Pyroxide SHM Isolated (4 workers): {t_py:.4f}s")

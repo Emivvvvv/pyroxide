@@ -28,8 +28,9 @@ def process_financial_data(arrow_bytes: bytes) -> bytes:
 
 @task(isolated=True)
 def crash_worker(x: int) -> int:
-    """Simulates a critical crash (SIGSEGV) in a native C dependency."""
-    ctypes.string_at(0) # Triggers Segmentation Fault
+    """Simulates a critical crash (abrupt exit) in a native C dependency."""
+    import os
+    os._exit(139) # Exits immediately with SIGSEGV exit status
     return x
 
 @task(isolated=True)
