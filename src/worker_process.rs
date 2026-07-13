@@ -77,9 +77,11 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
         // Process Task
         let (success, response_bytes) = execute_worker_task(task_type, &metadata, actual_payload);
 
-        // Prepare response
-        const SHM_THRESHOLD: usize = 1024 * 1024; // 1 MB
-        let use_shm = success && response_bytes.len() >= SHM_THRESHOLD;
+        let shm_threshold = std::env::var("PYROXIDE_SHM_THRESHOLD")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(1024 * 1024);
+        let use_shm = success && response_bytes.len() >= shm_threshold;
         let mut res_flags = 0u8;
         let mut actual_response = response_bytes.clone();
         let mut shm_to_keep = None;

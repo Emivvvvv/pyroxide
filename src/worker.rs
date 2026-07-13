@@ -473,8 +473,11 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
     }
 
     // 3. Write request frame: [Type: 1 byte] [Flags: 1 byte] [Extra Len: 4 bytes] [Payload Len: 8 bytes] [Metadata] [Payload]
-    const SHM_THRESHOLD: usize = 1024 * 1024; // 1 MB
-    let use_shm = payload_bytes.len() >= SHM_THRESHOLD;
+    let shm_threshold = std::env::var("PYROXIDE_SHM_THRESHOLD")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1024 * 1024);
+    let use_shm = payload_bytes.len() >= shm_threshold;
     let mut flags = 0u8;
     let mut actual_payload = payload_bytes.clone();
     let mut _created_shm = None;

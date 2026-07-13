@@ -61,10 +61,12 @@ impl IsolatedProcessPool {
         self.spawn_new_worker()
     }
 
-    /// Releases a worker back to the pool, or recycles/disposes it if limits are exceeded.
     pub fn release_worker(&self, mut worker: IpcWorker) {
-        // Recycle worker after 100 tasks to avoid memory leaks
-        if worker.tasks_run >= 100 {
+        let max_tasks = std::env::var("PYROXIDE_MAX_TASKS_PER_WORKER")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(100);
+        if max_tasks > 0 && worker.tasks_run >= max_tasks {
             drop(worker); // kills child process and cleans socket file
             return;
         }
@@ -112,7 +114,11 @@ impl IsolatedProcessPool {
 
         let mut stream = None;
         let start = std::time::Instant::now();
-        let timeout = Duration::from_secs(5);
+        let timeout_secs = std::env::var("PYROXIDE_WORKER_STARTUP_TIMEOUT_SEC")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(5);
+        let timeout = Duration::from_secs(timeout_secs);
 
         while start.elapsed() < timeout {
             if let Ok(Some(status)) = child.try_wait() {
