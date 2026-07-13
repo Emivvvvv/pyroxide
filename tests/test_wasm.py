@@ -86,3 +86,15 @@ def test_wasm_cancellation():
     with pytest.raises(RuntimeError) as exc_info:
         handle.result()
     assert "Task cancelled" in str(exc_info.value)
+
+
+def test_wasm_oop_proxy():
+    """Verifies that load_wasm loads an OOP proxy resolving WASM exports dynamically."""
+    from pyroxide import load_wasm
+
+    register_wasm("rot13_oop", WASM_BYTES)
+    proxy = load_wasm("rot13_oop")
+
+    handle = proxy.run("Hello OOP WASM!")
+    assert handle.result() == "Uryyb BBC JNFZ!"
+

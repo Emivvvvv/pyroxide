@@ -192,7 +192,12 @@ def compile_zig(name: str, source_code: str) -> str:
         raise RuntimeError(f"Failed to compile Zig library '{name}': {e}") from e
 
 
-def dylib_task(dylib_name: str, *, isolated: bool = False):
+def dylib_task(
+    dylib_name: str,
+    symbol_name: str = "pyroxide_plugin_run",
+    *,
+    isolated: bool = False,
+):
     """
     Decorator that routes task payloads to a registered dynamic shared library (dylib)
     for GIL-free execution on the background Rust worker pool.
@@ -201,19 +206,15 @@ def dylib_task(dylib_name: str, *, isolated: bool = False):
 
     Args:
         dylib_name: The name of the dylib as registered with ``compile_dylib()``.
+        symbol_name: The function symbol to load from the dylib. Defaults to "pyroxide_plugin_run".
         isolated: Set to True to run in an isolated worker process for crash isolation.
-
-    Example:
-        >>> @dylib_task("my_lib", isolated=True)
-        ... def process(payload: str) -> str:
-        ...     pass  # Execution is handled by the compiled dylib in a separate process
-        >>> handle = process("hello")
-        >>> print(handle.result())
     """
 
     def decorator(func: Callable[[Any], Any]) -> Callable[[Any], TaskHandle]:
         def wrapper(payload: Any) -> TaskHandle:
-            task_id = submit_dylib_task(dylib_name, payload, isolated=isolated)
+            task_id = submit_dylib_task(
+                dylib_name, symbol_name, payload, isolated=isolated
+            )
             return TaskHandle(task_id)
 
         def batch(payloads: list) -> list[TaskHandle]:
@@ -223,3 +224,28 @@ def dylib_task(dylib_name: str, *, isolated: bool = False):
         return wrapper
 
     return decorator
+
+
+class DylibProxy:
+    """A proxy representing a dynamically loaded shared library."""
+
+    def __init__(self, lib_name: str, isolated: bool = False):
+        self._lib_name = lib_name
+        self._isolated = isolated
+
+    def __getattr__(self, symbol_name: str):
+        def dylib_method(payload) -> TaskHandle:
+            task_id = submit_dylib_task(
+                self._lib_name, symbol_name, payload, isolated=self._isolated
+            )
+            return TaskHandle(task_id)
+
+        return dylib_method
+
+
+def load_dylib(lib_name: str, *, isolated: bool = False) -> DylibProxy:
+    """
+    Loads a registered dynamic shared library (dylib) and returns an object-oriented proxy
+    allowing direct invocation of any C-ABI exported symbol on the background worker pool.
+    """
+    return DylibProxy(lib_name, isolated=isolated)

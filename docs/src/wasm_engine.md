@@ -107,6 +107,28 @@ result = handle.result()
 print("Decrypted:", result)  # "Uryyb Jbeyq!"
 ```
 
+### 3. Object-Oriented WASM Proxies (v0.6.0)
+
+If a WebAssembly module exports multiple functions (e.g. `compress`, `decompress`, `validate`), you can load the module as an object-oriented proxy using `load_wasm()`. 
+
+This maps all exported WASM guest functions directly into Python methods:
+
+```python
+from pyroxide import register_wasm, load_wasm
+
+# Register the module bytes
+register_wasm("compression_mod", WASM_BYTES)
+
+# Load the Object-Oriented Proxy!
+compressor = load_wasm("compression_mod")
+
+# Call exported WASM functions directly!
+handle_zip = compressor.compress(b"raw data payload")
+handle_unzip = compressor.decompress(handle_zip.result())
+
+print("Final Output:", handle_unzip.result())
+```
+
 ---
 
 ## Benefits of the WASM Engine

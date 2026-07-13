@@ -218,7 +218,56 @@ def process_data(payload: bytes) -> bytes:
 
 handle = process_data(b"hello C-ABI")
 print(handle.result())  # b"hello C-ABI"
+---
+
+## 3. Object-Oriented Proxies & Custom Symbols (v0.6.0)
+
+For libraries that expose multiple distinct operations (symbols), writing separate dummy Python stub functions for each symbol can be verbose. In Pyroxide v0.6.0, you can load a dynamic library as an object-oriented proxy using `load_dylib()`.
+
+This allows calling **any** C-compatible exported symbol directly as a method on the proxy object.
+
+### Example: Multi-Function C Library
+Suppose you have a C library that exports `hash_sha256` and `encrypt_aes`:
+
+```c
+#include <stdint.h>
+#include <stdlib.h>
+
+uint8_t* hash_sha256(const uint8_t* ptr, size_t len, size_t* out_len) {
+    // hashing logic...
+}
+
+uint8_t* encrypt_aes(const uint8_t* ptr, size_t len, size_t* out_len) {
+    // encryption logic...
+}
+
+void pyroxide_plugin_free(uint8_t* ptr, size_t len) {
+    free(ptr);
+}
 ```
+
+You can compile, load, and call these symbols directly in Python:
+
+```python
+from pyroxide import compile_c, load_dylib
+
+# Compile and register
+compile_c("crypto_lib", CRYPTO_C_SRC)
+
+# Load the Object-Oriented Proxy!
+crypto = load_dylib("crypto_lib", isolated=True)
+
+# Call custom symbols directly!
+# Symbol resolution is cached automatically on first invocation.
+handle_hash = crypto.hash_sha256(b"message payload")
+handle_encrypt = crypto.encrypt_aes(b"sensitive data")
+
+print(handle_hash.result())
+print(handle_encrypt.result())
+```
+
+### Performance: Symbol Cache
+To maintain microsecond latency, Pyroxide does not perform slow string-based symbol lookups (`dlsym`/`GetProcAddress`) on every execution. Instead, it resolves the symbol dynamically on the **first call** and stores the function pointer in a thread-safe cache (`RwLock<HashMap>`) in Rust. Subsequent calls fetch the cached pointer in under 15 nanoseconds.
 
 ---
 

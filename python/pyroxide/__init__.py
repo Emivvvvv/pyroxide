@@ -15,19 +15,21 @@ Exports:
 from ._pyroxide import submit_task, get_status, register_dylib  # noqa: F401
 from .decorators import task
 from .types import TaskHandle
-from .wasm import register_wasm, wasm_task
-from .plugins import compile_dylib, dylib_task, compile_c, compile_zig
+from .wasm import register_wasm, wasm_task, load_wasm
+from .plugins import compile_dylib, dylib_task, compile_c, compile_zig, load_dylib
 from .workflows import group, TaskGroup
 
-__version__ = "0.5.2"
+__version__ = "0.6.0"
 
 __all__ = [
     "task",
     "TaskHandle",
     "register_wasm",
     "wasm_task",
+    "load_wasm",
     "compile_dylib",
     "dylib_task",
+    "load_dylib",
     "compile_c",
     "compile_zig",
     "group",

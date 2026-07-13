@@ -42,6 +42,7 @@ pub(crate) struct Task {
     pub(crate) wasm_module: Option<String>,
     pub(crate) wasm_func: Option<String>,
     pub(crate) dylib: Option<String>,
+    pub(crate) dylib_symbol: Option<String>,
     pub(crate) isolated: bool,
 }
 
@@ -116,6 +117,7 @@ pub(crate) fn submit_task(
         wasm_module: None,
         wasm_func: None,
         dylib: None,
+        dylib_symbol: None,
         isolated,
     });
 
@@ -159,6 +161,7 @@ pub(crate) fn submit_batch(
                 wasm_module: None,
                 wasm_func: None,
                 dylib: None,
+                dylib_symbol: None,
                 isolated,
             });
             let task_id = slab.insert(task);
@@ -192,6 +195,7 @@ pub(crate) fn submit_wasm_task(
         wasm_module: Some(module_name),
         wasm_func: Some(func_name),
         dylib: None,
+        dylib_symbol: None,
         isolated,
     });
 
@@ -209,7 +213,12 @@ pub(crate) fn submit_wasm_task(
     task_id
 }
 
-pub(crate) fn submit_dylib_task(plugin_name: String, payload: Py<PyAny>, isolated: bool) -> usize {
+pub(crate) fn submit_dylib_task(
+    plugin_name: String,
+    symbol_name: String,
+    payload: Py<PyAny>,
+    isolated: bool,
+) -> usize {
     let engine = get_engine();
 
     let task = Arc::new(Task {
@@ -223,6 +232,7 @@ pub(crate) fn submit_dylib_task(plugin_name: String, payload: Py<PyAny>, isolate
         wasm_module: None,
         wasm_func: None,
         dylib: Some(plugin_name),
+        dylib_symbol: Some(symbol_name),
         isolated,
     });
 

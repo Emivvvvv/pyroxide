@@ -222,39 +222,17 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                             NativePayload::Bytes(b) => b.as_slice(),
                         };
 
-                        let registry = crate::get_dylib_registry()
-                            .ok_or_else(|| "Dylib registry not initialized".to_string())?;
-                        let map = registry
-                            .read()
-                            .map_err(|e| format!("Registry poisoned: {e}"))?;
-                        let plugin = map
-                            .get(plugin_name)
-                            .ok_or_else(|| format!("Dylib '{plugin_name}' not registered"))?;
-
-                        let mut out_len: usize = 0;
+                        let symbol_name = task_clone
+                            .dylib_symbol
+                            .as_deref()
+                            .unwrap_or("pyroxide_plugin_run");
 
                         if task_clone.cancelled.load(Ordering::Acquire) {
                             return Err("Task cancelled".to_string());
                         }
 
-                        // Safety: run_fn comes from a trusted, already-loaded library,
-                        // input_bytes is a valid slice, and we null-check the result.
-                        let out_ptr = unsafe {
-                            (plugin.run_fn)(input_bytes.as_ptr(), input_bytes.len(), &mut out_len)
-                        };
-
-                        if out_ptr.is_null() {
-                            return Err("Dylib execution returned null pointer".to_string());
-                        }
-
-                        // Safety: library-allocated pointer; free_fn handles cleanup below.
                         let output_bytes =
-                            unsafe { std::slice::from_raw_parts(out_ptr, out_len).to_vec() };
-
-                        // Safety: paired dealloc from the same library, called once.
-                        unsafe {
-                            (plugin.free_fn)(out_ptr, out_len);
-                        }
+                            crate::execute_dylib(plugin_name, symbol_name, input_bytes)?;
 
                         match payload {
                             NativePayload::Str(_) => {
@@ -433,7 +411,11 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
                 Ok((1u8, metadata, bytes))
             } else if let Some(ref plugin_name) = task.dylib {
                 // Dylib
-                let metadata = plugin_name.clone();
+                let symbol_name = task
+                    .dylib_symbol
+                    .as_deref()
+                    .unwrap_or("pyroxide_plugin_run");
+                let metadata = format!("{plugin_name}:{symbol_name}");
                 let bound_payload = task.payload.bind(py);
                 let bytes = if let Ok(s) = bound_payload.extract::<String>() {
                     s.into_bytes()

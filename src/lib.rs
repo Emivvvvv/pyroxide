@@ -11,17 +11,12 @@ use std::sync::RwLock;
 use wasmtime::{Engine, Module};
 
 pub(crate) struct DylibPlugin {
-    pub(crate) _lib: libloading::Library,
-    pub(crate) run_fn:
-        unsafe extern "C" fn(ptr: *const u8, len: usize, out_len: *mut usize) -> *mut u8,
+    pub(crate) lib: libloading::Library,
     pub(crate) free_fn: unsafe extern "C" fn(ptr: *mut u8, len: usize),
+    pub(crate) symbol_cache: RwLock<HashMap<String, PluginRunFn>>,
 }
 
 static DYLIB_PLUGINS: OnceLock<RwLock<HashMap<String, DylibPlugin>>> = OnceLock::new();
-
-pub(crate) fn get_dylib_registry() -> Option<&'static RwLock<HashMap<String, DylibPlugin>>> {
-    Some(DYLIB_PLUGINS.get_or_init(|| RwLock::new(HashMap::new())))
-}
 
 static DYLIB_PATHS: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
 static WASM_BYTES: OnceLock<RwLock<HashMap<String, Vec<u8>>>> = OnceLock::new();
@@ -63,18 +58,14 @@ pub(crate) fn register_dylib_internal(name: String, library_path: String) -> Res
         let lib = libloading::Library::new(&library_path)
             .map_err(|e| format!("Failed to load dynamic library: {e}"))?;
 
-        let run_fn = *lib
-            .get::<PluginRunFn>(b"pyroxide_plugin_run")
-            .map_err(|e| format!("Missing symbol 'pyroxide_plugin_run': {e}"))?;
-
         let free_fn = *lib
             .get::<PluginFreeFn>(b"pyroxide_plugin_free")
             .map_err(|e| format!("Missing symbol 'pyroxide_plugin_free': {e}"))?;
 
         let plugin = DylibPlugin {
-            _lib: lib,
-            run_fn,
+            lib,
             free_fn,
+            symbol_cache: RwLock::new(HashMap::new()),
         };
 
         let registry = DYLIB_PLUGINS.get_or_init(|| RwLock::new(HashMap::new()));
@@ -99,7 +90,11 @@ fn register_dylib(name: String, library_path: String) -> PyResult<()> {
     Ok(())
 }
 
-pub(crate) fn execute_dylib(name: &str, payload: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn execute_dylib(
+    name: &str,
+    symbol_name: &str,
+    payload: &[u8],
+) -> Result<Vec<u8>, String> {
     let registry = DYLIB_PLUGINS
         .get()
         .ok_or_else(|| "Dylib registry not initialized".to_string())?;
@@ -110,11 +105,46 @@ pub(crate) fn execute_dylib(name: &str, payload: &[u8]) -> Result<Vec<u8>, Strin
         .get(name)
         .ok_or_else(|| format!("Dynamic library '{name}' not registered"))?;
 
+    // 1. Check if the symbol is already in the cache using a read lock
+    let cached_fn = {
+        let cache = plugin
+            .symbol_cache
+            .read()
+            .map_err(|e| format!("Symbol cache read lock poisoned: {e}"))?;
+        cache.get(symbol_name).cloned()
+    };
+
+    let run_fn = match cached_fn {
+        Some(f) => f,
+        None => {
+            // 2. Not cached. Acquire a write lock, resolve the symbol from the library, and insert it
+            let mut cache = plugin
+                .symbol_cache
+                .write()
+                .map_err(|e| format!("Symbol cache write lock poisoned: {e}"))?;
+
+            // Double check inside the write lock to prevent race conditions
+            if let Some(&f) = cache.get(symbol_name) {
+                f
+            } else {
+                unsafe {
+                    let symbol: libloading::Symbol<PluginRunFn> = plugin
+                        .lib
+                        .get(symbol_name.as_bytes())
+                        .map_err(|e| format!("Failed to find symbol '{symbol_name}': {e}"))?;
+                    let f = *symbol;
+                    cache.insert(symbol_name.to_string(), f);
+                    f
+                }
+            }
+        }
+    };
+
     // Safety: run_fn/free_fn come from a trusted library, out_ptr is null-checked,
     // and free_fn is called exactly once with the pointer run_fn gave us.
     unsafe {
         let mut out_len: usize = 0;
-        let out_ptr = (plugin.run_fn)(payload.as_ptr(), payload.len(), &mut out_len);
+        let out_ptr = (run_fn)(payload.as_ptr(), payload.len(), &mut out_len);
         if out_ptr.is_null() {
             return Err("Execution returned NULL pointer".to_string());
         }
@@ -126,15 +156,17 @@ pub(crate) fn execute_dylib(name: &str, payload: &[u8]) -> Result<Vec<u8>, Strin
 
 /// Submits a task to be executed by a registered dynamic shared library (dylib).
 #[pyfunction]
-#[pyo3(signature = (plugin_name, payload, isolated=false))]
+#[pyo3(signature = (plugin_name, symbol_name, payload, isolated=false))]
 fn submit_dylib_task(
     py: Python<'_>,
     plugin_name: String,
+    symbol_name: String,
     payload: Bound<'_, PyAny>,
     isolated: bool,
 ) -> PyResult<usize> {
     let py_payload = payload.into_any().unbind();
-    let task_id = py.detach(move || broker::submit_dylib_task(plugin_name, py_payload, isolated));
+    let task_id = py
+        .detach(move || broker::submit_dylib_task(plugin_name, symbol_name, py_payload, isolated));
     Ok(task_id)
 }
 

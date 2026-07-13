@@ -266,9 +266,24 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: Vec<u8>) -> (bool
             }
         }
         2 => {
-            // Dynamic Shared Library Task (Metadata contains plugin_name, payload is raw input string/bytes)
-            let plugin_name = metadata;
-            let processed = crate::execute_dylib(plugin_name, &payload);
+            // Dynamic Shared Library Task (Metadata contains plugin_name:symbol_name, payload is raw input string/bytes)
+            let parts: Vec<&str> = metadata.split(':').collect();
+            if parts.is_empty() {
+                return (
+                    false,
+                    "Invalid dynamic library metadata format"
+                        .to_string()
+                        .into_bytes(),
+                );
+            }
+            let plugin_name = parts[0];
+            let symbol_name = if parts.len() > 1 {
+                parts[1]
+            } else {
+                "pyroxide_plugin_run"
+            };
+
+            let processed = crate::execute_dylib(plugin_name, symbol_name, &payload);
 
             match processed {
                 Ok(bytes) => (true, bytes),

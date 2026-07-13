@@ -12,26 +12,34 @@ Why use isolated processes?
 Pass `isolated=True` to any Pyroxide decorator:
 
 ```python
-from pyroxide import task, wasm_task, dylib_task
+from pyroxide import task, wasm_task, dylib_task, load_wasm, load_dylib
 
 # 1. Pure Python (GIL bypass & crash safety)
 @task(isolated=True)
 def heavy_computation(data: list) -> list:
     return [x * 2 for x in data]
 
-# 2. WASM
+# 2. WASM (Decorators)
 @wasm_task("my_module", "process_data", isolated=True)
 def process_wasm(data: str) -> str:
     pass
 
-# 3. Dynamic Library
+# 3. Dynamic Library (Decorators)
 @dylib_task("unsafe_c_plugin", isolated=True)
 def process_unsafe_c(data: bytes) -> bytes:
     pass
 
+# 4. OOP Proxies (New in v0.6.0)
+cipher = load_wasm("my_module", isolated=True)
+crypto = load_dylib("unsafe_c_plugin", isolated=True)
+
 # Same API as in-process tasks
 handle = heavy_computation([1, 2, 3])
 print(handle.result())
+
+# Call dynamic symbols on isolated workers
+handle_hash = crypto.hash_sha256(b"message")
+print(handle_hash.result())
 ```
 
 ## Internals & Optimizations

@@ -70,3 +70,46 @@ def test_dylib_compilation_failure():
     with pytest.raises(RuntimeError) as exc_info:
         compile_dylib("dyn_bad", bad_src)
     assert "Failed to compile dylib" in str(exc_info.value)
+
+
+def test_dylib_oop_proxy():
+    """Verifies that load_dylib loads an OOP proxy resolving custom symbols dynamically."""
+    from pyroxide import load_dylib
+
+    RUST_OOP_SRC = """
+    #[no_mangle]
+    pub unsafe extern "C" fn custom_add(ptr: *const u8, len: usize, out_len: *mut usize) -> *mut u8 {
+        let input = std::slice::from_raw_parts(ptr, len);
+        let s = std::str::from_utf8(input).unwrap_or("");
+        let result = format!("ADD: {}", s).into_bytes();
+        *out_len = result.len();
+        let boxed = result.into_boxed_slice();
+        Box::into_raw(boxed) as *mut u8
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn custom_mul(ptr: *const u8, len: usize, out_len: *mut usize) -> *mut u8 {
+        let input = std::slice::from_raw_parts(ptr, len);
+        let s = std::str::from_utf8(input).unwrap_or("");
+        let result = format!("MUL: {}", s).into_bytes();
+        *out_len = result.len();
+        let boxed = result.into_boxed_slice();
+        Box::into_raw(boxed) as *mut u8
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn pyroxide_plugin_free(ptr: *mut u8, len: usize) {
+        let _ = Box::from_raw(std::slice::from_raw_parts_mut(ptr, len));
+    }
+    """
+
+    compile_dylib("dyn_oop", RUST_OOP_SRC)
+    proxy = load_dylib("dyn_oop")
+
+    # Call custom symbols
+    handle_add = proxy.custom_add("hello")
+    handle_mul = proxy.custom_mul("world")
+
+    assert handle_add.result() == "ADD: hello"
+    assert handle_mul.result() == "MUL: world"
+

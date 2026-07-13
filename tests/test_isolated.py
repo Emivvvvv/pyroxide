@@ -151,5 +151,34 @@ assert pid1 == pid2, f"Worker was reaped even though PYROXIDE_MIN_WORKERS=1 (pid
     assert res.returncode == 0, f"Subprocess failed:\nstdout: {res.stdout}\nstderr: {res.stderr}"
 
 
+def test_isolated_dylib_custom_symbols():
+    """Verifies that load_dylib works with custom symbol lookup inside isolated worker processes."""
+    from pyroxide import compile_c, load_dylib
+
+    C_SRC = """
+    #include <stdint.h>
+    #include <stdlib.h>
+    
+    uint8_t* my_shift_fn(const uint8_t* ptr, size_t len, size_t* out_len) {
+        uint8_t* res = (uint8_t*)malloc(len);
+        for (size_t i = 0; i < len; i++) {
+            res[i] = ptr[i] + 2; // Caesar cipher +2
+        }
+        *out_len = len;
+        return res;
+    }
+    
+    void pyroxide_plugin_free(uint8_t* ptr, size_t len) {
+        free(ptr);
+    }
+    """
+    compile_c("caesar_custom_iso", C_SRC)
+    proxy = load_dylib("caesar_custom_iso", isolated=True)
+
+    handle = proxy.my_shift_fn(b"abc")
+    assert handle.result() == b"cde"
+
+
+
 
 

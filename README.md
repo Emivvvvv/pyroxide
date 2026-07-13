@@ -124,25 +124,28 @@ print(tg.status) # "Completed"
 ### 3. Sandboxed WebAssembly (GIL-Free)
 Run computations GIL-free in a secure, virtual sandbox without compiling native code:
 ```python
-from pyroxide import register_wasm, wasm_task
+from pyroxide import register_wasm, wasm_task, load_wasm
 
 # 1. Register WebAssembly bytecode
 with open("rot13.wasm", "rb") as f:
     register_wasm("rot13", f.read())
 
-# 2. Decorate stub function
+# 2. Execute via decorators
 @wasm_task("rot13")
 def rot13_cipher(payload: str) -> str:
     pass
 
-# 3. Execute GIL-free on the Rust worker pool!
 print(rot13_cipher("hello").result()) # "uryyb"
+
+# 3. Or load as an Object-Oriented Proxy!
+cipher = load_wasm("rot13")
+print(cipher.run("hello").result()) # "uryyb"
 ```
 
 ### 4. Dynamic Shared Libraries (On-the-Fly Compilation)
 Compile and load native code strings on-the-fly. **Rust** (`compile_dylib`), **C** (`compile_c`), and **Zig** (`compile_zig`) are supported:
 ```python
-from pyroxide import compile_dylib, dylib_task
+from pyroxide import compile_dylib, dylib_task, load_dylib
 
 RUST_SRC = """
 #[no_mangle]
@@ -164,11 +167,16 @@ pub unsafe extern "C" fn pyroxide_plugin_free(ptr: *mut u8, len: usize) {
 # Compile, register and load the Rust library on-the-fly!
 compile_dylib("rust_upper", RUST_SRC)
 
+# 1. Execute via decorators
 @dylib_task("rust_upper")
 def to_upper_rust(payload: str) -> str:
     pass
 
 print(to_upper_rust("hello from rust").result())  # "HELLO FROM RUST"
+
+# 2. Or load as an Object-Oriented Proxy to call any custom C-ABI symbol directly!
+rust_upper = load_dylib("rust_upper")
+print(rust_upper.pyroxide_plugin_run("hello from rust").result())  # "HELLO FROM RUST"
 ```
 
 ---
