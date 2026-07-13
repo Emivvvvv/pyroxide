@@ -106,7 +106,8 @@ impl IsolatedProcessPool {
             .spawn()
             .map_err(|e| format!("Failed to spawn pyroxide worker child process: {e}"))?;
 
-        listener.set_nonblocking(true)
+        listener
+            .set_nonblocking(true)
             .map_err(|e| format!("Failed to set non-blocking on listener: {e}"))?;
 
         let mut stream = None;
@@ -115,7 +116,9 @@ impl IsolatedProcessPool {
 
         while start.elapsed() < timeout {
             if let Ok(Some(status)) = child.try_wait() {
-                return Err(format!("Worker child process exited on startup with status: {status}"));
+                return Err(format!(
+                    "Worker child process exited on startup with status: {status}"
+                ));
             }
 
             match listener.accept() {
@@ -142,7 +145,8 @@ impl IsolatedProcessPool {
             }
         };
 
-        stream.set_nonblocking(false)
+        stream
+            .set_nonblocking(false)
             .map_err(|e| format!("Failed to set stream back to blocking: {e}"))?;
 
         let mut worker = IpcWorker {
