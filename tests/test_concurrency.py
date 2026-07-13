@@ -168,3 +168,24 @@ def test_batch_submission_native_bytes():
     assert len(handles) == 3
     results = [h.result() for h in handles]
     assert results == [b"A", b"B", b"C"]
+
+
+def test_task_group_workflow():
+    from pyroxide import group
+    
+    # 1. Test parallel execution group
+    payloads = [5, 10, 15]
+    handles = python_square.batch(payloads)
+    
+    tg = group(handles)
+    assert tg.status in ("Running", "Completed")
+    
+    results = tg.result(consume=False)
+    assert results == [25, 100, 225]
+    assert tg.status == "Completed"
+    
+    # 2. Test group cancellation
+    h_cancel = python_square.batch([20, 30])
+    tg_cancel = group(h_cancel)
+    tg_cancel.cancel()
+    assert tg_cancel.status == "Cancelled"

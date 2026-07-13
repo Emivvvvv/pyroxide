@@ -30,3 +30,38 @@ Acquiring the lock once for the entire batch avoids overhead and lock starvation
 *   Reduces submission overhead to **8 microseconds** per task.
 *   Achieves up to a **2x latency reduction** compared to individual task loops.
 *   Ideal for bulk imports, batch transactions (e.g. Odoo invoice reconciliations), and parallel parameter sweeps.
+
+---
+
+## Parallel Task Groups: `group()`
+
+For managing multiple task handles as a single logical execution block, Pyroxide provides the `group()` helper. It wraps task handles into a `TaskGroup`, allowing developers to query status, await, or cancel all grouped tasks as a single unit:
+
+```python
+from pyroxide import task, group
+
+@task
+def calculate_square(x: int) -> int:
+    return x * x
+
+payloads = [10, 20, 30, 40]
+handles = calculate_square.batch(payloads)
+
+# Bundle handles into a TaskGroup
+tg = group(handles)
+print(tg.status) # "Running"
+
+# Await all tasks and retrieve their results in order
+# Pass consume=False to retain metadata if you need to check tg.status afterward
+results = tg.result(consume=False) 
+print(results)     # [100, 400, 900, 1600]
+print(tg.status)   # "Completed"
+```
+
+### TaskGroup Methods
+
+A `TaskGroup` exposes the following API:
+*   `tg.status`: Returns consolidated status (`"Running"`, `"Completed"`, `"Cancelled"`, `"Failed"`). If any task in the group has failed, the group status is `"Failed"`.
+*   `tg.wait()`: Blocks until all tasks in the group are completed.
+*   `tg.result(consume=True)`: Awaits all tasks and returns their results. If `consume=True` (default), task slots are immediately evicted from memory after reading to optimize slab capacity.
+*   `tg.cancel()`: Triggers cancellation for all tasks in the group. Returns `True` if all tasks were successfully cancelled.
