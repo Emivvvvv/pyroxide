@@ -11,7 +11,7 @@ from pyroxide.types import TaskHandle
 # ---------------------------------------------------------
 # Pyroxide Task Definitions (imported from helper module)
 # ---------------------------------------------------------
-from examples.odoo_poc_helper import (
+from examples.odoo_poc.odoo_poc_helper import (
     process_financial_data,
     crash_worker,
     slow_report,

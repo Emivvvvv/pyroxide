@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from examples.odoo_poc_helper import get_worker_pid, crash_worker
+from examples.odoo_poc.odoo_poc_helper import get_worker_pid, crash_worker
 
 if __name__ == "__main__":
     print("--- 5. Isolated Subprocesses & Crash Safety Example ---")

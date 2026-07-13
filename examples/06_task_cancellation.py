@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import time
-from examples.odoo_poc_helper import slow_report
+from examples.odoo_poc.odoo_poc_helper import slow_report
 
 if __name__ == "__main__":
     print("--- 6. Task Cancellation Example ---")
