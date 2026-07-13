@@ -25,7 +25,7 @@ Python's built-in `multiprocessing` module (and `ProcessPoolExecutor`) runs task
 ### Analysis of Results
 1.  **ProcessPoolExecutor is Slow:** Spawning processes and using standard `multiprocessing` IPC is incredibly heavy, taking almost 3 seconds for just 500 tasks.
 2.  **Threads hit the GIL:** Both `ThreadPoolExecutor` and Pyroxide's default `@task` hit the GIL ceiling around 0.38s.
-3.  **Pyroxide `isolated=True` Dominates:** Using pre-warmed background processes with Unix Domain Sockets destroys the competition, bypassing the GIL completely for pure Python code while eliminating startup overhead.
+3.  **Pyroxide `isolated=True` Dominates:** Using pre-warmed background processes with cross-platform local sockets (Unix Domain Sockets / Named Pipes) destroys the competition, bypassing the GIL completely for pure Python code while eliminating startup overhead.
 4.  **Native Code is King:** The `@dylib_task` runs purely outside the Python interpreter, finishing in fractions of a second.
 
 ### Decision Matrix
