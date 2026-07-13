@@ -1,8 +1,8 @@
 import pytest
 import os
 import concurrent.futures
-from pyroxide import task, register_wasm, wasm_task, compile_c, dylib_task
-from tests.isolated_helper import square_isolated, crash_task
+from pyroxide import register_wasm, wasm_task, compile_c, dylib_task
+from tests.isolated_helper import square_isolated, crash_task, echo_large_payload, get_worker_pid
 
 # 1. Test basic Python isolated execution
 def test_isolated_python_task():
@@ -78,3 +78,33 @@ def test_isolated_dylib_task():
         
     handle = caesar_cipher(b"abc")
     assert handle.result() == b"bcd"
+
+
+
+def test_isolated_large_payload_shm():
+    # 1.5 MB payload
+    large_data = "A" * (1024 * 1024 + 100 * 1024)
+    handle = echo_large_payload(large_data)
+    result = handle.result()
+    assert len(result) == len(large_data)
+    assert result == large_data
+
+
+
+def test_isolated_scale_to_zero(monkeypatch):
+    # Set idle timeout to 1 second for fast testing
+    monkeypatch.setenv("PYROXIDE_IDLE_TIMEOUT_SEC", "1")
+    
+    # Run first task to spawn worker
+    pid1 = get_worker_pid(0).result()
+    
+    # Wait for reaper to kill it (timeout is 1s, check interval is 2s, so 3.5s is safe)
+    import time
+    time.sleep(3.5)
+    
+    # Run second task
+    pid2 = get_worker_pid(0).result()
+    
+    # PIDs should be different as the first worker was reaped and a new one spawned
+    assert pid1 != pid2
+

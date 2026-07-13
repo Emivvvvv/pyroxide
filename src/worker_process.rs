@@ -1,65 +1,17 @@
-use std::io::{Read, Write};
-use std::net::TcpStream;
-
+use interprocess::local_socket::LocalSocketStream;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyModule};
-
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
-
-enum IpcStream {
-    #[cfg(unix)]
-    Unix(UnixStream),
-    Tcp(TcpStream),
-}
-
-impl Read for IpcStream {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match self {
-            #[cfg(unix)]
-            IpcStream::Unix(s) => s.read(buf),
-            IpcStream::Tcp(s) => s.read(buf),
-        }
-    }
-}
-
-impl Write for IpcStream {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        match self {
-            #[cfg(unix)]
-            IpcStream::Unix(s) => s.write(buf),
-            IpcStream::Tcp(s) => s.write(buf),
-        }
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        match self {
-            #[cfg(unix)]
-            IpcStream::Unix(s) => s.flush(),
-            IpcStream::Tcp(s) => s.flush(),
-        }
-    }
-}
+use std::io::{Read, Write};
 
 /// Start the high-performance worker IPC loop.
 /// This connects to the master socket/pipe and executes incoming tasks.
 pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
-    let mut stream = if socket_path.starts_with("127.0.0.1:") {
-        let tcp = TcpStream::connect(socket_path)
-            .map_err(|e| format!("Failed to connect to TCP worker port: {e}"))?;
-        IpcStream::Tcp(tcp)
-    } else {
-        #[cfg(unix)]
-        {
-            let unix = UnixStream::connect(socket_path)
-                .map_err(|e| format!("Failed to connect to Unix socket {socket_path}: {e}"))?;
-            IpcStream::Unix(unix)
-        }
-        #[cfg(not(unix))]
-        {
-            return Err("Unix domain sockets are not supported on this platform".to_string());
-        }
-    };
+    let mut stream = LocalSocketStream::connect(socket_path)
+        .map_err(|e| format!("Failed to connect to local socket {socket_path}: {e}"))?;
+
+    // Keep track of the last response SHM so it stays alive until the broker reads it,
+    // and is dropped when we start processing the next task or exit.
+    let mut _last_response_shm: Option<shared_memory::Shmem> = None;
 
     loop {
         // Read Task Type (1 byte)
@@ -69,6 +21,16 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
             break;
         }
         let task_type = type_buf[0];
+
+        // Drop the previous response SHM now that the master has definitely finished reading it and started a new task
+        _last_response_shm = None;
+
+        // Read Flags (1 byte)
+        let mut flags_buf = [0u8; 1];
+        stream
+            .read_exact(&mut flags_buf)
+            .map_err(|e| format!("Failed to read flags: {e}"))?;
+        let flags = flags_buf[0];
 
         // Read Extra Len (4 bytes)
         let mut extra_len_buf = [0u8; 4];
@@ -97,22 +59,80 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
             .read_exact(&mut payload_bytes)
             .map_err(|e| format!("Failed to read payload bytes: {e}"))?;
 
-        // Process Task
-        let (success, response_bytes) = execute_worker_task(task_type, &metadata, payload_bytes);
+        // Resolve SHM payload if flags say so
+        let actual_payload = if (flags & 1) == 1 {
+            let shm_name =
+                String::from_utf8(payload_bytes).map_err(|e| format!("Invalid SHM name: {e}"))?;
+            let shmem = shared_memory::ShmemConf::new()
+                .os_id(&shm_name)
+                .open()
+                .map_err(|e| format!("Failed to open request SHM {shm_name}: {e}"))?;
+            let ptr = shmem.as_ptr();
+            let size = shmem.len();
+            unsafe { std::slice::from_raw_parts(ptr, size) }.to_vec()
+        } else {
+            payload_bytes
+        };
 
-        // Write Response: [Success: 1 byte] [Data Len: 8 bytes] [Data Bytes]
-        let mut response_header = vec![if success { 1u8 } else { 0u8 }];
-        response_header.extend_from_slice(&(response_bytes.len() as u64).to_be_bytes());
+        // Process Task
+        let (success, response_bytes) = execute_worker_task(task_type, &metadata, actual_payload);
+
+        // Prepare response
+        const SHM_THRESHOLD: usize = 1024 * 1024; // 1 MB
+        let use_shm = success && response_bytes.len() >= SHM_THRESHOLD;
+        let mut res_flags = 0u8;
+        let mut actual_response = response_bytes.clone();
+        let mut shm_to_keep = None;
+
+        if use_shm {
+            let shm_name = format!(
+                "pyroxide_shm_res_{}_{}",
+                std::process::id(),
+                rand::random::<u32>()
+            );
+            match shared_memory::ShmemConf::new()
+                .size(response_bytes.len())
+                .os_id(&shm_name)
+                .create()
+            {
+                Ok(shmem) => {
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            response_bytes.as_ptr(),
+                            shmem.as_ptr(),
+                            response_bytes.len(),
+                        );
+                    }
+                    res_flags |= 1;
+                    actual_response = shm_name.into_bytes();
+                    shm_to_keep = Some(shmem);
+                }
+                Err(_) => {
+                    res_flags = 0;
+                }
+            }
+        }
+
+        // Write Response: [Success: 1 byte] [Flags: 1 byte] [Data Len: 8 bytes] [Data Bytes]
+        let mut response_header = vec![if success { 1u8 } else { 0u8 }, res_flags];
+        response_header.extend_from_slice(&(actual_response.len() as u64).to_be_bytes());
 
         stream
             .write_all(&response_header)
             .map_err(|e| format!("Failed to write response header: {e}"))?;
         stream
-            .write_all(&response_bytes)
+            .write_all(&actual_response)
             .map_err(|e| format!("Failed to write response data: {e}"))?;
         stream
             .flush()
             .map_err(|e| format!("Failed to flush stream: {e}"))?;
+
+        if shm_to_keep.is_some() {
+            // Wait for master's acknowledgment before we continue (so master has read the SHM safely)
+            let mut ack = [0u8; 1];
+            let _ = stream.read_exact(&mut ack);
+            _last_response_shm = shm_to_keep;
+        }
     }
 
     Ok(())

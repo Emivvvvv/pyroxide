@@ -472,15 +472,50 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
         worker.registered_dylibs.insert(plugin_name.clone());
     }
 
-    // 3. Write request frame: [Type: 1 byte] [Extra Len: 4 bytes] [Payload Len: 8 bytes] [Metadata] [Payload]
-    let mut header = vec![task_type];
+    // 3. Write request frame: [Type: 1 byte] [Flags: 1 byte] [Extra Len: 4 bytes] [Payload Len: 8 bytes] [Metadata] [Payload]
+    const SHM_THRESHOLD: usize = 1024 * 1024; // 1 MB
+    let use_shm = payload_bytes.len() >= SHM_THRESHOLD;
+    let mut flags = 0u8;
+    let mut actual_payload = payload_bytes.clone();
+    let mut _created_shm = None;
+
+    if use_shm {
+        let shm_name = format!(
+            "pyroxide_shm_{}_{}",
+            std::process::id(),
+            rand::random::<u32>()
+        );
+        match shared_memory::ShmemConf::new()
+            .size(payload_bytes.len())
+            .os_id(&shm_name)
+            .create()
+        {
+            Ok(shmem) => {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        payload_bytes.as_ptr(),
+                        shmem.as_ptr(),
+                        payload_bytes.len(),
+                    );
+                }
+                flags |= 1;
+                actual_payload = shm_name.into_bytes();
+                _created_shm = Some(shmem);
+            }
+            Err(_) => {
+                flags = 0;
+            }
+        }
+    }
+
+    let mut header = vec![task_type, flags];
     header.extend_from_slice(&(metadata.len() as u32).to_be_bytes());
-    header.extend_from_slice(&(payload_bytes.len() as u64).to_be_bytes());
+    header.extend_from_slice(&(actual_payload.len() as u64).to_be_bytes());
 
     let write_result = (|| -> std::io::Result<()> {
         worker.stream.write_all(&header)?;
         worker.stream.write_all(metadata.as_bytes())?;
-        worker.stream.write_all(&payload_bytes)?;
+        worker.stream.write_all(&actual_payload)?;
         worker.stream.flush()?;
         Ok(())
     })();
@@ -489,23 +524,45 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
         return Err(format!("IPC write error: {e}"));
     }
 
-    // 4. Read response frame: [Success: 1 byte] [Data Len: 8 bytes] [Data Bytes]
-    let mut resp_header = [0u8; 9];
+    // 4. Read response frame: [Success: 1 byte] [Flags: 1 byte] [Data Len: 8 bytes] [Data Bytes]
+    let mut resp_header = [0u8; 10];
     let read_result = worker.stream.read_exact(&mut resp_header);
     if let Err(e) = read_result {
-        // Child crashed or socket closed
         return Err(format!("Worker process crashed or closed connection: {e}"));
     }
 
     let success = resp_header[0] == 1;
-    let data_len = u64::from_be_bytes(resp_header[1..9].try_into().unwrap()) as usize;
+    let res_flags = resp_header[1];
+    let data_len = u64::from_be_bytes(resp_header[2..10].try_into().unwrap()) as usize;
 
     let mut data_bytes = vec![0u8; data_len];
     if let Err(e) = worker.stream.read_exact(&mut data_bytes) {
         return Err(format!("IPC read error: {e}"));
     }
 
-    // Update worker task count
+    let final_data = if success && (res_flags & 1) == 1 {
+        let shm_name =
+            String::from_utf8(data_bytes).map_err(|e| format!("Invalid SHM name string: {e}"))?;
+        match shared_memory::ShmemConf::new().os_id(&shm_name).open() {
+            Ok(shmem) => {
+                let ptr = shmem.as_ptr();
+                let size = shmem.len();
+                let slice = unsafe { std::slice::from_raw_parts(ptr, size) };
+                let res = slice.to_vec();
+                let _ = worker.stream.write_all(&[1u8]);
+                let _ = worker.stream.flush();
+                res
+            }
+            Err(e) => {
+                let _ = worker.stream.write_all(&[0u8]);
+                let _ = worker.stream.flush();
+                return Err(format!("Failed to open response SHM {shm_name}: {e}"));
+            }
+        }
+    } else {
+        data_bytes
+    };
+
     worker.tasks_run += 1;
     pool.release_worker(worker);
 
@@ -513,29 +570,27 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
     if success {
         Python::attach(|py| -> Result<Py<PyAny>, String> {
             if task.callable.is_some() {
-                // Deserialise pickled python result
                 let pickle = PyModule::import(py, "pickle").map_err(|e| e.to_string())?;
                 let val = pickle
-                    .call_method1("loads", (PyBytes::new(py, &data_bytes),))
+                    .call_method1("loads", (PyBytes::new(py, &final_data),))
                     .map_err(|e| e.to_string())?;
                 Ok(val.unbind())
             } else {
-                // Return string or bytes based on task payload type
                 let is_str = task.payload.bind(py).extract::<String>().is_ok();
                 if is_str {
-                    let s = String::from_utf8(data_bytes)
+                    let s = String::from_utf8(final_data)
                         .map_err(|e| format!("Invalid UTF-8 output from worker: {e}"))?;
                     let py_str = pyo3::types::PyString::new(py, &s);
                     Ok(py_str.into_any().unbind())
                 } else {
-                    let py_bytes = pyo3::types::PyBytes::new(py, &data_bytes);
+                    let py_bytes = pyo3::types::PyBytes::new(py, &final_data);
                     Ok(py_bytes.into_any().unbind())
                 }
             }
         })
     } else {
         let err_msg =
-            String::from_utf8(data_bytes).unwrap_or_else(|_| "Unknown worker error".to_string());
+            String::from_utf8(final_data).unwrap_or_else(|_| "Unknown worker error".to_string());
         Err(err_msg)
     }
 }

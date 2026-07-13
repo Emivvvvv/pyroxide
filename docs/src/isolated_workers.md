@@ -1,6 +1,6 @@
 # Isolated Worker Processes
 
-By default, Pyroxide runs tasks in background OS threads. In v0.4.0, you can use `isolated=True` to run tasks in isolated OS processes.
+By default, Pyroxide runs tasks in background OS threads. In v0.5.0, you can use `isolated=True` to run tasks in isolated OS processes with high-performance cross-platform IPC and Zero-Copy Shared Memory (SHM) routing.
 
 Why use isolated processes?
 
@@ -34,11 +34,12 @@ handle = heavy_computation([1, 2, 3])
 print(handle.result())
 ```
 
-## Internals
+## Internals & Optimizations
 
-1.  **Warm Worker Pool:** Pyroxide pre-spawns worker processes. There is no `subprocess.Popen` startup cost during task execution.
-2.  **IPC:** Communication uses Unix Domain Sockets (local TCP on Windows) with a custom binary framing protocol. It avoids `pickle` overhead for raw bytes and memoryviews.
-3.  **Lifecycle:** Workers are single-threaded. When a task completes, the worker is reused. If a worker crashes, Pyroxide drops it and spawns a replacement.
+1.  **Warm Worker Pool & Scale-to-Zero:** Pyroxide pre-spawns worker processes so there is no execution-time process startup latency. To minimize memory usage, an idle reaper thread automatically scales the pool to zero by terminating workers idle for more than 60 seconds (non-blocking "Steal and Kill" pattern).
+2.  **Cross-Platform Local Sockets:** IPC uses Unix Domain Sockets on Linux/macOS and Named Pipes on Windows (backed by the `interprocess` crate), avoiding slow TCP loopback overhead.
+3.  **Hybrid Zero-Copy Shared Memory (SHM):** For small payloads (< 1MB), data is sent directly over the local socket. For large payloads (>= 1MB), Pyroxide utilizes OS-level Shared Memory (`shared_memory` crate) for zero-copy transfers, avoiding serialization bottleneck.
+4.  **Lifecycle:** Workers are single-threaded. When a task completes, the worker is reused. If a worker crashes, Pyroxide drops it and spawns a replacement.
 
 ## When to use `isolated=True`
 
@@ -49,8 +50,9 @@ print(handle.result())
 | **WASM** | `isolated=False`. WASM is already sandboxed and GIL-free. |
 | **Stable Native Code** | `isolated=False`. Threads are faster. |
 | **Unstable Native Code** | `isolated=True`. Isolates segfaults. |
+| **Massive Payloads (>=1MB)** | `isolated=True` with Hybrid SHM routing is fast, but `isolated=False` has no process transition overhead. |
 
 ## Limitations
 
--   **Memory Copying:** `isolated=True` requires copying memory over IPC. For massive payloads (>100MB), `isolated=False` (which supports zero-copy) is much faster.
--   **Platform:** Optimized for Unix (Linux, macOS) via Domain Sockets. Windows falls back to local TCP.
+-   **Memory Copying:** Although SHM routing provides zero-copy across the process boundary, there is still serialization/deserialization overhead for complex Python objects.
+-   **Resource Isolation:** Ensure your system supports shared memory mapping (standard on modern macOS, Linux, and Windows). If SHM creation fails, Pyroxide gracefully falls back to socket transmission.
