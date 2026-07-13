@@ -175,13 +175,25 @@ We benchmarked Pyroxide against CPython's standard concurrency pools using ident
 
 *   **Bypassing the Multiprocessing Bottleneck**: While Python's `ProcessPoolExecutor` takes **over 2 seconds** due to slow process spawning and heavy `pickle` IPC serialization, Pyroxide's `@dylib_task` runs native compiled plugins in just **20 milliseconds**—offering a **100x speedup** with zero-copy shared memory.
 
+### Real-World Odoo Enterprise Arrow Ledger Audit Benchmark
+
+To test performance under realistic enterprise data movement workloads, we ran a simulated Odoo Ledger Audit benchmark processing a **9.62 MB Apache Arrow serialized transaction recordset** (200,000 journal items) across 10 concurrent requests:
+*   **Python Multiprocessing (`ProcessPoolExecutor`)**: `0.4605 s` (due to standard OS pipe copying and serialization bottlenecks).
+*   **Pyroxide Isolated Worker Pool (Zero-Copy SHM)**: `0.3414 s` (utilizing OS Shared Memory routing).
+*   **Speedup**: Pyroxide is **1.35x faster** than native Python multiprocessing under heavy data volumes, bypasses the GIL, and supports sub-second scale-to-zero process reaping.
+
+To run the Odoo simulation suite locally:
+```bash
+python examples/odoo_poc/odoo_complex_simulation.py
+```
+
 To run the comparative and basic benchmark suites locally:
 ```bash
 # 1. Run detailed comparative benchmarks against CPython concurrency pools
-python examples/benchmark_vs_alternatives.py
+python examples/benchmarks/benchmark_vs_alternatives.py
 
 # 2. Run basic scheduling latency and asyncio benchmarks
-python examples/benchmark.py
+python examples/benchmarks/benchmark.py
 ```
 
 ---

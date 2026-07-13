@@ -177,6 +177,26 @@ To evaluate the performance of Pyroxide v0.5.0's Hybrid Shared Memory (SHM) rout
 
 ---
 
+### Scenario I: Odoo Enterprise Arrow Ledger Audit (Large-Scale IPC)
+In this scenario, we evaluate Pyroxide's performance under a realistic enterprise workload: processing a **9.62 MB Apache Arrow serialized transaction ledger** (200,000 records) across 10 concurrent requests.
+
+This test simulates how Odoo processes database records by serializing them to Arrow IPC format, transferring them to high-performance workers, and processing them.
+
+- **ProcessPoolExecutor**: Serializes the 9.62 MB table and writes it over standard OS pipes.
+- **Pyroxide Isolated Worker Pool (Zero-Copy SHM)**: Maps the 9.62 MB payload via OS Shared Memory (SHM) dynamically and processes it.
+
+#### Results (10 Concurrent Tasks)
+- **ProcessPoolExecutor (4 workers)**: `0.4605 s`
+- **Pyroxide SHM Isolated (4 workers)**: `0.3414 s`
+- **Result**: Pyroxide SHM is **1.35x faster** than Python multiprocessing under heavy data volumes, bypasses the GIL, and supports sub-second scale-to-zero process reaping.
+
+To run the Odoo simulation suite locally:
+```bash
+python examples/odoo_poc/odoo_complex_simulation.py
+```
+
+---
+
 ## 3. Conclusion & Key Takeaways
 
 The empirical evaluation of Pyroxide across these scenarios yields three main conclusions:
@@ -193,8 +213,8 @@ You can execute the performance suite and the alternative comparison suite local
 
 ```bash
 # 1. Run basic latency and asyncio benchmarks
-python examples/benchmark.py
+python examples/benchmarks/benchmark.py
 
 # 2. Run detailed comparative benchmarks against Python standard libraries
-python examples/benchmark_vs_alternatives.py
+python examples/benchmarks/benchmark_vs_alternatives.py
 ```

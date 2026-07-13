@@ -43,3 +43,26 @@ def slow_report(duration: float) -> float:
 def get_worker_pid(dummy: int) -> int:
     """Returns the process ID of the background worker."""
     return os.getpid()
+
+@task
+def thread_sleep(sec: float) -> float:
+    """GIL-free sleeping task to verify thread concurrency."""
+    time.sleep(sec)
+    return sec
+
+def create_mock_ledger(num_records: int) -> bytes:
+    """Creates a mock financial ledger serialized as an Arrow Table."""
+    ids = list(range(num_records))
+    amounts = [float(i * 10) for i in range(num_records)]
+    descriptions = ["Transaction record line #{}".format(i) for i in range(num_records)]
+    
+    table = pa.Table.from_pydict({
+        "id": ids,
+        "amount": amounts,
+        "description": descriptions
+    })
+    
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+    return bytes(sink.getvalue())
