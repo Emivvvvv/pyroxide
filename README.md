@@ -166,12 +166,12 @@ Detailed documentation, guides, and implementation examples are available in our
 
 We benchmarked Pyroxide against CPython's standard concurrency pools using identical compute payloads (recursive Fibonacci 20 workload) on **Apple M1 Pro (8 cores, 16GB RAM)**:
 
-| Metric (500 Tasks) | Pyroxide `@dylib_task` | Pyroxide `@task` | Threading (std) | Multiprocessing |
-| :--- | :---: | :---: | :---: | :---: |
-| **Execution Time** | **`0.0200 s`** | `0.3878 s` | `0.3742 s` | `2.0786 s` |
-| **GIL Bypass** | **✅ Yes (GIL-Free)** | ❌ No | ❌ No | ✅ Yes |
-| **IPC / Serialization** | **✅ None (Shared Memory)** | ✅ None | ✅ None | ❌ High (`pickle` cost) |
-| **Relative Speedup** | **🔥 100x faster** (18x faster than threads) | 5x faster | 5x faster | Baseline (1x) |
+| Metric (500 Tasks) | Pyroxide `@dylib_task` | Pyroxide `@task(isolated=True)` | Pyroxide `@task` | Threading (std) | Multiprocessing |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Execution Time** | **`0.0200 s`** | **`0.0769 s`** | `0.3878 s` | `0.3742 s` | `2.0786 s` |
+| **GIL Bypass** | **✅ Yes (GIL-Free)** | **✅ Yes** | ❌ No | ❌ No | ✅ Yes |
+| **IPC / Serialization** | **✅ None (Shared Memory)** | **✅ Zero-Copy SHM** | ✅ None | ✅ None | ❌ High (`pickle` cost) |
+| **Relative Speedup** | **🔥 100x faster** | **🔥 27x faster** | 5x faster | 5x faster | Baseline (1x) |
 
 *   **Bypassing the Multiprocessing Bottleneck**: While Python's `ProcessPoolExecutor` takes **over 2 seconds** due to slow process spawning and heavy `pickle` IPC serialization, Pyroxide's `@dylib_task` runs native compiled plugins in just **20 milliseconds**—offering a **100x speedup** with zero-copy shared memory.
 
