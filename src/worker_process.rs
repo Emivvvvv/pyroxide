@@ -283,7 +283,23 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: Vec<u8>) -> (bool
                 "pyroxide_plugin_run"
             };
 
-            let processed = crate::execute_dylib(plugin_name, symbol_name, &payload);
+            let processed = if parts.len() > 2 {
+                let sig_part = parts[2];
+                let sig_parts: Vec<&str> = sig_part.split('|').collect();
+                if sig_parts.len() != 2 {
+                    Err("Invalid FFI signature metadata format".to_string())
+                } else {
+                    let args: Vec<String> = sig_parts[0]
+                        .split(',')
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    let ret = sig_parts[1];
+                    crate::execute_dylib_ffi(plugin_name, symbol_name, &args, ret, &payload)
+                }
+            } else {
+                crate::execute_dylib(plugin_name, symbol_name, &payload)
+            };
 
             match processed {
                 Ok(bytes) => (true, bytes),

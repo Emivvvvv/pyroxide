@@ -4,6 +4,7 @@ pub mod worker;
 pub mod worker_process;
 
 use crate::broker::{get_task_result, get_task_status, wait_task};
+use object::Object;
 use pyo3::prelude::*;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -154,19 +155,221 @@ pub(crate) fn execute_dylib(
     }
 }
 
+fn read_i32(payload: &[u8], offset: &mut usize) -> Result<i32, String> {
+    if *offset + 4 > payload.len() {
+        return Err("Payload too short for i32 argument".to_string());
+    }
+    let val = i32::from_ne_bytes(payload[*offset..*offset + 4].try_into().unwrap());
+    *offset += 4;
+    Ok(val)
+}
+
+fn read_i64(payload: &[u8], offset: &mut usize) -> Result<i64, String> {
+    if *offset + 8 > payload.len() {
+        return Err("Payload too short for i64 argument".to_string());
+    }
+    let val = i64::from_ne_bytes(payload[*offset..*offset + 8].try_into().unwrap());
+    *offset += 8;
+    Ok(val)
+}
+
+fn read_f32(payload: &[u8], offset: &mut usize) -> Result<f32, String> {
+    if *offset + 4 > payload.len() {
+        return Err("Payload too short for f32 argument".to_string());
+    }
+    let val = f32::from_ne_bytes(payload[*offset..*offset + 4].try_into().unwrap());
+    *offset += 4;
+    Ok(val)
+}
+
+fn read_f64(payload: &[u8], offset: &mut usize) -> Result<f64, String> {
+    if *offset + 8 > payload.len() {
+        return Err("Payload too short for f64 argument".to_string());
+    }
+    let val = f64::from_ne_bytes(payload[*offset..*offset + 8].try_into().unwrap());
+    *offset += 8;
+    Ok(val)
+}
+
+pub(crate) fn execute_dylib_ffi(
+    name: &str,
+    symbol_name: &str,
+    args_sig: &[String],
+    ret_sig: &str,
+    payload: &[u8],
+) -> Result<Vec<u8>, String> {
+    let registry = DYLIB_PLUGINS
+        .get()
+        .ok_or_else(|| "Dylib registry not initialized".to_string())?;
+    let map = registry
+        .read()
+        .map_err(|e| format!("Registry lock poisoned: {e}"))?;
+    let plugin = map
+        .get(name)
+        .ok_or_else(|| format!("Dynamic library '{name}' not registered"))?;
+
+    let cached_ptr = {
+        let cache = plugin
+            .symbol_cache
+            .read()
+            .map_err(|e| format!("Symbol cache read lock poisoned: {e}"))?;
+        cache.get(symbol_name).cloned()
+    };
+
+    let run_ptr = match cached_ptr {
+        Some(f) => f as *const std::ffi::c_void,
+        None => {
+            let mut cache = plugin
+                .symbol_cache
+                .write()
+                .map_err(|e| format!("Symbol cache write lock poisoned: {e}"))?;
+
+            if let Some(&f) = cache.get(symbol_name) {
+                f as *const std::ffi::c_void
+            } else {
+                unsafe {
+                    let symbol: libloading::Symbol<*const std::ffi::c_void> = plugin
+                        .lib
+                        .get(symbol_name.as_bytes())
+                        .map_err(|e| format!("Failed to find symbol '{symbol_name}': {e}"))?;
+                    let ptr = *symbol;
+                    let f: PluginRunFn = std::mem::transmute(ptr);
+                    cache.insert(symbol_name.to_string(), f);
+                    ptr
+                }
+            }
+        }
+    };
+
+    let mut offset = 0;
+    let sig_key: Vec<&str> = args_sig.iter().map(|s| s.as_str()).collect();
+
+    unsafe {
+        match (sig_key.as_slice(), ret_sig) {
+            (&["i32"], "i32") => {
+                let f: unsafe extern "C" fn(i32) -> i32 = std::mem::transmute(run_ptr);
+                let a = read_i32(payload, &mut offset)?;
+                let res = f(a);
+                Ok(res.to_ne_bytes().to_vec())
+            }
+            (&["i32"], "f64") => {
+                let f: unsafe extern "C" fn(i32) -> f64 = std::mem::transmute(run_ptr);
+                let a = read_i32(payload, &mut offset)?;
+                let res = f(a);
+                Ok(res.to_ne_bytes().to_vec())
+            }
+            (&["f64"], "f64") => {
+                let f: unsafe extern "C" fn(f64) -> f64 = std::mem::transmute(run_ptr);
+                let a = read_f64(payload, &mut offset)?;
+                let res = f(a);
+                Ok(res.to_ne_bytes().to_vec())
+            }
+            (&["f64"], "i32") => {
+                let f: unsafe extern "C" fn(f64) -> i32 = std::mem::transmute(run_ptr);
+                let a = read_f64(payload, &mut offset)?;
+                let res = f(a);
+                Ok(res.to_ne_bytes().to_vec())
+            }
+            (&["i32", "i32"], "i32") => {
+                let f: unsafe extern "C" fn(i32, i32) -> i32 = std::mem::transmute(run_ptr);
+                let a = read_i32(payload, &mut offset)?;
+                let b = read_i32(payload, &mut offset)?;
+                let res = f(a, b);
+                Ok(res.to_ne_bytes().to_vec())
+            }
+            (&["i32", "i32"], "f64") => {
+                let f: unsafe extern "C" fn(i32, i32) -> f64 = std::mem::transmute(run_ptr);
+                let a = read_i32(payload, &mut offset)?;
+                let b = read_i32(payload, &mut offset)?;
+                let res = f(a, b);
+                Ok(res.to_ne_bytes().to_vec())
+            }
+            (&["f32", "f32"], "f32") => {
+                let f: unsafe extern "C" fn(f32, f32) -> f32 = std::mem::transmute(run_ptr);
+                let a = read_f32(payload, &mut offset)?;
+                let b = read_f32(payload, &mut offset)?;
+                let res = f(a, b);
+                Ok(res.to_ne_bytes().to_vec())
+            }
+            (&["f64", "f64"], "f64") => {
+                let f: unsafe extern "C" fn(f64, f64) -> f64 = std::mem::transmute(run_ptr);
+                let a = read_f64(payload, &mut offset)?;
+                let b = read_f64(payload, &mut offset)?;
+                let res = f(a, b);
+                Ok(res.to_ne_bytes().to_vec())
+            }
+            (&["f64", "f64"], "i32") => {
+                let f: unsafe extern "C" fn(f64, f64) -> i32 = std::mem::transmute(run_ptr);
+                let a = read_f64(payload, &mut offset)?;
+                let b = read_f64(payload, &mut offset)?;
+                let res = f(a, b);
+                Ok(res.to_ne_bytes().to_vec())
+            }
+            (&["i64", "i64"], "i64") => {
+                let f: unsafe extern "C" fn(i64, i64) -> i64 = std::mem::transmute(run_ptr);
+                let a = read_i64(payload, &mut offset)?;
+                let b = read_i64(payload, &mut offset)?;
+                let res = f(a, b);
+                Ok(res.to_ne_bytes().to_vec())
+            }
+            (&["i32", "i32", "i32"], "i32") => {
+                let f: unsafe extern "C" fn(i32, i32, i32) -> i32 = std::mem::transmute(run_ptr);
+                let a = read_i32(payload, &mut offset)?;
+                let b = read_i32(payload, &mut offset)?;
+                let c = read_i32(payload, &mut offset)?;
+                let res = f(a, b, c);
+                Ok(res.to_ne_bytes().to_vec())
+            }
+            (&["f64", "f64", "f64"], "f64") => {
+                let f: unsafe extern "C" fn(f64, f64, f64) -> f64 = std::mem::transmute(run_ptr);
+                let a = read_f64(payload, &mut offset)?;
+                let b = read_f64(payload, &mut offset)?;
+                let c = read_f64(payload, &mut offset)?;
+                let res = f(a, b, c);
+                Ok(res.to_ne_bytes().to_vec())
+            }
+            (&["i32", "i32", "i32", "i32"], "i32") => {
+                let f: unsafe extern "C" fn(i32, i32, i32, i32) -> i32 =
+                    std::mem::transmute(run_ptr);
+                let a = read_i32(payload, &mut offset)?;
+                let b = read_i32(payload, &mut offset)?;
+                let c = read_i32(payload, &mut offset)?;
+                let d = read_i32(payload, &mut offset)?;
+                let res = f(a, b, c, d);
+                Ok(res.to_ne_bytes().to_vec())
+            }
+            (&["f64", "f64", "f64", "f64"], "f64") => {
+                let f: unsafe extern "C" fn(f64, f64, f64, f64) -> f64 =
+                    std::mem::transmute(run_ptr);
+                let a = read_f64(payload, &mut offset)?;
+                let b = read_f64(payload, &mut offset)?;
+                let c = read_f64(payload, &mut offset)?;
+                let d = read_f64(payload, &mut offset)?;
+                let res = f(a, b, c, d);
+                Ok(res.to_ne_bytes().to_vec())
+            }
+            _ => Err(format!(
+                "Unsupported FFI signature mapping: {args_sig:?} -> {ret_sig}"
+            )),
+        }
+    }
+}
+
 /// Submits a task to be executed by a registered dynamic shared library (dylib).
 #[pyfunction]
-#[pyo3(signature = (plugin_name, symbol_name, payload, isolated=false))]
+#[pyo3(signature = (plugin_name, symbol_name, payload, ffi_sig=None, isolated=false))]
 fn submit_dylib_task(
     py: Python<'_>,
     plugin_name: String,
     symbol_name: String,
     payload: Bound<'_, PyAny>,
+    ffi_sig: Option<(Vec<String>, String)>,
     isolated: bool,
 ) -> PyResult<usize> {
     let py_payload = payload.into_any().unbind();
-    let task_id = py
-        .detach(move || broker::submit_dylib_task(plugin_name, symbol_name, py_payload, isolated));
+    let task_id = py.detach(move || {
+        broker::submit_dylib_task(plugin_name, symbol_name, py_payload, ffi_sig, isolated)
+    });
     Ok(task_id)
 }
 
@@ -323,6 +526,56 @@ fn get_slab_size() -> usize {
 }
 
 #[pyfunction]
+fn get_wasm_exports(module_name: String) -> PyResult<Vec<String>> {
+    let module = get_wasm_module(&module_name).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "WASM module '{module_name}' not registered"
+        ))
+    })?;
+
+    let mut exports = Vec::new();
+    for export in module.exports() {
+        if export.ty().func().is_some() {
+            exports.push(export.name().to_string());
+        }
+    }
+    Ok(exports)
+}
+
+#[pyfunction]
+fn get_dylib_exports(plugin_name: String) -> PyResult<Vec<String>> {
+    let paths = get_dylib_paths();
+    let library_path = paths.get(&plugin_name).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "Dynamic library '{plugin_name}' not registered"
+        ))
+    })?;
+
+    let file_data = std::fs::read(library_path).map_err(|e| {
+        pyo3::exceptions::PyIOError::new_err(format!("Failed to read dylib file: {e}"))
+    })?;
+
+    let file = object::File::parse(&*file_data).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("Failed to parse dylib binary: {e}"))
+    })?;
+
+    let mut exports = Vec::new();
+    if let Ok(file_exports) = file.exports() {
+        for export in file_exports {
+            if let Ok(name) = std::str::from_utf8(export.name()) {
+                let s = name.to_string();
+                if !s.starts_with('_') && s != "pyroxide_plugin_free" && s != "rust_eh_personality"
+                {
+                    exports.push(s);
+                }
+            }
+        }
+    }
+
+    Ok(exports)
+}
+
+#[pyfunction]
 fn start_worker_loop(socket_path: String) -> PyResult<()> {
     worker_process::start_worker_loop(&socket_path)
         .map_err(pyo3::exceptions::PyRuntimeError::new_err)
@@ -343,6 +596,8 @@ fn _pyroxide(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(submit_wasm_task, m)?)?;
     m.add_function(wrap_pyfunction!(register_dylib, m)?)?;
     m.add_function(wrap_pyfunction!(submit_dylib_task, m)?)?;
+    m.add_function(wrap_pyfunction!(get_wasm_exports, m)?)?;
+    m.add_function(wrap_pyfunction!(get_dylib_exports, m)?)?;
     m.add_function(wrap_pyfunction!(start_worker_loop, m)?)?;
 
     Ok(())

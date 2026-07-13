@@ -18,6 +18,7 @@ from .types import TaskHandle
 from .wasm import register_wasm, wasm_task, load_wasm
 from .plugins import compile_dylib, dylib_task, compile_c, compile_zig, load_dylib
 from .workflows import group, TaskGroup
+from .stubs import generate_stubs
 
 __version__ = "0.6.0"
 
@@ -34,4 +35,5 @@ __all__ = [
     "compile_zig",
     "group",
     "TaskGroup",
+    "generate_stubs",
 ]

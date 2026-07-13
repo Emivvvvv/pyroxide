@@ -231,8 +231,17 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                             return Err("Task cancelled".to_string());
                         }
 
-                        let output_bytes =
-                            crate::execute_dylib(plugin_name, symbol_name, input_bytes)?;
+                        let output_bytes = if let Some(ref sig) = task_clone.ffi_sig {
+                            crate::execute_dylib_ffi(
+                                plugin_name,
+                                symbol_name,
+                                &sig.0,
+                                &sig.1,
+                                input_bytes,
+                            )?
+                        } else {
+                            crate::execute_dylib(plugin_name, symbol_name, input_bytes)?
+                        };
 
                         match payload {
                             NativePayload::Str(_) => {
@@ -415,7 +424,13 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
                     .dylib_symbol
                     .as_deref()
                     .unwrap_or("pyroxide_plugin_run");
-                let metadata = format!("{plugin_name}:{symbol_name}");
+                let metadata = if let Some(ref sig) = task.ffi_sig {
+                    let args = sig.0.join(",");
+                    let ret = &sig.1;
+                    format!("{plugin_name}:{symbol_name}:{args}|{ret}")
+                } else {
+                    format!("{plugin_name}:{symbol_name}")
+                };
                 let bound_payload = task.payload.bind(py);
                 let bytes = if let Ok(s) = bound_payload.extract::<String>() {
                     s.into_bytes()

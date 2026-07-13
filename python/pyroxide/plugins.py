@@ -195,6 +195,7 @@ def compile_zig(name: str, source_code: str) -> str:
 def dylib_task(
     dylib_name: str,
     symbol_name: str = "pyroxide_plugin_run",
+    ffi_sig: Optional[tuple] = None,
     *,
     isolated: bool = False,
 ):
@@ -207,13 +208,18 @@ def dylib_task(
     Args:
         dylib_name: The name of the dylib as registered with ``compile_dylib()``.
         symbol_name: The function symbol to load from the dylib. Defaults to "pyroxide_plugin_run".
+        ffi_sig: Optional FFI signature tuple, e.g. (['i32', 'i32'], 'i32')
         isolated: Set to True to run in an isolated worker process for crash isolation.
     """
 
     def decorator(func: Callable[[Any], Any]) -> Callable[[Any], TaskHandle]:
         def wrapper(payload: Any) -> TaskHandle:
             task_id = submit_dylib_task(
-                dylib_name, symbol_name, payload, isolated=isolated
+                dylib_name,
+                symbol_name,
+                payload,
+                ffi_sig=ffi_sig,
+                isolated=isolated,
             )
             return TaskHandle(task_id)
 
@@ -229,23 +235,93 @@ def dylib_task(
 class DylibProxy:
     """A proxy representing a dynamically loaded shared library."""
 
-    def __init__(self, lib_name: str, isolated: bool = False):
+    def __init__(
+        self, lib_name: str, signatures: Optional[dict] = None, isolated: bool = False
+    ):
         self._lib_name = lib_name
+        self._signatures = signatures or {}
         self._isolated = isolated
 
     def __getattr__(self, symbol_name: str):
-        def dylib_method(payload) -> TaskHandle:
-            task_id = submit_dylib_task(
-                self._lib_name, symbol_name, payload, isolated=self._isolated
-            )
-            return TaskHandle(task_id)
+        sig = self._signatures.get(symbol_name)
+        if sig:
+            # FFI custom signature call
+            args_types = sig.get("args", [])
+            ret_type = sig.get("ret", "void")
 
-        return dylib_method
+            type_mapping = {
+                "i32": "i",
+                "i64": "q",
+                "f32": "f",
+                "f64": "d",
+            }
+
+            pack_format = "=" + "".join(type_mapping[t] for t in args_types)
+            unpack_format = "=" + type_mapping.get(ret_type, "")
+
+            def ffi_method(*args) -> TaskHandle:
+                import struct
+
+                packed_payload = struct.pack(pack_format, *args)
+                ffi_sig_arg = (args_types, ret_type)
+
+                task_id = submit_dylib_task(
+                    self._lib_name,
+                    symbol_name,
+                    packed_payload,
+                    ffi_sig=ffi_sig_arg,
+                    isolated=self._isolated,
+                )
+
+                handle = TaskHandle(task_id)
+                original_result = handle.result
+                original_result_async = handle.result_async
+
+                def ffi_result(
+                    timeout_sec: Optional[float] = None, consume: bool = True
+                ) -> Any:
+                    res_bytes = original_result(
+                        timeout_sec=timeout_sec, consume=consume
+                    )
+                    if not unpack_format or unpack_format == "=":
+                        return None
+                    return struct.unpack(unpack_format, res_bytes)[0]
+
+                async def ffi_result_async(
+                    timeout_sec: Optional[float] = None, consume: bool = True
+                ) -> Any:
+                    res_bytes = await original_result_async(
+                        timeout_sec=timeout_sec, consume=consume
+                    )
+                    if not unpack_format or unpack_format == "=":
+                        return None
+                    return struct.unpack(unpack_format, res_bytes)[0]
+
+                handle.result = ffi_result
+                handle.result_async = ffi_result_async
+                return handle
+
+            return ffi_method
+        else:
+            # Regular bytes/string call
+            def dylib_method(payload) -> TaskHandle:
+                task_id = submit_dylib_task(
+                    self._lib_name,
+                    symbol_name,
+                    payload,
+                    ffi_sig=None,
+                    isolated=self._isolated,
+                )
+                return TaskHandle(task_id)
+
+            return dylib_method
 
 
-def load_dylib(lib_name: str, *, isolated: bool = False) -> DylibProxy:
+def load_dylib(
+    lib_name: str, *, signatures: Optional[dict] = None, isolated: bool = False
+) -> DylibProxy:
     """
     Loads a registered dynamic shared library (dylib) and returns an object-oriented proxy
     allowing direct invocation of any C-ABI exported symbol on the background worker pool.
     """
-    return DylibProxy(lib_name, isolated=isolated)
+    return DylibProxy(lib_name, signatures=signatures, isolated=isolated)

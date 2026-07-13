@@ -179,6 +179,34 @@ def test_isolated_dylib_custom_symbols():
     assert handle.result() == b"cde"
 
 
+def test_isolated_dylib_ffi():
+    """Verifies that load_dylib works with signatures inside isolated worker processes."""
+    from pyroxide import compile_c, load_dylib
+
+    C_SRC = """
+    #include <stdint.h>
+    #include <stddef.h>
+    
+    int32_t my_mul_fn(int32_t a, int32_t b) {
+        return a * b;
+    }
+    
+    void pyroxide_plugin_free(void* ptr, size_t len) {
+        // Dummy
+    }
+    """
+    compile_c("mul_ffi_iso", C_SRC)
+    proxy = load_dylib(
+        "mul_ffi_iso",
+        signatures={"my_mul_fn": {"args": ["i32", "i32"], "ret": "i32"}},
+        isolated=True,
+    )
+
+    handle = proxy.my_mul_fn(6, 7)
+    assert handle.result() == 42
+
+
+
 
 
 

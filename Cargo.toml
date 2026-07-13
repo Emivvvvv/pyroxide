@@ -26,3 +26,4 @@ libloading = "0.8"
 rand = "0.8.5"
 interprocess = "1.2.1"
 shared_memory = "0.12.4"
+object = { version = "0.36", default-features = false, features = ["read"] }

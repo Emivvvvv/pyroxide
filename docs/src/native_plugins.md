@@ -266,8 +266,52 @@ print(handle_hash.result())
 print(handle_encrypt.result())
 ```
 
-### Performance: Symbol Cache
-To maintain microsecond latency, Pyroxide does not perform slow string-based symbol lookups (`dlsym`/`GetProcAddress`) on every execution. Instead, it resolves the symbol dynamically on the **first call** and stores the function pointer in a thread-safe cache (`RwLock<HashMap>`) in Rust. Subsequent calls fetch the cached pointer in under 15 nanoseconds.
+### Static Type Dispatching (Mini-FFI)
+
+By default, Pyroxide native symbols must accept a byte pointer and return a byte pointer. However, you can use the `signatures` parameter to call arbitrary C-ABI functions using numeric arguments directly (e.g. `i32`, `i64`, `f32`, `f64`). 
+
+Pyroxide will automatically pack arguments into bytes on the Python side using `struct.pack` and unpack them in Rust.
+
+#### Example:
+Suppose your dynamic library exports a numeric function:
+```c
+int32_t calculate_hash(int32_t a, double factor) {
+    return (int32_t)(a * factor);
+}
+```
+
+You can call it in Python with native integers and floats:
+```python
+math_lib = load_dylib(
+    "math_lib",
+    signatures={
+        "calculate_hash": {"args": ["i32", "f64"], "ret": "i32"}
+    }
+)
+
+# Arguments are packed, dispatched, and the returned i32 is unpacked automatically!
+handle = math_lib.calculate_hash(100, 1.5)
+print(handle.result()) # 150
+```
+
+Supported types include: `i32`, `i64`, `f32`, `f64` for functions with up to 4 arguments.
+
+---
+
+### IDE Autocomplete (Type Stub Generator)
+
+Since dynamic proxy objects use runtime dynamic lookup (`__getattr__`), editors like VS Code won't show autocompletion for dynamic methods. 
+
+To solve this, Pyroxide provides a **Type Stub Generator** that parses the compiled shared library and writes a standard PEP 484 type stub file (`.pyi`):
+
+```python
+from pyroxide import generate_stubs
+
+# Automatically parses the dynamic symbols in "math_lib" and writes a .pyi stub file
+generate_stubs("math_lib", library_type="dylib")
+```
+
+Once the stub file is generated in your project, VS Code or PyCharm will instantly show full autocompletion and hover documentation for all your native dynamic methods!
 
 ---
 

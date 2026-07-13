@@ -131,6 +131,19 @@ print("Final Output:", handle_unzip.result())
 
 ---
 
+### IDE Autocomplete (Type Stub Generator)
+
+Similar to dynamic libraries, you can generate standard Python PEP 484 type stub files (`.pyi`) for registered WASM modules, offering autocomplete for all exported functions:
+
+```python
+from pyroxide import generate_stubs
+
+# Automatically parses the WASM module exports and writes a .pyi stub file
+generate_stubs("compression_mod", library_type="wasm")
+```
+
+---
+
 ## Benefits of the WASM Engine
 
 - **Safety & Isolation**: Code runs within the `wasmtime` sandbox. A crash or panic in guest code cannot crash the host Python runtime or the Pyroxide broker.

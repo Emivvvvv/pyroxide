@@ -113,3 +113,44 @@ def test_dylib_oop_proxy():
     assert handle_add.result() == "ADD: hello"
     assert handle_mul.result() == "MUL: world"
 
+
+def test_dylib_mini_ffi():
+    """Verifies that load_dylib works with signatures dictionary for FFI calls."""
+    from pyroxide import load_dylib, compile_dylib
+
+    RUST_FFI_SRC = """
+    #[no_mangle]
+    pub extern "C" fn ffi_add(a: i32, b: i32) -> i32 {
+        a + b
+    }
+
+    #[no_mangle]
+    pub extern "C" fn ffi_double(x: f64) -> f64 {
+        x * 2.0
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn pyroxide_plugin_free(ptr: *mut u8, len: usize) {
+        // Dummy
+    }
+    """
+
+    compile_dylib("dyn_ffi", RUST_FFI_SRC)
+
+    # Load with signatures
+    proxy = load_dylib(
+        "dyn_ffi",
+        signatures={
+            "ffi_add": {"args": ["i32", "i32"], "ret": "i32"},
+            "ffi_double": {"args": ["f64"], "ret": "f64"},
+        },
+    )
+
+    # Call custom FFI symbols directly!
+    handle_add = proxy.ffi_add(40, 2)
+    handle_double = proxy.ffi_double(3.14)
+
+    assert handle_add.result() == 42
+    assert handle_double.result() == 6.28
+
+
