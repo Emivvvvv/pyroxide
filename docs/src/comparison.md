@@ -10,7 +10,7 @@ Python's built-in `multiprocessing` module (and `ProcessPoolExecutor`) runs task
 
 ### Comparison
 *   **Memory Overhead**: `multiprocessing` forks or spawns brand new OS processes, which duplicate Python interpreter memory and increase startup latency. **Pyroxide** runs lightweight background OS threads in the same process with negligible overhead.
-*   **IPC (Inter-Process Communication)**: Data sent to a subprocess must be serialized (using `pickle`) and sent over OS pipes/sockets. 
+*   **IPC (Inter-Process Communication)**: Data sent to a subprocess must be serialized (using `pickle`) and sent over OS pipes/sockets. For large payloads (>=1MB), this creates severe CPU and memory copying bottlenecks. **Pyroxide** uses a hybrid routing approach: small payloads go over sockets, while large payloads (>=1MB) are written to OS Shared Memory (SHM) using a zero-copy mapping mechanism, bypassing serialization.
 
 | Library / Strategy | Latency (100 Tasks) | Latency (500 Tasks) |
 | :--- | :--- | :--- |

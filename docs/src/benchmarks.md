@@ -159,6 +159,22 @@ We isolated the function call overhead of Pyroxide's dynamic plugin loader again
   - **Pyroxide `@dylib_task`**: **`1.0 µs`** (Direct dynamic library function pointer dispatch via `libloading`).
 - **Verdict**: Pyroxide matches raw PyO3 speeds with **zero runtime penalty**, while completely eliminating the need to write static boilerplate or compile/deploy wheels for every native change.
 
+### Scenario H: Large Payload IPC (Shared Memory vs. Pickled Pipes)
+To evaluate the performance of Pyroxide v0.5.0's Hybrid Shared Memory (SHM) routing under large data transfers, we compared it against Python's `ProcessPoolExecutor` using a **1.5 MB payload** (representing a typical image frame, numpy array, or large JSON/text blob).
+
+- **ProcessPoolExecutor**: Serializes the 1.5 MB string via `pickle` and writes the bytes over standard OS pipes.
+- **Pyroxide `isolated=True` (SHM)**: Detects that the payload is `>= 1MB`, creates a shared memory segment, copies the data once, and routes only the segment name via the local socket.
+
+#### Results (Total Latency)
+| Task Count | ProcessPoolExecutor (Pickled Pipes) | Pyroxide isolated=True (Zero-Copy SHM) | Speedup |
+| :--- | :--- | :--- | :--- |
+| **10 Tasks** | `0.0904 s` | `0.0692 s` | **~1.3x** |
+| **50 Tasks** | `0.1470 s` | `0.0585 s` | **~2.5x** |
+
+**Key Takeaways**:
+- As task counts scale, the CPU overhead of serializing (pickling) and deserializing large objects in `ProcessPoolExecutor` becomes a massive bottleneck.
+- Pyroxide's zero-copy SHM routing keeps task dispatch latency flat because data is mapped directly into the worker's address space, bypassing the serialization pipeline.
+
 ---
 
 ## 3. Conclusion & Key Takeaways
