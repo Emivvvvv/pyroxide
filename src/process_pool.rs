@@ -250,6 +250,16 @@ fn get_idle_timeout_secs() -> u64 {
     })
 }
 
+fn get_min_workers() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("PYROXIDE_MIN_WORKERS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    })
+}
+
 fn spawn_idle_reaper(pool: Arc<IsolatedProcessPool>) {
     std::thread::spawn(move || {
         loop {
@@ -257,6 +267,7 @@ fn spawn_idle_reaper(pool: Arc<IsolatedProcessPool>) {
             std::thread::sleep(Duration::from_secs(2));
 
             let idle_timeout = Duration::from_secs(get_idle_timeout_secs());
+            let min_workers = get_min_workers();
 
             let mut victims = Vec::new();
 
@@ -264,7 +275,9 @@ fn spawn_idle_reaper(pool: Arc<IsolatedProcessPool>) {
                 let now = std::time::Instant::now();
                 let mut i = 0;
                 while i < workers_guard.len() {
-                    if now.duration_since(workers_guard[i].last_used) > idle_timeout {
+                    if workers_guard.len() > min_workers
+                        && now.duration_since(workers_guard[i].last_used) > idle_timeout
+                    {
                         let dead_worker = workers_guard.remove(i);
                         victims.push(dead_worker);
                     } else {

@@ -107,3 +107,49 @@ def test_isolated_scale_to_zero(monkeypatch):
     # PIDs should be different as the first worker was reaped and a new one spawned
     assert pid1 != pid2
 
+
+def test_isolated_min_workers():
+    import os
+    import subprocess
+    import sys
+
+    # Run a python subprocess to test this in isolation
+    code = """
+import os
+import time
+import sys
+sys.path.insert(0, os.path.abspath("python"))
+sys.path.insert(0, os.path.abspath("."))
+from tests.isolated_helper import get_worker_pid
+
+# Run first task to spawn worker
+pid1 = get_worker_pid(0).result()
+
+# Wait 3.5s (longer than 1s timeout + 2s reaper interval)
+time.sleep(3.5)
+
+# Run second task
+pid2 = get_worker_pid(0).result()
+
+# With PYROXIDE_MIN_WORKERS=1, the worker should NOT be reaped, so PIDs should be identical
+print(f"PIDS: {pid1} {pid2}")
+assert pid1 == pid2, f"Worker was reaped even though PYROXIDE_MIN_WORKERS=1 (pid1={pid1}, pid2={pid2})"
+"""
+    env = os.environ.copy()
+    env["PYROXIDE_MIN_WORKERS"] = "1"
+    env["PYROXIDE_IDLE_TIMEOUT_SEC"] = "1"
+    # Ensure sys.path and PYTHONPATH are clean or propagated
+    env["PYTHONPATH"] = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "python")) + ":" + env.get("PYTHONPATH", "")
+    
+    res = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        capture_output=True,
+        text=True,
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    assert res.returncode == 0, f"Subprocess failed:\nstdout: {res.stdout}\nstderr: {res.stderr}"
+
+
+
+

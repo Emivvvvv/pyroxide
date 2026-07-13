@@ -36,7 +36,7 @@ print(handle.result())
 
 ## Internals & Optimizations
 
-1.  **Warm Worker Pool & Scale-to-Zero:** Pyroxide pre-spawns worker processes so there is no execution-time process startup latency. To minimize memory usage, an idle reaper thread automatically scales the pool to zero by terminating workers idle for more than 60 seconds (non-blocking "Steal and Kill" pattern).
+1.  **Warm Worker Pool & Scale-to-Zero:** Pyroxide pre-spawns worker processes so there is no execution-time process startup latency. To minimize memory usage, an idle reaper thread automatically terminates idle worker processes. You can configure `PYROXIDE_MIN_WORKERS` (default: `0`) to keep a minimum number of warm workers alive and block-waiting on the socket to eliminate cold-start latency entirely, while any workers above this threshold are reaped when idle for longer than `PYROXIDE_IDLE_TIMEOUT_SEC` (default: `60` seconds).
 2.  **Cross-Platform Local Sockets:** IPC uses Unix Domain Sockets on Linux/macOS and Named Pipes on Windows (backed by the `interprocess` crate), avoiding slow TCP loopback overhead.
 3.  **Hybrid Zero-Copy Shared Memory (SHM):** For small payloads (< 1MB), data is sent directly over the local socket. For large payloads (>= 1MB), Pyroxide utilizes OS-level Shared Memory (`shared_memory` crate) for zero-copy transfers, avoiding serialization bottleneck.
 4.  **Lifecycle:** Workers are single-threaded. When a task completes, the worker is reused. If a worker crashes, Pyroxide drops it and spawns a replacement.

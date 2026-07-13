@@ -19,7 +19,7 @@ from .wasm import register_wasm, wasm_task
 from .plugins import compile_dylib, dylib_task, compile_c, compile_zig
 from .workflows import group, TaskGroup
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 
 __all__ = [
     "task",
