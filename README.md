@@ -40,7 +40,7 @@ Pyroxide (`pyro3`) is a lightweight, ultra-high-performance background task brok
 *   📦 **Zero Infrastructure**: Runs completely in-process. No Redis, RabbitMQ, or Celery worker daemons to configure or maintain.
 *   💾 **Zero-Copy Serialization**: Pass large byte arrays, memoryviews, or columnar buffers across the C-ABI boundary without copy or `pickle` overhead.
 *   🛠️ **On-the-Fly Native Compilers**: Write code as Python strings and compile them to dynamic libraries on-the-fly (**Rust**, **C**, and **Zig** supported!).
-*   🛡️ **Isolated Worker Processes**: Opt-in `isolated=True` to run tasks in separate processes via ultra-fast Unix Domain Sockets for 100% crash safety and pure Python GIL bypass.
+*   🛡️ **Isolated Worker Processes**: Opt-in `isolated=True` to run tasks in separate processes via cross-platform Named Pipes / Domain Sockets. Features bidirectional **Zero-Copy Shared Memory (SHM)** routing for payloads >= 1MB, and an auto-scaling **Scale-to-Zero** pool to reclaim memory.
 
 ---
 
