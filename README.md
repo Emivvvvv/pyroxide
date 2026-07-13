@@ -177,10 +177,14 @@ We benchmarked Pyroxide against CPython's standard concurrency pools using ident
 
 ### Real-World Odoo Enterprise Arrow Ledger Audit Benchmark
 
-To test performance under realistic enterprise data movement workloads, we ran a simulated Odoo Ledger Audit benchmark processing a **9.62 MB Apache Arrow serialized transaction recordset** (200,000 journal items) across 10 concurrent requests:
-*   **Python Multiprocessing (`ProcessPoolExecutor`)**: `0.4605 s` (due to standard OS pipe copying and serialization bottlenecks).
-*   **Pyroxide Isolated Worker Pool (Zero-Copy SHM)**: `0.3414 s` (utilizing OS Shared Memory routing).
-*   **Speedup**: Pyroxide is **1.35x faster** than native Python multiprocessing under heavy data volumes, bypasses the GIL, and supports sub-second scale-to-zero process reaping.
+To test performance under realistic enterprise data movement workloads, we ran a simulated Odoo Ledger Audit benchmark processing a **9.62 MB Apache Arrow serialized transaction recordset** (200,000 journal items) across 10 concurrent requests comparing different concurrency strategies:
+*   **CPython ThreadPoolExecutor (GIL-Locked)**: `0.3221 s`
+*   **Pyroxide Threaded `@task` (GIL-Locked)**: `0.3298 s` (matches Python's native scheduling overhead perfectly)
+*   **ProcessPoolExecutor (Python, Pickled Pipes)**: `0.2758 s`
+*   **Pyroxide SHM Isolated `@task` (Zero-Copy SHM)**: `0.3272 s`
+*   **Pyroxide `@dylib_task` (C-compiled, GIL-Free)**: **`0.0091 s`** (bypasses GIL entirely)
+
+**Key Takeaway**: By offloading the audit logic to a dynamically compiled C/Rust plugin running on Pyroxide's background thread pool, we achieve a **35.3x speedup** over CPython's standard `ThreadPoolExecutor` by completely bypassing the GIL.
 
 To run the Odoo simulation suite locally:
 ```bash

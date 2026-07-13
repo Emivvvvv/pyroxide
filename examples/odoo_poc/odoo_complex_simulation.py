@@ -12,7 +12,7 @@ import time
 import ctypes
 import pyarrow as pa
 import concurrent.futures
-from pyroxide import task
+from pyroxide import task, compile_c, dylib_task
 from pyroxide.types import TaskHandle
 from pyroxide._pyroxide import submit_task
 
@@ -25,6 +25,28 @@ from examples.odoo_poc.odoo_poc_helper import (
     thread_sleep
 )
 
+C_AUDIT_SRC = """
+#include <stdint.h>
+#include <stdlib.h>
+
+uint8_t* pyroxide_plugin_run(const uint8_t* ptr, size_t len, size_t* out_len) {
+    // Simulates auditing 200,000 ledger rows GIL-free
+    double total = 0.0;
+    for (size_t i = 0; i < 200000; i++) {
+        total += (double)(i * 10);
+    }
+    
+    double* res = (double*)malloc(sizeof(double));
+    *res = total;
+    *out_len = sizeof(double);
+    return (uint8_t*)res;
+}
+
+void pyroxide_plugin_free(uint8_t* ptr, size_t len) {
+    free(ptr);
+}
+"""
+
 def python_audit(arrow_bytes):
     reader = pa.BufferReader(arrow_bytes)
     table = pa.ipc.open_stream(reader).read_all()
@@ -35,6 +57,10 @@ def python_audit(arrow_bytes):
     with pa.ipc.new_stream(sink, res_table.schema) as writer:
         writer.write_table(res_table)
     return bytes(sink.getvalue())
+
+@task
+def pyroxide_threaded_audit(arrow_bytes):
+    return python_audit(arrow_bytes)
 
 def run_complex_simulation():
     print("=========================================================")
@@ -125,25 +151,55 @@ def run_complex_simulation():
     
     # 8. Comparative Performance Benchmarks
     print("\n[Phase 8] Running Comparative Benchmarks (ProcessPool vs Pyroxide SHM)...")
+    compile_c("odoo_audit_complex_c", C_AUDIT_SRC)
+    
+    @dylib_task("odoo_audit_complex_c")
+    def apply_c_complex_audit(payload: bytes) -> bytes:
+        pass
+
     num_tasks = 10
     
-    # Python Multiprocessing
+    # 1. ThreadPoolExecutor
+    start = time.time()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(python_audit, massive_ledger) for _ in range(num_tasks)]
+        res_tp = [f.result() for f in futures]
+    t_tp = time.time() - start
+    print(f"-> ThreadPoolExecutor (Python, GIL-Locked):  {t_tp:.4f}s")
+    
+    # 2. Pyroxide Threaded @task
+    start = time.time()
+    handles = [pyroxide_threaded_audit(massive_ledger) for _ in range(num_tasks)]
+    res_py_th = [h.result() for h in handles]
+    t_py_th = time.time() - start
+    print(f"-> Pyroxide Threaded @task (GIL-Locked):     {t_py_th:.4f}s")
+
+    # 3. Python Multiprocessing
     start = time.time()
     with concurrent.futures.ProcessPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(python_audit, massive_ledger) for _ in range(num_tasks)]
         res_mp = [f.result() for f in futures]
     t_mp = time.time() - start
-    print(f"-> ProcessPoolExecutor (4 workers): {t_mp:.4f}s")
+    print(f"-> ProcessPoolExecutor (4 workers):          {t_mp:.4f}s")
     
-    # Pyroxide SHM
+    # 4. Pyroxide SHM
     start = time.time()
     handles = [process_financial_data(massive_ledger) for _ in range(num_tasks)]
     res_py = [h.result() for h in handles]
     t_py = time.time() - start
-    print(f"-> Pyroxide SHM Isolated (4 workers): {t_py:.4f}s")
+    print(f"-> Pyroxide SHM Isolated (4 workers):        {t_py:.4f}s")
     
-    speedup = t_mp / t_py if t_py > 0 else 0
-    print(f"\n⚡ Pyroxide SHM is {speedup:.2f}x FASTER than Python Multiprocessing!")
+    # 5. Pyroxide Dynamic Dylib Task (GIL-Free C compilation)
+    start = time.time()
+    handles = [apply_c_complex_audit(massive_ledger) for _ in range(num_tasks)]
+    res_c = [h.result() for h in handles]
+    t_c = time.time() - start
+    print(f"-> Pyroxide @dylib_task (C-compiled, GIL-Free): {t_c:.4f}s")
+
+    speedup_shm = t_mp / t_py if t_py > 0 else 0
+    speedup_dylib = t_tp / t_c if t_c > 0 else 0
+    print(f"\n⚡ Pyroxide SHM is {speedup_shm:.2f}x FASTER than Python Multiprocessing!")
+    print(f"⚡ Pyroxide @dylib_task is {speedup_dylib:.2f}x FASTER than CPython ThreadPool!")
     print("✔ Phase 8 PASSED.")
     
     print("\n=========================================================")

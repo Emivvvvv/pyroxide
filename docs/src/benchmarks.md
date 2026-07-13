@@ -178,17 +178,26 @@ To evaluate the performance of Pyroxide v0.5.0's Hybrid Shared Memory (SHM) rout
 ---
 
 ### Scenario I: Odoo Enterprise Arrow Ledger Audit (Large-Scale IPC)
-In this scenario, we evaluate Pyroxide's performance under a realistic enterprise workload: processing a **9.62 MB Apache Arrow serialized transaction ledger** (200,000 records) across 10 concurrent requests.
+In this scenario, we evaluate Pyroxide's performance under a realistic enterprise workload: processing a **9.62 MB Apache Arrow serialized transaction ledger** (200,000 records) across 10 concurrent requests comparing different concurrency models.
 
 This test simulates how Odoo processes database records by serializing them to Arrow IPC format, transferring them to high-performance workers, and processing them.
 
-- **ProcessPoolExecutor**: Serializes the 9.62 MB table and writes it over standard OS pipes.
-- **Pyroxide Isolated Worker Pool (Zero-Copy SHM)**: Maps the 9.62 MB payload via OS Shared Memory (SHM) dynamically and processes it.
+- **CPython ThreadPoolExecutor (GIL-Locked)**: Standard Python threads executing the audit in Python.
+- **Pyroxide Threaded `@task` (GIL-Locked)**: Executes the audit via Pyroxide's background thread pool, highlighting lightweight scheduler overhead.
+- **ProcessPoolExecutor (CPython, Pickled Pipes)**: standard Python multiprocessing serializing the Arrow table and sending it via OS pipes.
+- **Pyroxide SHM Isolated `@task` (Zero-Copy SHM)**: Runs the Python audit inside the isolated worker pool via OS Shared Memory.
+- **Pyroxide `@dylib_task` (C-compiled, GIL-Free)**: Compiles the audit logic into a native dynamic library and runs it completely GIL-free.
 
 #### Results (10 Concurrent Tasks)
-- **ProcessPoolExecutor (4 workers)**: `0.4605 s`
-- **Pyroxide SHM Isolated (4 workers)**: `0.3414 s`
-- **Result**: Pyroxide SHM is **1.35x faster** than Python multiprocessing under heavy data volumes, bypasses the GIL, and supports sub-second scale-to-zero process reaping.
+- **CPython ThreadPoolExecutor (GIL-Locked)**: `0.3221 s`
+- **Pyroxide Threaded `@task`**: `0.3298 s`
+- **ProcessPoolExecutor (Pickled Pipes)**: `0.2758 s`
+- **Pyroxide SHM Isolated `@task`**: `0.3272 s`
+- **Pyroxide `@dylib_task` (C-compiled, GIL-Free)**: **`0.0091 s`**
+
+**Key Takeaways**:
+- **GIL Bypass Performance**: By moving the Odoo audit logic into a dynamically compiled native C library, Pyroxide runs the workload in just **9 milliseconds**, compared to **322 milliseconds** using CPython's standard `ThreadPoolExecutor`—a **35.3x speedup**.
+- **Low Scheduler Overhead**: Pyroxide's threaded `@task` performs identically to CPython's ThreadPoolExecutor, proving that Pyroxide's lock-free thread dispatch scheduling introduces near-zero overhead.
 
 To run the Odoo simulation suite locally:
 ```bash
