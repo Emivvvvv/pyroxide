@@ -3,6 +3,24 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyModule};
 use std::io::{Read, Write};
 
+pub(crate) struct ShmemGuard {
+    pub(crate) shmem: Option<shared_memory::Shmem>,
+}
+
+impl ShmemGuard {
+    pub fn new(shmem: shared_memory::Shmem) -> Self {
+        Self { shmem: Some(shmem) }
+    }
+}
+
+impl Drop for ShmemGuard {
+    fn drop(&mut self) {
+        if let Some(shmem) = self.shmem.take() {
+            std::mem::drop(shmem);
+        }
+    }
+}
+
 /// Start the high-performance worker IPC loop.
 /// This connects to the master socket/pipe and executes incoming tasks.
 pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
@@ -11,7 +29,7 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
 
     // Keep track of the last response SHM so it stays alive until the broker reads it,
     // and is dropped when we start processing the next task or exit.
-    let mut _last_response_shm: Option<shared_memory::Shmem> = None;
+    let mut _last_response_shm: Option<ShmemGuard> = None;
 
     loop {
         // Read Task Type (1 byte)
@@ -81,7 +99,7 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
         let use_shm = success && response_bytes.len() >= crate::get_shm_threshold();
         let mut res_flags = 0u8;
         let mut actual_response = response_bytes.clone();
-        let mut shm_to_keep = None;
+        let mut shm_to_keep: Option<ShmemGuard> = None;
 
         if use_shm {
             let shm_name = format!(
@@ -105,7 +123,7 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
                     }
                     res_flags |= 1;
                     actual_response = shm_name.into_bytes();
-                    shm_to_keep = Some(shmem);
+                    shm_to_keep = Some(ShmemGuard::new(shmem));
                 }
                 Err(_) => {
                     res_flags = 0;
@@ -206,7 +224,30 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: Vec<u8>) -> (bool
                     .ok_or_else(|| format!("WASM module '{module_name}' not registered"))?;
 
                 let engine = crate::get_wasm_engine();
-                let mut store = wasmtime::Store::new(engine, ());
+                let limit_bytes = std::env::var("PYROXIDE_WASM_MEMORY_LIMIT_BYTES")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(100 * 1024 * 1024); // 100 MB default
+
+                let state = crate::WasmState {
+                    limits: wasmtime::StoreLimitsBuilder::new()
+                        .memory_size(limit_bytes)
+                        .build(),
+                };
+                let mut store = wasmtime::Store::new(engine, state);
+                store.limiter(|s| &mut s.limits);
+
+                let timeout_ms = std::env::var("PYROXIDE_WASM_TIMEOUT_MS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(1000); // 1 second default
+                let tick_ms = std::env::var("PYROXIDE_WASM_TICK_MS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(10);
+                let ticks = (timeout_ms / tick_ms).max(1) as u64;
+                store.set_epoch_deadline(ticks);
+
                 let linker = wasmtime::Linker::new(engine);
                 let instance = linker
                     .instantiate(&mut store, &module)

@@ -1029,6 +1029,7 @@ dependencies = [
  "shared_memory",
  "slab",
  "wasmtime",
+ "wat",
 ]
 
 [[package]]

@@ -51,3 +51,8 @@ docs/book/
 docs/api/
 /docs/book/
 /docs/api/
+
+# Stub files
+*_proxy.pyi
+*_proxy.py
+

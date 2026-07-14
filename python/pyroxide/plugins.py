@@ -40,6 +40,8 @@ def compile_dylib(
         >>> handle = process("hello")
         >>> print(handle.result())
     """
+    import shutil
+
     temp_dir = tempfile.mkdtemp(prefix=f"pyroxide_dylib_{name}_")
     try:
         # Run cargo init
@@ -98,12 +100,20 @@ def compile_dylib(
         if not os.path.exists(compiled_path):
             raise FileNotFoundError(f"Compiled library not found at: {compiled_path}")
 
+        # Copy to persistent cache directory
+        cache_dir = os.path.expanduser("~/.pyroxide/cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        dest_path = os.path.join(cache_dir, lib_name)
+        shutil.copy2(compiled_path, dest_path)
+
         # Register dylib with the Rust core engine
-        register_dylib(name, compiled_path)
-        return compiled_path
+        register_dylib(name, dest_path)
+        return dest_path
 
     except Exception as e:
         raise RuntimeError(f"Failed to compile dylib '{name}' via Cargo: {e}") from e
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def compile_c(name: str, source_code: str) -> str:
@@ -117,6 +127,8 @@ def compile_c(name: str, source_code: str) -> str:
             - ``pyroxide_plugin_run(ptr, len, out_len) -> uint8_t*``
             - ``pyroxide_plugin_free(ptr, len)``
     """
+    import shutil
+
     temp_dir = tempfile.mkdtemp(prefix=f"pyroxide_c_{name}_")
     try:
         src_path = os.path.join(temp_dir, f"{name}.c")
@@ -141,11 +153,19 @@ def compile_c(name: str, source_code: str) -> str:
         if not os.path.exists(compiled_path):
             raise FileNotFoundError(f"Compiled C library not found at: {compiled_path}")
 
-        register_dylib(name, compiled_path)
-        return compiled_path
+        # Copy to persistent cache directory
+        cache_dir = os.path.expanduser("~/.pyroxide/cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        dest_path = os.path.join(cache_dir, lib_name)
+        shutil.copy2(compiled_path, dest_path)
+
+        register_dylib(name, dest_path)
+        return dest_path
 
     except Exception as e:
         raise RuntimeError(f"Failed to compile C library '{name}': {e}") from e
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def compile_zig(name: str, source_code: str) -> str:
@@ -159,6 +179,8 @@ def compile_zig(name: str, source_code: str) -> str:
             - ``pyroxide_plugin_run(ptr, len, out_len) -> [*]u8``
             - ``pyroxide_plugin_free(ptr, len)``
     """
+    import shutil
+
     temp_dir = tempfile.mkdtemp(prefix=f"pyroxide_zig_{name}_")
     try:
         src_path = os.path.join(temp_dir, f"{name}.zig")
@@ -185,11 +207,19 @@ def compile_zig(name: str, source_code: str) -> str:
                 f"Compiled Zig library not found at: {compiled_path}"
             )
 
-        register_dylib(name, compiled_path)
-        return compiled_path
+        # Copy to persistent cache directory
+        cache_dir = os.path.expanduser("~/.pyroxide/cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        dest_path = os.path.join(cache_dir, lib_name)
+        shutil.copy2(compiled_path, dest_path)
+
+        register_dylib(name, dest_path)
+        return dest_path
 
     except Exception as e:
         raise RuntimeError(f"Failed to compile Zig library '{name}': {e}") from e
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def dylib_task(
@@ -301,6 +331,16 @@ class DylibProxy:
                 handle.result_async = ffi_result_async
                 return handle
 
+            def ffi_batch(payloads: list) -> list[TaskHandle]:
+                res = []
+                for p in payloads:
+                    if isinstance(p, tuple):
+                        res.append(ffi_method(*p))
+                    else:
+                        res.append(ffi_method(p))
+                return res
+
+            ffi_method.batch = ffi_batch
             return ffi_method
         else:
             # Regular bytes/string call
@@ -314,6 +354,10 @@ class DylibProxy:
                 )
                 return TaskHandle(task_id)
 
+            def dylib_batch(payloads: list) -> list[TaskHandle]:
+                return [dylib_method(p) for p in payloads]
+
+            dylib_method.batch = dylib_batch
             return dylib_method
 
 

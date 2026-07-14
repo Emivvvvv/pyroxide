@@ -358,17 +358,38 @@ fn submit_dylib_task(
     isolated: bool,
 ) -> PyResult<usize> {
     let py_payload = payload.into_any().unbind();
-    let task_id = py.detach(move || {
+    py.detach(move || {
         broker::submit_dylib_task(plugin_name, symbol_name, py_payload, ffi_sig, isolated)
-    });
-    Ok(task_id)
+    })
+}
+
+pub(crate) struct WasmState {
+    pub(crate) limits: wasmtime::StoreLimits,
 }
 
 static WASM_ENGINE: OnceLock<Engine> = OnceLock::new();
 static WASM_REGISTRY: OnceLock<RwLock<HashMap<String, Module>>> = OnceLock::new();
 
 pub(crate) fn get_wasm_engine() -> &'static Engine {
-    WASM_ENGINE.get_or_init(Engine::default)
+    WASM_ENGINE.get_or_init(|| {
+        let mut config = wasmtime::Config::new();
+        config.epoch_interruption(true);
+        let engine = Engine::new(&config).expect("Failed to initialize WASM engine");
+
+        let engine_clone = engine.clone();
+        std::thread::spawn(move || {
+            let tick_ms = std::env::var("PYROXIDE_WASM_TICK_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10);
+            loop {
+                engine_clone.increment_epoch();
+                std::thread::sleep(std::time::Duration::from_millis(tick_ms));
+            }
+        });
+
+        engine
+    })
 }
 
 pub(crate) fn get_wasm_module(module_name: &str) -> Option<Module> {
@@ -406,6 +427,20 @@ fn register_wasm_module(module_name: String, wasm_bytes: Vec<u8>) -> PyResult<()
     Ok(())
 }
 
+#[pyfunction]
+fn register_wasm_wat(module_name: String, wat_str: String) -> PyResult<()> {
+    let wasm_bytes = wat::parse_str(&wat_str)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    register_wasm_module_internal(module_name.clone(), wasm_bytes.clone())
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let bytes = WASM_BYTES.get_or_init(|| RwLock::new(HashMap::new()));
+    bytes
+        .write()
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?
+        .insert(module_name, wasm_bytes);
+    Ok(())
+}
+
 /// This function submits a WebAssembly task to the broker.
 #[pyfunction]
 #[pyo3(signature = (module_name, func_name, payload, isolated=false))]
@@ -417,9 +452,7 @@ fn submit_wasm_task(
     isolated: bool,
 ) -> PyResult<usize> {
     let py_payload = payload.into_any().unbind();
-    let task_id =
-        py.detach(move || broker::submit_wasm_task(module_name, func_name, py_payload, isolated));
-    Ok(task_id)
+    py.detach(move || broker::submit_wasm_task(module_name, func_name, py_payload, isolated))
 }
 
 /// This function submits a task to the broker and returns the task ID.
@@ -434,9 +467,7 @@ fn submit_task(
     let py_callable = callable.map(|c| c.into_any().unbind());
     let py_payload = payload.into_any().unbind();
 
-    let task_id = py.detach(move || broker::submit_task(py_callable, py_payload, isolated));
-
-    Ok(task_id)
+    py.detach(move || broker::submit_task(py_callable, py_payload, isolated))
 }
 
 /// This function submits a batch of tasks to the broker under a single write lock.
@@ -457,9 +488,7 @@ fn submit_batch(
         py_callables.push(py_callable.as_ref().map(|c| c.clone_ref(py)));
     }
 
-    let task_ids = py.detach(move || broker::submit_batch(py_callables, py_payloads, isolated));
-
-    Ok(task_ids)
+    py.detach(move || broker::submit_batch(py_callables, py_payloads, isolated))
 }
 
 /// This function cancels a task with the given ID.
@@ -613,6 +642,29 @@ fn start_worker_loop(socket_path: String) -> PyResult<()> {
         .map_err(pyo3::exceptions::PyRuntimeError::new_err)
 }
 
+#[cfg(unix)]
+static ASYNC_WAKER_FD: OnceLock<std::os::fd::RawFd> = OnceLock::new();
+
+#[cfg(unix)]
+#[pyfunction]
+fn register_async_waker(fd: std::os::fd::RawFd) {
+    let _ = ASYNC_WAKER_FD.set(fd);
+}
+
+#[cfg(unix)]
+pub(crate) fn notify_waker() {
+    use std::os::fd::FromRawFd;
+    if let Some(&fd) = ASYNC_WAKER_FD.get() {
+        unsafe {
+            let mut file = std::fs::File::from_raw_fd(fd);
+            use std::io::Write;
+            let _ = file.write_all(&[1]);
+            let _ = file.flush();
+            std::mem::forget(file);
+        }
+    }
+}
+
 /// PyO3 entry point
 #[pymodule]
 fn _pyroxide(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -625,6 +677,7 @@ fn _pyroxide(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_slab_size, m)?)?;
     m.add_function(wrap_pyfunction!(cancel_task, m)?)?;
     m.add_function(wrap_pyfunction!(register_wasm_module, m)?)?;
+    m.add_function(wrap_pyfunction!(register_wasm_wat, m)?)?;
     m.add_function(wrap_pyfunction!(submit_wasm_task, m)?)?;
     m.add_function(wrap_pyfunction!(register_dylib, m)?)?;
     m.add_function(wrap_pyfunction!(submit_dylib_task, m)?)?;
@@ -632,6 +685,8 @@ fn _pyroxide(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_dylib_exports, m)?)?;
     m.add_function(wrap_pyfunction!(get_dylib_metadata, m)?)?;
     m.add_function(wrap_pyfunction!(start_worker_loop, m)?)?;
+    #[cfg(unix)]
+    m.add_function(wrap_pyfunction!(register_async_waker, m)?)?;
 
     Ok(())
 }

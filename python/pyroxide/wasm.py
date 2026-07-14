@@ -10,6 +10,15 @@ def register_wasm(module_name: str, wasm_bytes: bytes):
     register_wasm_module(module_name, wasm_bytes)
 
 
+def register_wasm_wat(module_name: str, wat_str: str):
+    """
+    Registers a WebAssembly module from WAT text format.
+    """
+    from ._pyroxide import register_wasm_wat as reg_wat
+
+    reg_wat(module_name, wat_str)
+
+
 def wasm_task(module_name: str, func_name: str = "run", *, isolated: bool = False):
     """
     Decorator to submit string or byte payloads to be processed by a registered WASM module.
@@ -42,6 +51,10 @@ class WasmProxy:
             )
             return TaskHandle(task_id)
 
+        def wasm_batch(payloads: list) -> list[TaskHandle]:
+            return [wasm_method(p) for p in payloads]
+
+        wasm_method.batch = wasm_batch
         return wasm_method
 
 

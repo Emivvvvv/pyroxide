@@ -8,6 +8,24 @@ pub(crate) enum NativePayload {
     Bytes(Vec<u8>),
 }
 
+pub(crate) struct ShmemGuard {
+    pub(crate) shmem: Option<shared_memory::Shmem>,
+}
+
+impl ShmemGuard {
+    pub fn new(shmem: shared_memory::Shmem) -> Self {
+        Self { shmem: Some(shmem) }
+    }
+}
+
+impl Drop for ShmemGuard {
+    fn drop(&mut self) {
+        if let Some(shmem) = self.shmem.take() {
+            std::mem::drop(shmem);
+        }
+    }
+}
+
 fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>) {
     while let Ok(task_id) = receiver.recv() {
         // 1. Get task from Slab using a read lock
@@ -113,7 +131,30 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                             .ok_or_else(|| format!("WASM module '{module_name}' not registered"))?;
 
                         let engine = crate::get_wasm_engine();
-                        let mut store = wasmtime::Store::new(engine, ());
+                        let limit_bytes = std::env::var("PYROXIDE_WASM_MEMORY_LIMIT_BYTES")
+                            .ok()
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(100 * 1024 * 1024); // 100 MB default
+
+                        let state = crate::WasmState {
+                            limits: wasmtime::StoreLimitsBuilder::new()
+                                .memory_size(limit_bytes)
+                                .build(),
+                        };
+                        let mut store = wasmtime::Store::new(engine, state);
+                        store.limiter(|s| &mut s.limits);
+
+                        let timeout_ms = std::env::var("PYROXIDE_WASM_TIMEOUT_MS")
+                            .ok()
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(1000); // 1 second default
+                        let tick_ms = std::env::var("PYROXIDE_WASM_TICK_MS")
+                            .ok()
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(10);
+                        let ticks = (timeout_ms / tick_ms).max(1) as u64;
+                        store.set_epoch_deadline(ticks);
+
                         let linker = wasmtime::Linker::new(engine);
                         let instance = linker
                             .instantiate(&mut store, &module)
@@ -318,6 +359,8 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                 *completed = true;
             }
             task.completed_cvar.notify_all();
+            #[cfg(unix)]
+            crate::notify_waker();
         }
     }
 }
@@ -378,6 +421,8 @@ fn execute_isolated_task(task: &Arc<Task>) {
         *completed = true;
     }
     task.completed_cvar.notify_all();
+    #[cfg(unix)]
+    crate::notify_waker();
 }
 
 fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
@@ -490,7 +535,7 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
     let use_shm = payload_bytes.len() >= crate::get_shm_threshold();
     let mut flags = 0u8;
     let mut actual_payload = payload_bytes.clone();
-    let mut _created_shm = None;
+    let mut _created_shm: Option<ShmemGuard> = None;
 
     if use_shm {
         let shm_name = format!(
@@ -514,7 +559,7 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
                 }
                 flags |= 1;
                 actual_payload = shm_name.into_bytes();
-                _created_shm = Some(shmem);
+                _created_shm = Some(ShmemGuard::new(shmem));
             }
             Err(_) => {
                 flags = 0;

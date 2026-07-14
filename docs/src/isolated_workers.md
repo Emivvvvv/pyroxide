@@ -64,3 +64,14 @@ print(handle_hash.result())
 
 -   **Memory Copying:** Although SHM routing provides zero-copy across the process boundary, there is still serialization/deserialization overhead for complex Python objects.
 -   **Resource Isolation:** Ensure your system supports shared memory mapping (standard on modern macOS, Linux, and Windows). If SHM creation fails, Pyroxide gracefully falls back to socket transmission.
+
+---
+
+## SHM Leak Protection
+
+For large payloads, Pyroxide maps data to OS-level Shared Memory (SHM). If a worker process crashes, panics, or terminates mid-execution, standard OS-level SHM files can leak, causing the host to run out of descriptors or memory.
+
+To prevent this, Pyroxide implements strict **SHM Leak Protection**:
+- **RAII Drop Guards**: Both the master and worker runtimes wrap shared memory segments in a custom Rust `ShmemGuard`.
+- **Automatic Unmapping & Unlinking**: When the task finishes or if either the worker/master process crashes or panics mid-execution, Rust's panic unwinding automatically drops the guard, unmapping and unlinking the shared memory segment from the OS filesystem (POSIX `shm_unlink` on macOS/Linux).
+

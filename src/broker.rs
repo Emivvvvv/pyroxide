@@ -104,7 +104,7 @@ pub(crate) fn submit_task(
     callable: Option<Py<PyAny>>,
     payload: Py<PyAny>,
     isolated: bool,
-) -> usize {
+) -> PyResult<usize> {
     let engine = get_engine();
 
     let task = Arc::new(Task {
@@ -132,16 +132,52 @@ pub(crate) fn submit_task(
         slab.insert(task)
     };
 
-    let _ = engine.sender.send(task_id);
+    let timeout_ms = std::env::var("PYROXIDE_QUEUE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000); // 1 second default
 
-    task_id
+    let send_res = if timeout_ms == 0 {
+        engine.sender.try_send(task_id).map_err(|e| match e {
+            crossbeam_channel::TrySendError::Full(_) => "Task queue is full".to_string(),
+            crossbeam_channel::TrySendError::Disconnected(_) => {
+                "Task queue channel is disconnected".to_string()
+            }
+        })
+    } else {
+        engine
+            .sender
+            .send_timeout(task_id, Duration::from_millis(timeout_ms))
+            .map_err(|e| match e {
+                crossbeam_channel::SendTimeoutError::Timeout(_) => {
+                    "Task queue is full (timeout exceeded)".to_string()
+                }
+                crossbeam_channel::SendTimeoutError::Disconnected(_) => {
+                    "Task queue channel is disconnected".to_string()
+                }
+            })
+    };
+
+    if let Err(err) = send_res {
+        let mut slab = engine
+            .broker
+            .tasks
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        if slab.contains(task_id) {
+            slab.remove(task_id);
+        }
+        return Err(pyo3::exceptions::PyBufferError::new_err(err));
+    }
+
+    Ok(task_id)
 }
 
 pub(crate) fn submit_batch(
     callables: Vec<Option<Py<PyAny>>>,
     payloads: Vec<Py<PyAny>>,
     isolated: bool,
-) -> Vec<usize> {
+) -> PyResult<Vec<usize>> {
     let engine = get_engine();
     let mut ids = Vec::with_capacity(payloads.len());
 
@@ -172,11 +208,63 @@ pub(crate) fn submit_batch(
         }
     }
 
+    let timeout_ms = std::env::var("PYROXIDE_QUEUE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000); // 1 second default
+
+    let mut sent_ids = Vec::new();
+    let mut send_err = None;
+
     for &task_id in &ids {
-        let _ = engine.sender.send(task_id);
+        if send_err.is_none() {
+            let send_res = if timeout_ms == 0 {
+                engine.sender.try_send(task_id).map_err(|e| match e {
+                    crossbeam_channel::TrySendError::Full(_) => "Task queue is full".to_string(),
+                    crossbeam_channel::TrySendError::Disconnected(_) => {
+                        "Task queue channel is disconnected".to_string()
+                    }
+                })
+            } else {
+                engine
+                    .sender
+                    .send_timeout(task_id, Duration::from_millis(timeout_ms))
+                    .map_err(|e| match e {
+                        crossbeam_channel::SendTimeoutError::Timeout(_) => {
+                            "Task queue is full (timeout exceeded)".to_string()
+                        }
+                        crossbeam_channel::SendTimeoutError::Disconnected(_) => {
+                            "Task queue channel is disconnected".to_string()
+                        }
+                    })
+            };
+
+            match send_res {
+                Ok(_) => {
+                    sent_ids.push(task_id);
+                }
+                Err(err) => {
+                    send_err = Some(err);
+                }
+            }
+        }
     }
 
-    ids
+    if let Some(err) = send_err {
+        let mut slab = engine
+            .broker
+            .tasks
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        for &task_id in &ids {
+            if !sent_ids.contains(&task_id) && slab.contains(task_id) {
+                slab.remove(task_id);
+            }
+        }
+        return Err(pyo3::exceptions::PyBufferError::new_err(err));
+    }
+
+    Ok(ids)
 }
 
 pub(crate) fn submit_wasm_task(
@@ -184,7 +272,7 @@ pub(crate) fn submit_wasm_task(
     func_name: String,
     payload: Py<PyAny>,
     isolated: bool,
-) -> usize {
+) -> PyResult<usize> {
     let engine = get_engine();
 
     let task = Arc::new(Task {
@@ -212,9 +300,45 @@ pub(crate) fn submit_wasm_task(
         slab.insert(task)
     };
 
-    let _ = engine.sender.send(task_id);
+    let timeout_ms = std::env::var("PYROXIDE_QUEUE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000); // 1 second default
 
-    task_id
+    let send_res = if timeout_ms == 0 {
+        engine.sender.try_send(task_id).map_err(|e| match e {
+            crossbeam_channel::TrySendError::Full(_) => "Task queue is full".to_string(),
+            crossbeam_channel::TrySendError::Disconnected(_) => {
+                "Task queue channel is disconnected".to_string()
+            }
+        })
+    } else {
+        engine
+            .sender
+            .send_timeout(task_id, Duration::from_millis(timeout_ms))
+            .map_err(|e| match e {
+                crossbeam_channel::SendTimeoutError::Timeout(_) => {
+                    "Task queue is full (timeout exceeded)".to_string()
+                }
+                crossbeam_channel::SendTimeoutError::Disconnected(_) => {
+                    "Task queue channel is disconnected".to_string()
+                }
+            })
+    };
+
+    if let Err(err) = send_res {
+        let mut slab = engine
+            .broker
+            .tasks
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        if slab.contains(task_id) {
+            slab.remove(task_id);
+        }
+        return Err(pyo3::exceptions::PyBufferError::new_err(err));
+    }
+
+    Ok(task_id)
 }
 
 pub(crate) fn submit_dylib_task(
@@ -223,7 +347,7 @@ pub(crate) fn submit_dylib_task(
     payload: Py<PyAny>,
     ffi_sig: Option<(Vec<String>, String)>,
     isolated: bool,
-) -> usize {
+) -> PyResult<usize> {
     let engine = get_engine();
 
     let task = Arc::new(Task {
@@ -251,9 +375,45 @@ pub(crate) fn submit_dylib_task(
         slab.insert(task)
     };
 
-    let _ = engine.sender.send(task_id);
+    let timeout_ms = std::env::var("PYROXIDE_QUEUE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000); // 1 second default
 
-    task_id
+    let send_res = if timeout_ms == 0 {
+        engine.sender.try_send(task_id).map_err(|e| match e {
+            crossbeam_channel::TrySendError::Full(_) => "Task queue is full".to_string(),
+            crossbeam_channel::TrySendError::Disconnected(_) => {
+                "Task queue channel is disconnected".to_string()
+            }
+        })
+    } else {
+        engine
+            .sender
+            .send_timeout(task_id, Duration::from_millis(timeout_ms))
+            .map_err(|e| match e {
+                crossbeam_channel::SendTimeoutError::Timeout(_) => {
+                    "Task queue is full (timeout exceeded)".to_string()
+                }
+                crossbeam_channel::SendTimeoutError::Disconnected(_) => {
+                    "Task queue channel is disconnected".to_string()
+                }
+            })
+    };
+
+    if let Err(err) = send_res {
+        let mut slab = engine
+            .broker
+            .tasks
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        if slab.contains(task_id) {
+            slab.remove(task_id);
+        }
+        return Err(pyo3::exceptions::PyBufferError::new_err(err));
+    }
+
+    Ok(task_id)
 }
 
 pub(crate) fn cancel_task(task_id: usize) -> bool {
@@ -296,6 +456,8 @@ pub(crate) fn cancel_task(task_id: usize) -> bool {
                         *completed = true;
                     }
                     task.completed_cvar.notify_all();
+                    #[cfg(unix)]
+                    crate::notify_waker();
                     return true;
                 }
                 Err(actual) => current = actual,

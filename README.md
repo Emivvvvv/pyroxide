@@ -39,8 +39,10 @@ Pyroxide (`pyro3`) is a lightweight, ultra-high-performance background task brok
 *   ⚡ **Microsecond Latency**: Utilizes OS-level signaling (`Condvar`) rather than CPU-burning thread polling, dispatching and completing tasks in under **25 microseconds**.
 *   📦 **Zero Infrastructure**: Runs completely in-process. No Redis, RabbitMQ, or Celery worker daemons to configure or maintain.
 *   💾 **Zero-Copy Serialization**: Pass large byte arrays, memoryviews, or columnar buffers across the C-ABI boundary without copy or `pickle` overhead.
-*   🛠️ **On-the-Fly Native Compilers**: Write code as Python strings and compile them to dynamic libraries on-the-fly (**Rust**, **C**, and **Zig** supported!).
-*   🛡️ **Isolated Worker Processes**: Opt-in `isolated=True` to run tasks in separate processes via cross-platform Named Pipes / Domain Sockets. Features bidirectional **Zero-Copy Shared Memory (SHM)** routing for payloads >= 1MB, and an auto-scaling **Scale-to-Zero** pool to reclaim memory.
+*   🛠️ **On-the-Fly Native Compilers**: Write code as Python strings and compile them to dynamic libraries on-the-fly (**Rust**, **C**, and **Zig** supported!) with automatic build tree cleanup and persistent binary caching.
+*   🛡️ **Isolated Worker Processes**: Opt-in `isolated=True` to run tasks in separate processes via cross-platform Named Pipes / Domain Sockets. Features bidirectional **Zero-Copy Shared Memory (SHM)** routing for payloads >= 1MB with RAII Drop-guard leak protection, and an auto-scaling **Scale-to-Zero** pool to reclaim memory.
+*   🛡️ **WASM Resource Limits**: Enforces strict execution time limits via epoch-based interruption to prevent infinite loop lockups, alongside store memory growth limits to prevent host process Out-Of-Memory (OOM) crashes.
+*   ⚠️ **Queue Exhaustion Safety**: The task queue operates safely and bounded. Submissions block with configurable timeouts or immediately raise a Python `BufferError` if the queue is full, avoiding uncontrolled memory allocation.
 *   🔗 **Task Groups & Workflows**: Bundle multiple task handles into parallel groups (`group`) to await or cancel them as a single logical unit.
 
 ---

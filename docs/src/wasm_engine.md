@@ -149,3 +149,15 @@ generate_stubs("compression_mod", library_type="wasm")
 - **Safety & Isolation**: Code runs within the `wasmtime` sandbox. A crash or panic in guest code cannot crash the host Python runtime or the Pyroxide broker.
 - **Dynamic Updates**: Register new modules and trigger task updates at runtime without restarting worker threads or redeploying code.
 - **GIL-Free Speed**: Native execution runs concurrently across the worker pool without ever locking Python's GIL.
+
+---
+
+## WASM Resource Limits & Sandboxing
+
+To prevent infinite loops and host process Out-Of-Memory (OOM) crashes, Pyroxide enforces resource limits on the WASM execution engine:
+
+- **Epoch-Based Interruption (Timeout)**: Pyroxide runs a background ticking thread that advances the WASM engine epoch. Every WASM execution is assigned a deadline (default: 1000ms). If a guest module gets stuck in an infinite loop, it is interrupted and terminated with a trap error once the deadline is exceeded.
+  - Configurable via `PYROXIDE_WASM_TIMEOUT_MS` (default: `1000`) and `PYROXIDE_WASM_TICK_MS` (default: `10`).
+- **Linear Memory Limits**: Every WASM Store is configured with strict linear memory growth limits to prevent host process OOM.
+  - Configurable via `PYROXIDE_WASM_MEMORY_LIMIT_BYTES` (default: `104857600` / 100MB).
+
