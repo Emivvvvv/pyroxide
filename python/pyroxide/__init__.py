@@ -20,7 +20,7 @@ from .plugins import compile_dylib, dylib_task, compile_c, compile_zig, load_dyl
 from .workflows import group, TaskGroup
 from .stubs import generate_stubs
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 __all__ = [
     "task",
