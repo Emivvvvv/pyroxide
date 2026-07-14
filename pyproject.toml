@@ -34,6 +34,9 @@ Repository = "https://github.com/emivvvvv/pyroxide"
 [project.scripts]
 pyroxide = "pyroxide.cli:main"
 
+[project.optional-dependencies]
+compiler = ["toml>=0.10.2; python_version < '3.11'"]
+
 [tool.maturin]
 python-source = "python"
 module-name = "pyroxide._pyroxide"
