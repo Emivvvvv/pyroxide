@@ -154,3 +154,39 @@ def test_dylib_mini_ffi():
     assert handle_double.result() == 6.28
 
 
+def test_dylib_ffi_large_signature():
+    """Verifies FFI dispatcher with a large 8-argument signature."""
+    from pyroxide import load_dylib, compile_dylib
+
+    RUST_LARGE_SRC = """
+    #[no_mangle]
+    pub extern "C" fn ffi_sum_8(
+        a: i32, b: i32, c: i32, d: i32,
+        e: i32, f: i32, g: i32, h: i32
+    ) -> i32 {
+        a + b + c + d + e + f + g + h
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn pyroxide_plugin_free(ptr: *mut u8, len: usize) {
+        // Dummy
+    }
+    """
+
+    compile_dylib("dyn_large_ffi", RUST_LARGE_SRC)
+
+    proxy = load_dylib(
+        "dyn_large_ffi",
+        signatures={
+            "ffi_sum_8": {
+                "args": ["i32", "i32", "i32", "i32", "i32", "i32", "i32", "i32"],
+                "ret": "i32",
+            }
+        },
+    )
+
+    handle = proxy.ffi_sum_8(1, 2, 3, 4, 5, 6, 7, 8)
+    assert handle.result() == 36
+
+
+

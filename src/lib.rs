@@ -191,6 +191,59 @@ fn read_f64(payload: &[u8], offset: &mut usize) -> Result<f64, String> {
     Ok(val)
 }
 
+trait FfiRead {
+    fn ffi_read(payload: &[u8], offset: &mut usize) -> Result<Self, String>
+    where
+        Self: Sized;
+}
+
+impl FfiRead for i32 {
+    fn ffi_read(payload: &[u8], offset: &mut usize) -> Result<Self, String> {
+        read_i32(payload, offset)
+    }
+}
+impl FfiRead for i64 {
+    fn ffi_read(payload: &[u8], offset: &mut usize) -> Result<Self, String> {
+        read_i64(payload, offset)
+    }
+}
+impl FfiRead for f32 {
+    fn ffi_read(payload: &[u8], offset: &mut usize) -> Result<Self, String> {
+        read_f32(payload, offset)
+    }
+}
+impl FfiRead for f64 {
+    fn ffi_read(payload: &[u8], offset: &mut usize) -> Result<Self, String> {
+        read_f64(payload, offset)
+    }
+}
+
+macro_rules! match_ffi {
+    ($args_sig:expr, $ret_sig:expr, $run_ptr:expr, $payload:expr, $offset:expr, [
+        $( ([$($arg_ty:ident),*] -> $ret_ty:ident) ),* $(,)?
+    ]) => {
+        match ($args_sig, $ret_sig) {
+            $(
+                (args, ret) if args == &[ $(stringify!($arg_ty).to_string()),* ] && ret == stringify!($ret_ty) => {
+                    unsafe {
+                        let f: unsafe extern "C" fn($($arg_ty),*) -> $ret_ty = std::mem::transmute($run_ptr);
+                        let res = f(
+                            $(
+                                <$arg_ty as FfiRead>::ffi_read($payload, $offset)?
+                            ),*
+                        );
+                        Ok(res.to_ne_bytes().to_vec())
+                    }
+                }
+            )*
+            _ => Err(format!(
+                "Unsupported FFI signature mapping: {:?} -> {}",
+                $args_sig, $ret_sig
+            )),
+        }
+    }
+}
+
 pub(crate) fn execute_dylib_ffi(
     name: &str,
     symbol_name: &str,
@@ -242,117 +295,55 @@ pub(crate) fn execute_dylib_ffi(
     };
 
     let mut offset = 0;
-    let sig_key: Vec<&str> = args_sig.iter().map(|s| s.as_str()).collect();
 
-    unsafe {
-        match (sig_key.as_slice(), ret_sig) {
-            (&["i32"], "i32") => {
-                let f: unsafe extern "C" fn(i32) -> i32 = std::mem::transmute(run_ptr);
-                let a = read_i32(payload, &mut offset)?;
-                let res = f(a);
-                Ok(res.to_ne_bytes().to_vec())
-            }
-            (&["i32"], "f64") => {
-                let f: unsafe extern "C" fn(i32) -> f64 = std::mem::transmute(run_ptr);
-                let a = read_i32(payload, &mut offset)?;
-                let res = f(a);
-                Ok(res.to_ne_bytes().to_vec())
-            }
-            (&["f64"], "f64") => {
-                let f: unsafe extern "C" fn(f64) -> f64 = std::mem::transmute(run_ptr);
-                let a = read_f64(payload, &mut offset)?;
-                let res = f(a);
-                Ok(res.to_ne_bytes().to_vec())
-            }
-            (&["f64"], "i32") => {
-                let f: unsafe extern "C" fn(f64) -> i32 = std::mem::transmute(run_ptr);
-                let a = read_f64(payload, &mut offset)?;
-                let res = f(a);
-                Ok(res.to_ne_bytes().to_vec())
-            }
-            (&["i32", "i32"], "i32") => {
-                let f: unsafe extern "C" fn(i32, i32) -> i32 = std::mem::transmute(run_ptr);
-                let a = read_i32(payload, &mut offset)?;
-                let b = read_i32(payload, &mut offset)?;
-                let res = f(a, b);
-                Ok(res.to_ne_bytes().to_vec())
-            }
-            (&["i32", "i32"], "f64") => {
-                let f: unsafe extern "C" fn(i32, i32) -> f64 = std::mem::transmute(run_ptr);
-                let a = read_i32(payload, &mut offset)?;
-                let b = read_i32(payload, &mut offset)?;
-                let res = f(a, b);
-                Ok(res.to_ne_bytes().to_vec())
-            }
-            (&["f32", "f32"], "f32") => {
-                let f: unsafe extern "C" fn(f32, f32) -> f32 = std::mem::transmute(run_ptr);
-                let a = read_f32(payload, &mut offset)?;
-                let b = read_f32(payload, &mut offset)?;
-                let res = f(a, b);
-                Ok(res.to_ne_bytes().to_vec())
-            }
-            (&["f64", "f64"], "f64") => {
-                let f: unsafe extern "C" fn(f64, f64) -> f64 = std::mem::transmute(run_ptr);
-                let a = read_f64(payload, &mut offset)?;
-                let b = read_f64(payload, &mut offset)?;
-                let res = f(a, b);
-                Ok(res.to_ne_bytes().to_vec())
-            }
-            (&["f64", "f64"], "i32") => {
-                let f: unsafe extern "C" fn(f64, f64) -> i32 = std::mem::transmute(run_ptr);
-                let a = read_f64(payload, &mut offset)?;
-                let b = read_f64(payload, &mut offset)?;
-                let res = f(a, b);
-                Ok(res.to_ne_bytes().to_vec())
-            }
-            (&["i64", "i64"], "i64") => {
-                let f: unsafe extern "C" fn(i64, i64) -> i64 = std::mem::transmute(run_ptr);
-                let a = read_i64(payload, &mut offset)?;
-                let b = read_i64(payload, &mut offset)?;
-                let res = f(a, b);
-                Ok(res.to_ne_bytes().to_vec())
-            }
-            (&["i32", "i32", "i32"], "i32") => {
-                let f: unsafe extern "C" fn(i32, i32, i32) -> i32 = std::mem::transmute(run_ptr);
-                let a = read_i32(payload, &mut offset)?;
-                let b = read_i32(payload, &mut offset)?;
-                let c = read_i32(payload, &mut offset)?;
-                let res = f(a, b, c);
-                Ok(res.to_ne_bytes().to_vec())
-            }
-            (&["f64", "f64", "f64"], "f64") => {
-                let f: unsafe extern "C" fn(f64, f64, f64) -> f64 = std::mem::transmute(run_ptr);
-                let a = read_f64(payload, &mut offset)?;
-                let b = read_f64(payload, &mut offset)?;
-                let c = read_f64(payload, &mut offset)?;
-                let res = f(a, b, c);
-                Ok(res.to_ne_bytes().to_vec())
-            }
-            (&["i32", "i32", "i32", "i32"], "i32") => {
-                let f: unsafe extern "C" fn(i32, i32, i32, i32) -> i32 =
-                    std::mem::transmute(run_ptr);
-                let a = read_i32(payload, &mut offset)?;
-                let b = read_i32(payload, &mut offset)?;
-                let c = read_i32(payload, &mut offset)?;
-                let d = read_i32(payload, &mut offset)?;
-                let res = f(a, b, c, d);
-                Ok(res.to_ne_bytes().to_vec())
-            }
-            (&["f64", "f64", "f64", "f64"], "f64") => {
-                let f: unsafe extern "C" fn(f64, f64, f64, f64) -> f64 =
-                    std::mem::transmute(run_ptr);
-                let a = read_f64(payload, &mut offset)?;
-                let b = read_f64(payload, &mut offset)?;
-                let c = read_f64(payload, &mut offset)?;
-                let d = read_f64(payload, &mut offset)?;
-                let res = f(a, b, c, d);
-                Ok(res.to_ne_bytes().to_vec())
-            }
-            _ => Err(format!(
-                "Unsupported FFI signature mapping: {args_sig:?} -> {ret_sig}"
-            )),
-        }
-    }
+    match_ffi!(args_sig, ret_sig, run_ptr, payload, &mut offset, [
+        // 1 arg
+        ([i32] -> i32), ([i32] -> i64), ([i32] -> f32), ([i32] -> f64),
+        ([i64] -> i32), ([i64] -> i64), ([i64] -> f32), ([i64] -> f64),
+        ([f32] -> i32), ([f32] -> i64), ([f32] -> f32), ([f32] -> f64),
+        ([f64] -> i32), ([f64] -> i64), ([f64] -> f32), ([f64] -> f64),
+
+        // 2 args
+        ([i32, i32] -> i32), ([i32, i32] -> i64), ([i32, i32] -> f32), ([i32, i32] -> f64),
+        ([i32, f64] -> i32), ([i32, f64] -> i64), ([i32, f64] -> f32), ([i32, f64] -> f64),
+        ([f64, i32] -> i32), ([f64, i32] -> i64), ([f64, i32] -> f32), ([f64, i32] -> f64),
+        ([f64, f64] -> i32), ([f64, f64] -> i64), ([f64, f64] -> f32), ([f64, f64] -> f64),
+        ([i64, i64] -> i64), ([i64, i64] -> i32), ([i64, i64] -> f64),
+        ([f32, f32] -> f32), ([f32, f32] -> f64),
+
+        // 3 args
+        ([i32, i32, i32] -> i32), ([i32, i32, i32] -> i64), ([i32, i32, i32] -> f64),
+        ([f64, f64, f64] -> f64), ([f64, f64, f64] -> i32), ([f64, f64, f64] -> i64),
+        ([i32, i32, f64] -> i32), ([i32, i32, f64] -> f64),
+        ([f64, f64, i32] -> f64), ([f64, f64, i32] -> i32),
+        ([i64, i64, i64] -> i64),
+
+        // 4 args
+        ([i32, i32, i32, i32] -> i32), ([i32, i32, i32, i32] -> i64), ([i32, i32, i32, i32] -> f64),
+        ([f64, f64, f64, f64] -> f64), ([f64, f64, f64, f64] -> i32), ([f64, f64, f64, f64] -> i64),
+        ([i32, i32, f64, f64] -> i32), ([i32, i32, f64, f64] -> f64),
+        ([i64, i64, i64, i64] -> i64),
+
+        // 5 args
+        ([i32, i32, i32, i32, i32] -> i32), ([i32, i32, i32, i32, i32] -> i64), ([i32, i32, i32, i32, i32] -> f64),
+        ([f64, f64, f64, f64, f64] -> f64), ([f64, f64, f64, f64, f64] -> i32), ([f64, f64, f64, f64, f64] -> i64),
+        ([i64, i64, i64, i64, i64] -> i64),
+
+        // 6 args
+        ([i32, i32, i32, i32, i32, i32] -> i32), ([i32, i32, i32, i32, i32, i32] -> i64), ([i32, i32, i32, i32, i32, i32] -> f64),
+        ([f64, f64, f64, f64, f64, f64] -> f64), ([f64, f64, f64, f64, f64, f64] -> i32), ([f64, f64, f64, f64, f64, f64] -> i64),
+        ([i64, i64, i64, i64, i64, i64] -> i64),
+
+        // 7 args
+        ([i32, i32, i32, i32, i32, i32, i32] -> i32), ([i32, i32, i32, i32, i32, i32, i32] -> i64), ([i32, i32, i32, i32, i32, i32, i32] -> f64),
+        ([f64, f64, f64, f64, f64, f64, f64] -> f64), ([f64, f64, f64, f64, f64, f64, f64] -> i32), ([f64, f64, f64, f64, f64, f64, f64] -> i64),
+        ([i64, i64, i64, i64, i64, i64, i64] -> i64),
+
+        // 8 args
+        ([i32, i32, i32, i32, i32, i32, i32, i32] -> i32), ([i32, i32, i32, i32, i32, i32, i32, i32] -> i64), ([i32, i32, i32, i32, i32, i32, i32, i32] -> f64),
+        ([f64, f64, f64, f64, f64, f64, f64, f64] -> f64), ([f64, f64, f64, f64, f64, f64, f64, f64] -> i32), ([f64, f64, f64, f64, f64, f64, f64, f64] -> i64),
+        ([i64, i64, i64, i64, i64, i64, i64, i64] -> i64),
+    ])
 }
 
 /// Submits a task to be executed by a registered dynamic shared library (dylib).
