@@ -318,10 +318,42 @@ class DylibProxy:
 
 
 def load_dylib(
-    lib_name: str, *, signatures: Optional[dict] = None, isolated: bool = False
+    lib_name: str,
+    *,
+    signatures: Optional[dict] = None,
+    generate_stubs: bool = False,
+    isolated: bool = False,
 ) -> DylibProxy:
     """
     Loads a registered dynamic shared library (dylib) and returns an object-oriented proxy
     allowing direct invocation of any C-ABI exported symbol on the background worker pool.
     """
-    return DylibProxy(lib_name, signatures=signatures, isolated=isolated)
+    # 1. Auto-discover signatures if none are provided
+    if signatures is None:
+        from pyroxide._pyroxide import get_dylib_metadata
+
+        metadata_str = get_dylib_metadata(lib_name)
+        if metadata_str:
+            signatures = {}
+            for entry in metadata_str.split(";"):
+                if not entry:
+                    continue
+                func_parts = entry.split(":")
+                if len(func_parts) == 2:
+                    func_name, sig_part = func_parts
+                    sig_parts = sig_part.split("|")
+                    if len(sig_parts) == 2:
+                        args_part, ret_type = sig_parts
+                        args = [a for a in args_part.split(",") if a]
+                        signatures[func_name] = {"args": args, "ret": ret_type}
+
+    # 2. Create the proxy
+    proxy = DylibProxy(lib_name, signatures=signatures, isolated=isolated)
+
+    # 3. Generate stubs if requested
+    if generate_stubs:
+        from pyroxide.stubs import generate_stubs as run_gen
+
+        run_gen(lib_name, library_type="dylib")
+
+    return proxy

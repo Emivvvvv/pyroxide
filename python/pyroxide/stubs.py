@@ -2,9 +2,7 @@ import os
 from typing import Optional
 
 
-def generate_stubs(
-    name: str, library_type: str, out_path: Optional[str] = None
-) -> str:
+def generate_stubs(name: str, library_type: str, out_path: Optional[str] = None) -> str:
     """
     Generates a Python PEP 484 type stub (.pyi) file for a registered dynamic library or WASM module,
     providing full IDE autocompletion and hover documentation for all dynamic exports.
@@ -17,6 +15,7 @@ def generate_stubs(
     Returns:
         The absolute path to the generated type stub file.
     """
+    sigs = {}
     if library_type.lower() == "wasm":
         from ._pyroxide import get_wasm_exports
 
@@ -24,11 +23,26 @@ def generate_stubs(
         class_name = f"{name.capitalize()}WasmProxy"
         factory_name = f"load_wasm_{name}"
     elif library_type.lower() == "dylib":
-        from ._pyroxide import get_dylib_exports
+        from ._pyroxide import get_dylib_exports, get_dylib_metadata
 
         exports = get_dylib_exports(name)
         class_name = f"{name.capitalize()}DylibProxy"
         factory_name = f"load_dylib_{name}"
+
+        # Discover FFI signatures from metadata
+        metadata_str = get_dylib_metadata(name)
+        if metadata_str:
+            for entry in metadata_str.split(";"):
+                if not entry:
+                    continue
+                func_parts = entry.split(":")
+                if len(func_parts) == 2:
+                    func_name, sig_part = func_parts
+                    sig_parts = sig_part.split("|")
+                    if len(sig_parts) == 2:
+                        args_part, ret_type = sig_parts
+                        args = [a for a in args_part.split(",") if a]
+                        sigs[func_name] = args
     else:
         raise ValueError("library_type must be either 'wasm' or 'dylib'")
 
@@ -41,17 +55,26 @@ def generate_stubs(
         "from pyroxide import TaskHandle",
         "",
         f"class {class_name}:",
-        "    \"\"\"",
+        '    """',
         f"    Type-annotated proxy for registered {library_type} module '{name}'.",
-        "    \"\"\"",
+        '    """',
     ]
 
     if not exports:
         lines.append("    pass")
     else:
         for symbol in exports:
-            # Generate generic typed signature
-            lines.append(f"    def {symbol}(self, payload: Any) -> TaskHandle: ...")
+            if symbol in sigs:
+                arg_list = [f"arg{i}: Any" for i in range(len(sigs[symbol]))]
+                args_str = ", ".join(arg_list)
+                if args_str:
+                    lines.append(
+                        f"    def {symbol}(self, {args_str}) -> TaskHandle: ..."
+                    )
+                else:
+                    lines.append(f"    def {symbol}(self) -> TaskHandle: ...")
+            else:
+                lines.append(f"    def {symbol}(self, payload: Any) -> TaskHandle: ...")
 
     lines.append("")
     # Add a typed factory helper or hint

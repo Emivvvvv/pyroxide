@@ -296,22 +296,41 @@ print(handle.result()) # 150
 
 Supported types include `i32`, `i64`, `f32`, and `f64`. Under the hood, Pyroxide implements a compiled macro-based trait dispatcher supporting up to **8 arguments** with arbitrary signatures, executing compiled symbols at native CPU register speeds without runtime FFI engine overhead.
 
+#### Zero-Configuration Signature Discovery (`pyroxide_metadata`)
+Instead of manually declaring signatures in Python, you can export a special metadata symbol named `pyroxide_metadata` from your C/Rust library. Pyroxide will auto-discover the signatures at runtime:
+
+```c
+const char* pyroxide_metadata() {
+    // Format: "method_name:args|return_type;..."
+    return "calculate_hash:i32,f64|i32;my_other_func:f64|f64";
+}
+```
+
+When loading the library, you do not need to provide the `signatures` dictionary:
+```python
+# Automatically parses pyroxide_metadata symbol and sets up types!
+math_lib = load_dylib("math_lib")
+```
+
 ---
 
 ### IDE Autocomplete (Type Stub Generator)
 
 Since dynamic proxy objects use runtime dynamic lookup (`__getattr__`), editors like VS Code won't show autocompletion for dynamic methods. 
 
-To solve this, Pyroxide provides a **Type Stub Generator** that parses the compiled shared library and writes a standard PEP 484 type stub file (`.pyi`):
+To solve this, you can pass `generate_stubs=True` directly when loading a library, or use the `generate_stubs` helper:
 
 ```python
-from pyroxide import generate_stubs
+from pyroxide import load_dylib, generate_stubs
 
-# Automatically parses the dynamic symbols in "math_lib" and writes a .pyi stub file
+# Option A: Generate stubs inline during loading (ideal for development)
+math_lib = load_dylib("math_lib", generate_stubs=True)
+
+# Option B: Run the generator script manually
 generate_stubs("math_lib", library_type="dylib")
 ```
 
-Once the stub file is generated in your project, VS Code or PyCharm will instantly show full autocompletion and hover documentation for all your native dynamic methods!
+Once the stub file is generated in your project (e.g. `math_lib_proxy.pyi`), VS Code or PyCharm will instantly show full autocompletion and hover documentation for all your native dynamic methods!
 
 ---
 

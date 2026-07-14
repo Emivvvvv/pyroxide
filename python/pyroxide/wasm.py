@@ -45,9 +45,19 @@ class WasmProxy:
         return wasm_method
 
 
-def load_wasm(module_name: str, *, isolated: bool = False) -> WasmProxy:
+def load_wasm(
+    module_name: str,
+    *,
+    generate_stubs: bool = False,
+    isolated: bool = False,
+) -> WasmProxy:
     """
     Loads a registered WebAssembly (WASM) module and returns an object-oriented proxy
     allowing direct invocation of any exported WASM function on the background worker pool.
     """
-    return WasmProxy(module_name, isolated=isolated)
+    proxy = WasmProxy(module_name, isolated=isolated)
+    if generate_stubs:
+        from pyroxide.stubs import generate_stubs as run_gen
+
+        run_gen(module_name, library_type="wasm")
+    return proxy

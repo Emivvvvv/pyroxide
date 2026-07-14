@@ -97,4 +97,3 @@ def test_wasm_oop_proxy():
 
     handle = proxy.run("Hello OOP WASM!")
     assert handle.result() == "Uryyb BBC JNFZ!"
-

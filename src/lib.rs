@@ -554,8 +554,14 @@ fn get_dylib_exports(plugin_name: String) -> PyResult<Vec<String>> {
     if let Ok(file_exports) = file.exports() {
         for export in file_exports {
             if let Ok(name) = std::str::from_utf8(export.name()) {
-                let s = name.to_string();
-                if !s.starts_with('_') && s != "pyroxide_plugin_free" && s != "rust_eh_personality"
+                let mut s = name.to_string();
+                if cfg!(target_os = "macos") && s.starts_with('_') {
+                    s = s[1..].to_string();
+                }
+                if !s.starts_with('_')
+                    && s != "pyroxide_plugin_free"
+                    && s != "rust_eh_personality"
+                    && s != "pyroxide_metadata"
                 {
                     exports.push(s);
                 }
@@ -564,6 +570,41 @@ fn get_dylib_exports(plugin_name: String) -> PyResult<Vec<String>> {
     }
 
     Ok(exports)
+}
+
+#[pyfunction]
+fn get_dylib_metadata(name: &str) -> PyResult<Option<String>> {
+    let registry = DYLIB_PLUGINS.get().ok_or_else(|| {
+        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Dylib registry not initialized")
+    })?;
+    let map = registry.read().map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Registry lock poisoned: {e}"))
+    })?;
+    let plugin = match map.get(name) {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+
+    unsafe {
+        let symbol: Result<
+            libloading::Symbol<unsafe extern "C" fn() -> *const std::ffi::c_char>,
+            _,
+        > = plugin.lib.get(b"pyroxide_metadata");
+
+        match symbol {
+            Ok(sym) => {
+                let ptr = sym();
+                if ptr.is_null() {
+                    Ok(None)
+                } else {
+                    let c_str = std::ffi::CStr::from_ptr(ptr);
+                    let s = c_str.to_string_lossy().into_owned();
+                    Ok(Some(s))
+                }
+            }
+            Err(_) => Ok(None),
+        }
+    }
 }
 
 #[pyfunction]
@@ -589,6 +630,7 @@ fn _pyroxide(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(submit_dylib_task, m)?)?;
     m.add_function(wrap_pyfunction!(get_wasm_exports, m)?)?;
     m.add_function(wrap_pyfunction!(get_dylib_exports, m)?)?;
+    m.add_function(wrap_pyfunction!(get_dylib_metadata, m)?)?;
     m.add_function(wrap_pyfunction!(start_worker_loop, m)?)?;
 
     Ok(())

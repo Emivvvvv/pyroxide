@@ -187,6 +187,3 @@ def test_dylib_ffi_large_signature():
 
     handle = proxy.ffi_sum_8(1, 2, 3, 4, 5, 6, 7, 8)
     assert handle.result() == 36
-
-
-

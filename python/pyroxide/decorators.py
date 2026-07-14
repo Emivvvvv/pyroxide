@@ -25,6 +25,7 @@ def task(func_or_none=None, *, isolated: bool = False):
         @functools.wraps(func)
         def wrapper(payload: P) -> TaskHandle:
             import os
+
             if os.environ.get("PYROXIDE_WORKER") == "1":
                 return func(payload)
 
@@ -35,6 +36,7 @@ def task(func_or_none=None, *, isolated: bool = False):
         def batch(payloads: list) -> list[TaskHandle]:
             from ._pyroxide import submit_batch
             import os
+
             if os.environ.get("PYROXIDE_WORKER") == "1":
                 return [func(p) for p in payloads]
 
