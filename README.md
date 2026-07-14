@@ -178,6 +178,30 @@ rust_upper = load_dylib("rust_upper")
 print(rust_upper.pyroxide_plugin_run("hello from rust").result())  # "HELLO FROM RUST"
 ```
 
+### 5. Programmatic Sandbox Configuration (v0.7.0)
+Configure WebAssembly memory limits, execution timeouts, and queue block/drop timeouts thread-safely:
+```python
+import pyroxide
+
+# Set global default sandbox parameters
+pyroxide.config.set_wasm_limits(memory_limit_bytes=50 * 1024 * 1024, timeout_ms=500)
+pyroxide.config.set_queue_timeout(timeout_ms=100)
+
+# Apply context-specific overrides (thread-safe, ideal for multi-tenant SaaS)
+with pyroxide.config.scoped(wasm_timeout_ms=50, wasm_memory_limit_bytes=10 * 1024 * 1024):
+    handle = rot13_cipher("hello")
+```
+
+### 6. Static Stub Compilation CLI (v0.7.0)
+Avoid runtime filesystem writes during application startup (which triggers FastAPI reload loops) by statically building type stubs:
+```bash
+# Scan Python files recursively to generate proxy .pyi stubs
+pyroxide build-stubs --scan --scan-dir . --out-dir .
+
+# Or read declarative configuration from pyproject.toml
+pyroxide build-stubs
+```
+
 ---
 
 ## Dive Deeper (Documentation Book)

@@ -7,9 +7,9 @@ use crate::broker::{get_task_result, get_task_status, wait_task};
 use object::Object;
 use pyo3::prelude::*;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use wasmtime::{Engine, Module};
 
 pub(crate) struct GlobalConfig {
@@ -20,13 +20,15 @@ pub(crate) struct GlobalConfig {
 
 pub(crate) static CONFIG: GlobalConfig = GlobalConfig {
     wasm_memory_limit_bytes: AtomicUsize::new(100 * 1024 * 1024), // 100 MB default
-    wasm_timeout_ms: AtomicU64::new(1000),                      // 1 second default
-    queue_timeout_ms: AtomicU64::new(1000),                     // 1 second default
+    wasm_timeout_ms: AtomicU64::new(1000),                        // 1 second default
+    queue_timeout_ms: AtomicU64::new(1000),                       // 1 second default
 };
 
 #[pyfunction]
 fn set_global_wasm_memory_limit_bytes(bytes: usize) {
-    CONFIG.wasm_memory_limit_bytes.store(bytes, Ordering::Relaxed);
+    CONFIG
+        .wasm_memory_limit_bytes
+        .store(bytes, Ordering::Relaxed);
 }
 
 #[pyfunction]
@@ -480,6 +482,7 @@ fn register_wasm_wat(module_name: String, wat_str: String) -> PyResult<()> {
 /// This function submits a WebAssembly task to the broker.
 #[pyfunction]
 #[pyo3(signature = (module_name, func_name, payload, isolated=false, wasm_memory_limit_bytes=None, wasm_timeout_ms=None, queue_timeout_ms=None))]
+#[allow(clippy::too_many_arguments)]
 fn submit_wasm_task(
     py: Python<'_>,
     module_name: String,
@@ -517,9 +520,7 @@ fn submit_task(
     let py_callable = callable.map(|c| c.into_any().unbind());
     let py_payload = payload.into_any().unbind();
 
-    py.detach(move || {
-        broker::submit_task(py_callable, py_payload, isolated, queue_timeout_ms)
-    })
+    py.detach(move || broker::submit_task(py_callable, py_payload, isolated, queue_timeout_ms))
 }
 
 /// This function submits a batch of tasks to the broker under a single write lock.
@@ -541,9 +542,7 @@ fn submit_batch(
         py_callables.push(py_callable.as_ref().map(|c| c.clone_ref(py)));
     }
 
-    py.detach(move || {
-        broker::submit_batch(py_callables, py_payloads, isolated, queue_timeout_ms)
-    })
+    py.detach(move || broker::submit_batch(py_callables, py_payloads, isolated, queue_timeout_ms))
 }
 
 /// This function cancels a task with the given ID.

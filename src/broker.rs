@@ -138,7 +138,9 @@ pub(crate) fn submit_task(
     };
 
     let timeout_ms = queue_timeout_ms.unwrap_or_else(|| {
-        crate::CONFIG.queue_timeout_ms.load(std::sync::atomic::Ordering::Relaxed)
+        crate::CONFIG
+            .queue_timeout_ms
+            .load(std::sync::atomic::Ordering::Relaxed)
     });
 
     let send_res = if timeout_ms == 0 {
@@ -216,7 +218,9 @@ pub(crate) fn submit_batch(
     }
 
     let timeout_ms = queue_timeout_ms.unwrap_or_else(|| {
-        crate::CONFIG.queue_timeout_ms.load(std::sync::atomic::Ordering::Relaxed)
+        crate::CONFIG
+            .queue_timeout_ms
+            .load(std::sync::atomic::Ordering::Relaxed)
     });
 
     let mut sent_ids = Vec::new();
@@ -312,7 +316,9 @@ pub(crate) fn submit_wasm_task(
     };
 
     let timeout_ms = queue_timeout_ms.unwrap_or_else(|| {
-        crate::CONFIG.queue_timeout_ms.load(std::sync::atomic::Ordering::Relaxed)
+        crate::CONFIG
+            .queue_timeout_ms
+            .load(std::sync::atomic::Ordering::Relaxed)
     });
 
     let send_res = if timeout_ms == 0 {
@@ -389,7 +395,9 @@ pub(crate) fn submit_dylib_task(
     };
 
     let timeout_ms = queue_timeout_ms.unwrap_or_else(|| {
-        crate::CONFIG.queue_timeout_ms.load(std::sync::atomic::Ordering::Relaxed)
+        crate::CONFIG
+            .queue_timeout_ms
+            .load(std::sync::atomic::Ordering::Relaxed)
     });
 
     let send_res = if timeout_ms == 0 {

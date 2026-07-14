@@ -132,7 +132,9 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
 
                         let engine = crate::get_wasm_engine();
                         let limit_bytes = task_clone.wasm_memory_limit_bytes.unwrap_or_else(|| {
-                            crate::CONFIG.wasm_memory_limit_bytes.load(std::sync::atomic::Ordering::Relaxed)
+                            crate::CONFIG
+                                .wasm_memory_limit_bytes
+                                .load(std::sync::atomic::Ordering::Relaxed)
                         });
 
                         let state = crate::WasmState {
@@ -144,7 +146,9 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                         store.limiter(|s| &mut s.limits);
 
                         let timeout_ms = task_clone.wasm_timeout_ms.unwrap_or_else(|| {
-                            crate::CONFIG.wasm_timeout_ms.load(std::sync::atomic::Ordering::Relaxed)
+                            crate::CONFIG
+                                .wasm_timeout_ms
+                                .load(std::sync::atomic::Ordering::Relaxed)
                         });
                         let tick_ms = std::env::var("PYROXIDE_WASM_TICK_MS")
                             .ok()
@@ -452,10 +456,14 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
                 // WASM
                 let func_name = task.wasm_func.clone().unwrap_or_else(|| "run".to_string());
                 let limit_bytes = task.wasm_memory_limit_bytes.unwrap_or_else(|| {
-                    crate::CONFIG.wasm_memory_limit_bytes.load(std::sync::atomic::Ordering::Relaxed)
+                    crate::CONFIG
+                        .wasm_memory_limit_bytes
+                        .load(std::sync::atomic::Ordering::Relaxed)
                 });
                 let timeout_ms = task.wasm_timeout_ms.unwrap_or_else(|| {
-                    crate::CONFIG.wasm_timeout_ms.load(std::sync::atomic::Ordering::Relaxed)
+                    crate::CONFIG
+                        .wasm_timeout_ms
+                        .load(std::sync::atomic::Ordering::Relaxed)
                 });
                 let metadata = format!("{module_name}:{func_name}:{limit_bytes}:{timeout_ms}");
                 let bound_payload = task.payload.bind(py);
