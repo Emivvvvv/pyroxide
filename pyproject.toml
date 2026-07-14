@@ -31,6 +31,9 @@ Homepage = "https://github.com/emivvvvv/pyroxide"
 Repository = "https://github.com/emivvvvv/pyroxide"
 "Bug Tracker" = "https://github.com/emivvvvv/pyroxide/issues"
 
+[project.scripts]
+pyroxide = "pyroxide.cli:main"
+
 [tool.maturin]
 python-source = "python"
 module-name = "pyroxide._pyroxide"

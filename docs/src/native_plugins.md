@@ -322,11 +322,37 @@ math_lib = load_dylib("math_lib")
 
 ---
 
-### IDE Autocomplete (Type Stub Generator)
+### IDE Autocomplete & Stub Generator
 
 Since dynamic proxy objects use runtime dynamic lookup (`__getattr__`), editors like VS Code won't show autocompletion for dynamic methods. 
 
-To solve this, you can pass `generate_stubs=True` directly when loading a library, or use the `generate_stubs` helper:
+To solve this, you can generate stubs inline at runtime, or use the **Pyroxide CLI** to compile them statically before runtime (highly recommended for production/CI pipelines to avoid filesystem writes during import loops).
+
+#### 1. CLI Compilation (Pre-Runtime)
+
+You can run the `pyroxide` command-line utility from your project root:
+
+```bash
+# Scan files recursively for compile_* / register_* calls and generate stubs
+pyroxide build-stubs --scan --scan-dir . --out-dir .
+
+# Or compile explicitly via command-line flags
+pyroxide build-stubs --wasm math_mod=wasm/math.wasm --out-dir .
+
+# Or read declarative configuration from pyproject.toml
+pyroxide build-stubs
+```
+
+##### Declarative Configuration in `pyproject.toml`
+Add the following config to your `pyproject.toml` to manage stubs cleanly:
+
+```toml
+[tool.pyroxide.stubs]
+math_mod = { type = "wasm", path = "wasm/math.wasm" }
+crypt_lib = { type = "dylib", path = "libs/libcrypt.so" }
+```
+
+#### 2. Inline Generation (Runtime)
 
 ```python
 from pyroxide import load_dylib, generate_stubs
@@ -334,7 +360,7 @@ from pyroxide import load_dylib, generate_stubs
 # Option A: Generate stubs inline during loading (ideal for development)
 math_lib = load_dylib("math_lib", generate_stubs=True)
 
-# Option B: Run the generator script manually
+# Option B: Run the generator helper programmatically
 generate_stubs("math_lib", library_type="dylib")
 ```
 
