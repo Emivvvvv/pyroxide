@@ -168,6 +168,14 @@ def to_upper_zig(payload: str) -> str:
 print(to_upper_zig("hello from zig").result())  # "HELLO FROM ZIG"
 ```
 
+### Compiler PATH Verification
+To avoid cryptic system errors when dynamic compilation fails, Pyroxide performs early checks on the host environment's system path:
+- `compile_dylib` verifies that `cargo` is available on the system `PATH`.
+- `compile_c` verifies that the defined C compiler (e.g. `clang` or `gcc`, or custom via the `CC` environment variable) is present.
+- `compile_zig` verifies that `zig` is present.
+
+If a required compiler binary is missing, Pyroxide immediately raises a descriptive `RuntimeError` explaining what is missing.
+
 ---
 
 ## 2. Using Pre-Compiled Shared Libraries

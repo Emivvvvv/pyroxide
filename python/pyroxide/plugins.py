@@ -2,9 +2,19 @@ import os
 import subprocess
 import tempfile
 import sys
+import shutil
 from typing import Dict, Optional, Callable, Any
 from ._pyroxide import register_dylib, submit_dylib_task
 from .types import TaskHandle
+
+
+def _verify_compiler(binary: str) -> None:
+    """Checks if the required compiler binary is available on the system PATH."""
+    if not shutil.which(binary):
+        raise RuntimeError(
+            f"Required compiler system binary '{binary}' is not found on your PATH. "
+            "Please install the compiler or use a pre-compiled binary."
+        )
 
 
 def compile_dylib(
@@ -40,7 +50,7 @@ def compile_dylib(
         >>> handle = process("hello")
         >>> print(handle.result())
     """
-    import shutil
+    _verify_compiler("cargo")
 
     temp_dir = tempfile.mkdtemp(prefix=f"pyroxide_dylib_{name}_")
     try:
@@ -127,15 +137,14 @@ def compile_c(name: str, source_code: str) -> str:
             - ``pyroxide_plugin_run(ptr, len, out_len) -> uint8_t*``
             - ``pyroxide_plugin_free(ptr, len)``
     """
-    import shutil
+    cc = os.environ.get("CC", "clang" if sys.platform == "darwin" else "gcc")
+    _verify_compiler(cc)
 
     temp_dir = tempfile.mkdtemp(prefix=f"pyroxide_c_{name}_")
     try:
         src_path = os.path.join(temp_dir, f"{name}.c")
         with open(src_path, "w") as f:
             f.write(source_code)
-
-        cc = os.environ.get("CC", "clang" if sys.platform == "darwin" else "gcc")
         lib_ext = "dylib" if sys.platform == "darwin" else "so"
         if sys.platform == "win32":
             lib_ext = "dll"
@@ -179,7 +188,7 @@ def compile_zig(name: str, source_code: str) -> str:
             - ``pyroxide_plugin_run(ptr, len, out_len) -> [*]u8``
             - ``pyroxide_plugin_free(ptr, len)``
     """
-    import shutil
+    _verify_compiler("zig")
 
     temp_dir = tempfile.mkdtemp(prefix=f"pyroxide_zig_{name}_")
     try:
