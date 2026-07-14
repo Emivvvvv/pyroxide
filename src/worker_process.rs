@@ -224,10 +224,14 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: Vec<u8>) -> (bool
                     .ok_or_else(|| format!("WASM module '{module_name}' not registered"))?;
 
                 let engine = crate::get_wasm_engine();
-                let limit_bytes = std::env::var("PYROXIDE_WASM_MEMORY_LIMIT_BYTES")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(100 * 1024 * 1024); // 100 MB default
+                let limit_bytes = if parts.len() >= 3 {
+                    parts[2].parse::<usize>().unwrap_or(100 * 1024 * 1024)
+                } else {
+                    std::env::var("PYROXIDE_WASM_MEMORY_LIMIT_BYTES")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(100 * 1024 * 1024)
+                };
 
                 let state = crate::WasmState {
                     limits: wasmtime::StoreLimitsBuilder::new()
@@ -237,10 +241,14 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: Vec<u8>) -> (bool
                 let mut store = wasmtime::Store::new(engine, state);
                 store.limiter(|s| &mut s.limits);
 
-                let timeout_ms = std::env::var("PYROXIDE_WASM_TIMEOUT_MS")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(1000); // 1 second default
+                let timeout_ms = if parts.len() >= 4 {
+                    parts[3].parse::<u64>().unwrap_or(1000)
+                } else {
+                    std::env::var("PYROXIDE_WASM_TIMEOUT_MS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(1000)
+                };
                 let tick_ms = std::env::var("PYROXIDE_WASM_TICK_MS")
                     .ok()
                     .and_then(|v| v.parse().ok())

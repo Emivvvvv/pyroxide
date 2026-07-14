@@ -131,10 +131,9 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                             .ok_or_else(|| format!("WASM module '{module_name}' not registered"))?;
 
                         let engine = crate::get_wasm_engine();
-                        let limit_bytes = std::env::var("PYROXIDE_WASM_MEMORY_LIMIT_BYTES")
-                            .ok()
-                            .and_then(|v| v.parse().ok())
-                            .unwrap_or(100 * 1024 * 1024); // 100 MB default
+                        let limit_bytes = task_clone.wasm_memory_limit_bytes.unwrap_or_else(|| {
+                            crate::CONFIG.wasm_memory_limit_bytes.load(std::sync::atomic::Ordering::Relaxed)
+                        });
 
                         let state = crate::WasmState {
                             limits: wasmtime::StoreLimitsBuilder::new()
@@ -144,10 +143,9 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                         let mut store = wasmtime::Store::new(engine, state);
                         store.limiter(|s| &mut s.limits);
 
-                        let timeout_ms = std::env::var("PYROXIDE_WASM_TIMEOUT_MS")
-                            .ok()
-                            .and_then(|v| v.parse().ok())
-                            .unwrap_or(1000); // 1 second default
+                        let timeout_ms = task_clone.wasm_timeout_ms.unwrap_or_else(|| {
+                            crate::CONFIG.wasm_timeout_ms.load(std::sync::atomic::Ordering::Relaxed)
+                        });
                         let tick_ms = std::env::var("PYROXIDE_WASM_TICK_MS")
                             .ok()
                             .and_then(|v| v.parse().ok())
@@ -453,7 +451,13 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
             } else if let Some(ref module_name) = task.wasm_module {
                 // WASM
                 let func_name = task.wasm_func.clone().unwrap_or_else(|| "run".to_string());
-                let metadata = format!("{module_name}:{func_name}");
+                let limit_bytes = task.wasm_memory_limit_bytes.unwrap_or_else(|| {
+                    crate::CONFIG.wasm_memory_limit_bytes.load(std::sync::atomic::Ordering::Relaxed)
+                });
+                let timeout_ms = task.wasm_timeout_ms.unwrap_or_else(|| {
+                    crate::CONFIG.wasm_timeout_ms.load(std::sync::atomic::Ordering::Relaxed)
+                });
+                let metadata = format!("{module_name}:{func_name}:{limit_bytes}:{timeout_ms}");
                 let bound_payload = task.payload.bind(py);
                 let bytes = if let Ok(s) = bound_payload.extract::<String>() {
                     s.into_bytes()

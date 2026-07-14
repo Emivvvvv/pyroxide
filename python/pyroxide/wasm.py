@@ -27,8 +27,18 @@ def wasm_task(module_name: str, func_name: str = "run", *, isolated: bool = Fals
     def decorator(func):
         @functools.wraps(func)
         def wrapper(payload) -> TaskHandle:
+            from .config import _local
+            wasm_mem = getattr(_local, "wasm_memory_limit_bytes", None)
+            wasm_time = getattr(_local, "wasm_timeout_ms", None)
+            queue_time = getattr(_local, "queue_timeout_ms", None)
             task_id = submit_wasm_task(
-                module_name, func_name, payload, isolated=isolated
+                module_name,
+                func_name,
+                payload,
+                isolated=isolated,
+                wasm_memory_limit_bytes=wasm_mem,
+                wasm_timeout_ms=wasm_time,
+                queue_timeout_ms=queue_time,
             )
             return TaskHandle(task_id)
 
@@ -46,8 +56,18 @@ class WasmProxy:
 
     def __getattr__(self, func_name: str):
         def wasm_method(payload) -> TaskHandle:
+            from .config import _local
+            wasm_mem = getattr(_local, "wasm_memory_limit_bytes", None)
+            wasm_time = getattr(_local, "wasm_timeout_ms", None)
+            queue_time = getattr(_local, "queue_timeout_ms", None)
             task_id = submit_wasm_task(
-                self._module_name, func_name, payload, isolated=self._isolated
+                self._module_name,
+                func_name,
+                payload,
+                isolated=self._isolated,
+                wasm_memory_limit_bytes=wasm_mem,
+                wasm_timeout_ms=wasm_time,
+                queue_timeout_ms=queue_time,
             )
             return TaskHandle(task_id)
 

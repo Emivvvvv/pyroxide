@@ -25,23 +25,31 @@ def task(func_or_none=None, *, isolated: bool = False):
         @functools.wraps(func)
         def wrapper(payload: P) -> TaskHandle:
             import os
+            from .config import _local
 
             if os.environ.get("PYROXIDE_WORKER") == "1":
                 return func(payload)
 
             target_callable = wrapper if isolated else func
-            task_id = submit_task(target_callable, payload, isolated=isolated)
+            queue_time = getattr(_local, "queue_timeout_ms", None)
+            task_id = submit_task(
+                target_callable, payload, isolated=isolated, queue_timeout_ms=queue_time
+            )
             return TaskHandle(task_id)
 
         def batch(payloads: list) -> list[TaskHandle]:
             from ._pyroxide import submit_batch
             import os
+            from .config import _local
 
             if os.environ.get("PYROXIDE_WORKER") == "1":
                 return [func(p) for p in payloads]
 
             target_callable = wrapper if isolated else func
-            task_ids = submit_batch(target_callable, payloads, isolated=isolated)
+            queue_time = getattr(_local, "queue_timeout_ms", None)
+            task_ids = submit_batch(
+                target_callable, payloads, isolated=isolated, queue_timeout_ms=queue_time
+            )
             return [TaskHandle(tid) for tid in task_ids]
 
         wrapper.batch = batch

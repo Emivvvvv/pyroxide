@@ -7,9 +7,37 @@ use crate::broker::{get_task_result, get_task_status, wait_task};
 use object::Object;
 use pyo3::prelude::*;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::sync::RwLock;
 use wasmtime::{Engine, Module};
+
+pub(crate) struct GlobalConfig {
+    pub(crate) wasm_memory_limit_bytes: AtomicUsize,
+    pub(crate) wasm_timeout_ms: AtomicU64,
+    pub(crate) queue_timeout_ms: AtomicU64,
+}
+
+pub(crate) static CONFIG: GlobalConfig = GlobalConfig {
+    wasm_memory_limit_bytes: AtomicUsize::new(100 * 1024 * 1024), // 100 MB default
+    wasm_timeout_ms: AtomicU64::new(1000),                      // 1 second default
+    queue_timeout_ms: AtomicU64::new(1000),                     // 1 second default
+};
+
+#[pyfunction]
+fn set_global_wasm_memory_limit_bytes(bytes: usize) {
+    CONFIG.wasm_memory_limit_bytes.store(bytes, Ordering::Relaxed);
+}
+
+#[pyfunction]
+fn set_global_wasm_timeout_ms(ms: u64) {
+    CONFIG.wasm_timeout_ms.store(ms, Ordering::Relaxed);
+}
+
+#[pyfunction]
+fn set_global_queue_timeout_ms(ms: u64) {
+    CONFIG.queue_timeout_ms.store(ms, Ordering::Relaxed);
+}
 
 pub(crate) struct DylibPlugin {
     pub(crate) lib: libloading::Library,
@@ -348,7 +376,7 @@ pub(crate) fn execute_dylib_ffi(
 
 /// Submits a task to be executed by a registered dynamic shared library (dylib).
 #[pyfunction]
-#[pyo3(signature = (plugin_name, symbol_name, payload, ffi_sig=None, isolated=false))]
+#[pyo3(signature = (plugin_name, symbol_name, payload, ffi_sig=None, isolated=false, queue_timeout_ms=None))]
 fn submit_dylib_task(
     py: Python<'_>,
     plugin_name: String,
@@ -356,10 +384,18 @@ fn submit_dylib_task(
     payload: Bound<'_, PyAny>,
     ffi_sig: Option<(Vec<String>, String)>,
     isolated: bool,
+    queue_timeout_ms: Option<u64>,
 ) -> PyResult<usize> {
     let py_payload = payload.into_any().unbind();
     py.detach(move || {
-        broker::submit_dylib_task(plugin_name, symbol_name, py_payload, ffi_sig, isolated)
+        broker::submit_dylib_task(
+            plugin_name,
+            symbol_name,
+            py_payload,
+            ffi_sig,
+            isolated,
+            queue_timeout_ms,
+        )
     })
 }
 
@@ -443,41 +479,58 @@ fn register_wasm_wat(module_name: String, wat_str: String) -> PyResult<()> {
 
 /// This function submits a WebAssembly task to the broker.
 #[pyfunction]
-#[pyo3(signature = (module_name, func_name, payload, isolated=false))]
+#[pyo3(signature = (module_name, func_name, payload, isolated=false, wasm_memory_limit_bytes=None, wasm_timeout_ms=None, queue_timeout_ms=None))]
 fn submit_wasm_task(
     py: Python<'_>,
     module_name: String,
     func_name: String,
     payload: Bound<'_, PyAny>,
     isolated: bool,
+    wasm_memory_limit_bytes: Option<usize>,
+    wasm_timeout_ms: Option<u64>,
+    queue_timeout_ms: Option<u64>,
 ) -> PyResult<usize> {
     let py_payload = payload.into_any().unbind();
-    py.detach(move || broker::submit_wasm_task(module_name, func_name, py_payload, isolated))
+    py.detach(move || {
+        broker::submit_wasm_task(
+            module_name,
+            func_name,
+            py_payload,
+            isolated,
+            wasm_memory_limit_bytes,
+            wasm_timeout_ms,
+            queue_timeout_ms,
+        )
+    })
 }
 
 /// This function submits a task to the broker and returns the task ID.
 #[pyfunction]
-#[pyo3(signature = (callable, payload, isolated=false))]
+#[pyo3(signature = (callable, payload, isolated=false, queue_timeout_ms=None))]
 fn submit_task(
     py: Python<'_>,
     callable: Option<Bound<'_, PyAny>>,
     payload: Bound<'_, PyAny>,
     isolated: bool,
+    queue_timeout_ms: Option<u64>,
 ) -> PyResult<usize> {
     let py_callable = callable.map(|c| c.into_any().unbind());
     let py_payload = payload.into_any().unbind();
 
-    py.detach(move || broker::submit_task(py_callable, py_payload, isolated))
+    py.detach(move || {
+        broker::submit_task(py_callable, py_payload, isolated, queue_timeout_ms)
+    })
 }
 
 /// This function submits a batch of tasks to the broker under a single write lock.
 #[pyfunction]
-#[pyo3(signature = (callable, payloads, isolated=false))]
+#[pyo3(signature = (callable, payloads, isolated=false, queue_timeout_ms=None))]
 fn submit_batch(
     py: Python<'_>,
     callable: Option<Bound<'_, PyAny>>,
     payloads: Bound<'_, pyo3::types::PyList>,
     isolated: bool,
+    queue_timeout_ms: Option<u64>,
 ) -> PyResult<Vec<usize>> {
     let py_callable = callable.map(|c| c.into_any().unbind());
     let mut py_payloads = Vec::with_capacity(payloads.len());
@@ -488,7 +541,9 @@ fn submit_batch(
         py_callables.push(py_callable.as_ref().map(|c| c.clone_ref(py)));
     }
 
-    py.detach(move || broker::submit_batch(py_callables, py_payloads, isolated))
+    py.detach(move || {
+        broker::submit_batch(py_callables, py_payloads, isolated, queue_timeout_ms)
+    })
 }
 
 /// This function cancels a task with the given ID.
@@ -668,6 +723,9 @@ pub(crate) fn notify_waker() {
 /// PyO3 entry point
 #[pymodule]
 fn _pyroxide(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(set_global_wasm_memory_limit_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(set_global_wasm_timeout_ms, m)?)?;
+    m.add_function(wrap_pyfunction!(set_global_queue_timeout_ms, m)?)?;
     m.add_function(wrap_pyfunction!(submit_task, m)?)?;
     m.add_function(wrap_pyfunction!(submit_batch, m)?)?;
     m.add_function(wrap_pyfunction!(get_status, m)?)?;

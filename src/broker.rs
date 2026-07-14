@@ -45,6 +45,8 @@ pub(crate) struct Task {
     pub(crate) dylib_symbol: Option<String>,
     pub(crate) ffi_sig: Option<(Vec<String>, String)>,
     pub(crate) isolated: bool,
+    pub(crate) wasm_memory_limit_bytes: Option<usize>,
+    pub(crate) wasm_timeout_ms: Option<u64>,
 }
 
 pub(crate) struct Broker {
@@ -104,6 +106,7 @@ pub(crate) fn submit_task(
     callable: Option<Py<PyAny>>,
     payload: Py<PyAny>,
     isolated: bool,
+    queue_timeout_ms: Option<u64>,
 ) -> PyResult<usize> {
     let engine = get_engine();
 
@@ -121,6 +124,8 @@ pub(crate) fn submit_task(
         dylib_symbol: None,
         ffi_sig: None,
         isolated,
+        wasm_memory_limit_bytes: None,
+        wasm_timeout_ms: None,
     });
 
     let task_id = {
@@ -132,10 +137,9 @@ pub(crate) fn submit_task(
         slab.insert(task)
     };
 
-    let timeout_ms = std::env::var("PYROXIDE_QUEUE_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1000); // 1 second default
+    let timeout_ms = queue_timeout_ms.unwrap_or_else(|| {
+        crate::CONFIG.queue_timeout_ms.load(std::sync::atomic::Ordering::Relaxed)
+    });
 
     let send_res = if timeout_ms == 0 {
         engine.sender.try_send(task_id).map_err(|e| match e {
@@ -177,6 +181,7 @@ pub(crate) fn submit_batch(
     callables: Vec<Option<Py<PyAny>>>,
     payloads: Vec<Py<PyAny>>,
     isolated: bool,
+    queue_timeout_ms: Option<u64>,
 ) -> PyResult<Vec<usize>> {
     let engine = get_engine();
     let mut ids = Vec::with_capacity(payloads.len());
@@ -202,16 +207,17 @@ pub(crate) fn submit_batch(
                 dylib_symbol: None,
                 ffi_sig: None,
                 isolated,
+                wasm_memory_limit_bytes: None,
+                wasm_timeout_ms: None,
             });
             let task_id = slab.insert(task);
             ids.push(task_id);
         }
     }
 
-    let timeout_ms = std::env::var("PYROXIDE_QUEUE_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1000); // 1 second default
+    let timeout_ms = queue_timeout_ms.unwrap_or_else(|| {
+        crate::CONFIG.queue_timeout_ms.load(std::sync::atomic::Ordering::Relaxed)
+    });
 
     let mut sent_ids = Vec::new();
     let mut send_err = None;
@@ -272,6 +278,9 @@ pub(crate) fn submit_wasm_task(
     func_name: String,
     payload: Py<PyAny>,
     isolated: bool,
+    wasm_memory_limit_bytes: Option<usize>,
+    wasm_timeout_ms: Option<u64>,
+    queue_timeout_ms: Option<u64>,
 ) -> PyResult<usize> {
     let engine = get_engine();
 
@@ -289,6 +298,8 @@ pub(crate) fn submit_wasm_task(
         dylib_symbol: None,
         ffi_sig: None,
         isolated,
+        wasm_memory_limit_bytes,
+        wasm_timeout_ms,
     });
 
     let task_id = {
@@ -300,10 +311,9 @@ pub(crate) fn submit_wasm_task(
         slab.insert(task)
     };
 
-    let timeout_ms = std::env::var("PYROXIDE_QUEUE_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1000); // 1 second default
+    let timeout_ms = queue_timeout_ms.unwrap_or_else(|| {
+        crate::CONFIG.queue_timeout_ms.load(std::sync::atomic::Ordering::Relaxed)
+    });
 
     let send_res = if timeout_ms == 0 {
         engine.sender.try_send(task_id).map_err(|e| match e {
@@ -347,6 +357,7 @@ pub(crate) fn submit_dylib_task(
     payload: Py<PyAny>,
     ffi_sig: Option<(Vec<String>, String)>,
     isolated: bool,
+    queue_timeout_ms: Option<u64>,
 ) -> PyResult<usize> {
     let engine = get_engine();
 
@@ -364,6 +375,8 @@ pub(crate) fn submit_dylib_task(
         dylib_symbol: Some(symbol_name),
         ffi_sig,
         isolated,
+        wasm_memory_limit_bytes: None,
+        wasm_timeout_ms: None,
     });
 
     let task_id = {
@@ -375,10 +388,9 @@ pub(crate) fn submit_dylib_task(
         slab.insert(task)
     };
 
-    let timeout_ms = std::env::var("PYROXIDE_QUEUE_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1000); // 1 second default
+    let timeout_ms = queue_timeout_ms.unwrap_or_else(|| {
+        crate::CONFIG.queue_timeout_ms.load(std::sync::atomic::Ordering::Relaxed)
+    });
 
     let send_res = if timeout_ms == 0 {
         engine.sender.try_send(task_id).map_err(|e| match e {

@@ -157,7 +157,29 @@ generate_stubs("compression_mod", library_type="wasm")
 To prevent infinite loops and host process Out-Of-Memory (OOM) crashes, Pyroxide enforces resource limits on the WASM execution engine:
 
 - **Epoch-Based Interruption (Timeout)**: Pyroxide runs a background ticking thread that advances the WASM engine epoch. Every WASM execution is assigned a deadline (default: 1000ms). If a guest module gets stuck in an infinite loop, it is interrupted and terminated with a trap error once the deadline is exceeded.
-  - Configurable via `PYROXIDE_WASM_TIMEOUT_MS` (default: `1000`) and `PYROXIDE_WASM_TICK_MS` (default: `10`).
-- **Linear Memory Limits**: Every WASM Store is configured with strict linear memory growth limits to prevent host process OOM.
-  - Configurable via `PYROXIDE_WASM_MEMORY_LIMIT_BYTES` (default: `104857600` / 100MB).
+- **Linear Memory Limits**: Every WASM Store is configured with strict linear memory growth limits to prevent host process OOM (default: 100MB).
+
+### Programmatic Configuration
+
+Instead of relying on environment variables, you can configure these limits dynamically and safely in Python using `pyroxide.config`:
+
+```python
+import pyroxide
+
+# --- 1. Global Setup ---
+# Set global defaults (typically on application startup)
+pyroxide.config.set_wasm_limits(
+    memory_limit_bytes=50 * 1024 * 1024,  # 50 MB
+    timeout_ms=500                       # 500 ms timeout
+)
+pyroxide.config.set_queue_timeout(timeout_ms=200)
+
+# --- 2. Thread-Safe Scoped Overrides ---
+# Restrict untrusted tenant code using context managers
+with pyroxide.config.scoped(wasm_timeout_ms=100, wasm_memory_limit_bytes=10 * 1024 * 1024):
+    # Tasks submitted within this block inherit these strict overrides
+    handle = my_wasm_task(untrusted_input)
+```
+
+The scoped overrides are **thread-safe** (using `threading.local()`), ensuring multi-tenant web workers can safely submit tasks with custom limits without affecting other threads.
 

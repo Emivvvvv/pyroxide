@@ -300,16 +300,19 @@ class DylibProxy:
 
             def ffi_method(*args) -> TaskHandle:
                 import struct
+                from .config import _local
 
                 packed_payload = struct.pack(pack_format, *args)
                 ffi_sig_arg = (args_types, ret_type)
 
+                queue_time = getattr(_local, "queue_timeout_ms", None)
                 task_id = submit_dylib_task(
                     self._lib_name,
                     symbol_name,
                     packed_payload,
                     ffi_sig=ffi_sig_arg,
                     isolated=self._isolated,
+                    queue_timeout_ms=queue_time,
                 )
 
                 handle = TaskHandle(task_id)
@@ -354,12 +357,15 @@ class DylibProxy:
         else:
             # Regular bytes/string call
             def dylib_method(payload) -> TaskHandle:
+                from .config import _local
+                queue_time = getattr(_local, "queue_timeout_ms", None)
                 task_id = submit_dylib_task(
                     self._lib_name,
                     symbol_name,
                     payload,
                     ffi_sig=None,
                     isolated=self._isolated,
+                    queue_timeout_ms=queue_time,
                 )
                 return TaskHandle(task_id)
 
