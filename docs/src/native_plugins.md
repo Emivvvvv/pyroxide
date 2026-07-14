@@ -294,7 +294,7 @@ handle = math_lib.calculate_hash(100, 1.5)
 print(handle.result()) # 150
 ```
 
-Supported types include: `i32`, `i64`, `f32`, `f64` for functions with up to 4 arguments.
+Supported types include `i32`, `i64`, `f32`, and `f64`. Under the hood, Pyroxide implements a compiled macro-based trait dispatcher supporting up to **8 arguments** with arbitrary signatures, executing compiled symbols at native CPU register speeds without runtime FFI engine overhead.
 
 ---
 
