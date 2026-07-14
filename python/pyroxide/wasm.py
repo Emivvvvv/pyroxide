@@ -28,6 +28,7 @@ def wasm_task(module_name: str, func_name: str = "run", *, isolated: bool = Fals
         @functools.wraps(func)
         def wrapper(payload) -> TaskHandle:
             from .config import _local
+
             wasm_mem = getattr(_local, "wasm_memory_limit_bytes", None)
             wasm_time = getattr(_local, "wasm_timeout_ms", None)
             queue_time = getattr(_local, "queue_timeout_ms", None)
@@ -57,6 +58,7 @@ class WasmProxy:
     def __getattr__(self, func_name: str):
         def wasm_method(payload) -> TaskHandle:
             from .config import _local
+
             wasm_mem = getattr(_local, "wasm_memory_limit_bytes", None)
             wasm_time = getattr(_local, "wasm_timeout_ms", None)
             queue_time = getattr(_local, "queue_timeout_ms", None)

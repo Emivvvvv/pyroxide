@@ -48,7 +48,10 @@ def task(func_or_none=None, *, isolated: bool = False):
             target_callable = wrapper if isolated else func
             queue_time = getattr(_local, "queue_timeout_ms", None)
             task_ids = submit_batch(
-                target_callable, payloads, isolated=isolated, queue_timeout_ms=queue_time
+                target_callable,
+                payloads,
+                isolated=isolated,
+                queue_timeout_ms=queue_time,
             )
             return [TaskHandle(tid) for tid in task_ids]
 

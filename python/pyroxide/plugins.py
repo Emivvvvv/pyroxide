@@ -358,6 +358,7 @@ class DylibProxy:
             # Regular bytes/string call
             def dylib_method(payload) -> TaskHandle:
                 from .config import _local
+
                 queue_time = getattr(_local, "queue_timeout_ms", None)
                 task_id = submit_dylib_task(
                     self._lib_name,

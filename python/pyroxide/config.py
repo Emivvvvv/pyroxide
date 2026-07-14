@@ -1,6 +1,6 @@
 import threading
 from contextlib import contextmanager
-from typing import Optional, Any
+from typing import Optional
 from ._pyroxide import (
     set_global_wasm_memory_limit_bytes,
     set_global_wasm_timeout_ms,
@@ -9,6 +9,7 @@ from ._pyroxide import (
 
 # Thread-local storage for overrides
 _local = threading.local()
+
 
 def set_wasm_limits(
     memory_limit_bytes: Optional[int] = None,
@@ -20,9 +21,11 @@ def set_wasm_limits(
     if timeout_ms is not None:
         set_global_wasm_timeout_ms(timeout_ms)
 
+
 def set_queue_timeout(timeout_ms: int):
     """Sets the global task submission queue timeout in milliseconds."""
     set_global_queue_timeout_ms(timeout_ms)
+
 
 @contextmanager
 def scoped(
