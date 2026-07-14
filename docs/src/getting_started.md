@@ -73,8 +73,15 @@ handle = my_lib.my_func("data")
 
 ## 3. IDE Autocomplete (Type Stubs)
 
-When calling functions on OOP proxies, editors (like VS Code) won't show autocompletion because symbols are loaded at runtime. You can generate standard PEP 484 type stub files (`.pyi`) to get full IDE autocomplete and type-checking:
+When calling functions on OOP proxies, editors (like VS Code) won't show autocompletion because symbols are loaded at runtime. You can generate standard PEP 484 type stub files (`.pyi`) to get full IDE autocomplete and type-checking.
 
+### Option A: Via Command Line (Recommended)
+You can statically build stubs before running your code by scanning compile/register calls in your codebase:
+```bash
+pyroxide build-stubs --scan --scan-dir . --out-dir .
+```
+
+### Option B: Via Python Helper
 ```python
 from pyroxide import generate_stubs
 
