@@ -21,6 +21,15 @@ impl ShmemGuard {
 impl Drop for ShmemGuard {
     fn drop(&mut self) {
         if let Some(shmem) = self.shmem.take() {
+            #[cfg(unix)]
+            {
+                let os_id = shmem.get_os_id();
+                if let Ok(c_name) = std::ffi::CString::new(os_id) {
+                    unsafe {
+                        libc::shm_unlink(c_name.as_ptr());
+                    }
+                }
+            }
             std::mem::drop(shmem);
         }
     }
@@ -59,9 +68,11 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
             // Route isolated tasks to the process pool
             if task.isolated {
                 let task_clone = Arc::clone(&task);
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                    execute_isolated_task(task_id, &task_clone);
-                }));
+                std::thread::spawn(move || {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                        execute_isolated_task(task_id, &task_clone);
+                    }));
+                });
                 continue;
             }
 
@@ -612,11 +623,36 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
         return Err(format!("IPC write error: {e}"));
     }
 
-    // 4. Read response frame: [Success: 1 byte] [Flags: 1 byte] [Data Len: 8 bytes] [Data Bytes]
+    // 4. Read response frame with cancellation checking
+    let _ = worker.stream.set_nonblocking(true);
     let mut resp_header = [0u8; 10];
-    let read_result = worker.stream.read_exact(&mut resp_header);
-    if let Err(e) = read_result {
-        return Err(format!("Worker process crashed or closed connection: {e}"));
+    let mut header_read = 0;
+
+    while header_read < 10 {
+        if task.cancelled.load(Ordering::Acquire) {
+            #[allow(unused_variables)]
+            let pid = worker.child.id();
+            let _ = worker.child.kill();
+            let _ = worker.child.wait();
+            #[cfg(unix)]
+            crate::process_pool::cleanup_worker_shm(pid);
+            return Err("Task cancelled".to_string());
+        }
+
+        match worker.stream.read(&mut resp_header[header_read..]) {
+            Ok(0) => {
+                return Err("Worker process closed connection (crashed/EOF) on read".to_string());
+            }
+            Ok(n) => {
+                header_read += n;
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(e) => {
+                return Err(format!("IPC read error: {e}"));
+            }
+        }
     }
 
     let success = resp_header[0] == 1;
@@ -624,9 +660,37 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
     let data_len = u64::from_be_bytes(resp_header[2..10].try_into().unwrap_or([0u8; 8])) as usize;
 
     let mut data_bytes = vec![0u8; data_len];
-    if let Err(e) = worker.stream.read_exact(&mut data_bytes) {
-        return Err(format!("IPC read error: {e}"));
+    let mut data_read = 0;
+
+    while data_read < data_len {
+        if task.cancelled.load(Ordering::Acquire) {
+            #[allow(unused_variables)]
+            let pid = worker.child.id();
+            let _ = worker.child.kill();
+            let _ = worker.child.wait();
+            #[cfg(unix)]
+            crate::process_pool::cleanup_worker_shm(pid);
+            return Err("Task cancelled".to_string());
+        }
+
+        match worker.stream.read(&mut data_bytes[data_read..]) {
+            Ok(0) => {
+                return Err("Worker process closed connection (crashed/EOF) on read".to_string());
+            }
+            Ok(n) => {
+                data_read += n;
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(e) => {
+                return Err(format!("IPC read error: {e}"));
+            }
+        }
     }
+
+    // Restore blocking mode
+    let _ = worker.stream.set_nonblocking(false);
 
     fn unpack_worker_response(
         py: Python<'_>,
@@ -658,6 +722,14 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
             String::from_utf8(data_bytes).map_err(|e| format!("Invalid SHM name string: {e}"))?;
         match shared_memory::ShmemConf::new().os_id(&shm_name).open() {
             Ok(shmem) => {
+                #[cfg(unix)]
+                {
+                    if let Ok(c_name) = std::ffi::CString::new(shm_name.clone()) {
+                        unsafe {
+                            libc::shm_unlink(c_name.as_ptr());
+                        }
+                    }
+                }
                 let ptr = shmem.as_ptr();
                 let size = shmem.len();
                 let slice = unsafe { std::slice::from_raw_parts(ptr, size) };

@@ -1,6 +1,18 @@
 # -*- coding: utf-8 -*-
 from typing import List, Iterable
+import sys
+import builtins
 from pyroxide.types import TaskHandle
+import asyncio
+
+ExceptionGroup = getattr(builtins, "ExceptionGroup", None)
+if ExceptionGroup is None:
+    # Define a fallback ExceptionGroup for Python < 3.11
+    class ExceptionGroup(Exception):
+        def __init__(self, message: str, exceptions: List[Exception]):
+            super().__init__(message)
+            self.exceptions = exceptions
+
 
 
 class TaskGroup:
@@ -50,16 +62,40 @@ class TaskGroup:
             self.cancel()
         
         exceptions = []
-        for h in self.handles:
+        if exc_val is not None:
+            exceptions.append(exc_val)
+            
+        tasks = [asyncio.create_task(h.result_async(consume=False)) for h in self.handles]
+        if tasks:
             try:
-                await h.result_async(consume=False)
+                while tasks:
+                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+                    for t in done:
+                        try:
+                            await t
+                        except Exception as e:
+                            self.cancel()
+                            if exc_val is not None and isinstance(e, RuntimeError) and "task cancelled" in str(e).lower():
+                                continue
+                            exceptions.append(e)
+                    tasks = list(pending)
             except Exception as e:
+                self.cancel()
                 exceptions.append(e)
                 
         if exceptions:
+            # Sibling task cancellation errors should be filtered out to reduce noise if there is another root exception
+            has_real_exception = any(not (isinstance(e, RuntimeError) and "cancelled" in str(e).lower()) for e in exceptions)
+            if has_real_exception:
+                exceptions = [e for e in exceptions if not (isinstance(e, RuntimeError) and "cancelled" in str(e).lower())]
+            
+            if len(exceptions) == 1 and exceptions[0] == exc_val:
+                return False
+                
             raise ExceptionGroup("TaskGroup errors", exceptions)
 
 
 def group(handles: Iterable[TaskHandle]) -> TaskGroup:
     """Wraps multiple task handles into a parallel TaskGroup."""
     return TaskGroup(handles)
+

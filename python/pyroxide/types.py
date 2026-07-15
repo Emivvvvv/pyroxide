@@ -4,73 +4,68 @@ import sys
 import asyncio
 from ._pyroxide import get_status, wait_status
 
+import struct
+import threading
+import time
+
 # Global variables for async waker
 _waker_r: Optional[int] = None
 _waker_w: Optional[int] = None
 _pending_futures: dict[int, asyncio.Future] = {}
-_waker_registered: bool = False
-_last_registered_loop: Optional[asyncio.AbstractEventLoop] = None
+_waker_thread: Optional[threading.Thread] = None
 
+def _resolve_future_safe(task_id: int) -> None:
+    fut = _pending_futures.get(task_id)
+    if fut is not None and not fut.done():
+        try:
+            current_status = get_status(task_id)
+            if current_status in ("Completed", "Failed", "Cancelled"):
+                fut.set_result(current_status)
+                _pending_futures.pop(task_id, None)
+        except Exception as e:
+            fut.set_exception(e)
+            _pending_futures.pop(task_id, None)
 
-_waker_buffer: bytearray = bytearray()
-
-def _waker_callback() -> None:
-    global _waker_r, _pending_futures, _waker_buffer
-    if _waker_r is None:
-        return
-    try:
-        import struct
-        data = os.read(_waker_r, 4096)
-        _waker_buffer.extend(data)
-        
-        finished_task_ids = []
-        while len(_waker_buffer) >= 8:
-            chunk = _waker_buffer[:8]
-            del _waker_buffer[:8]
-            task_id = struct.unpack("<Q", chunk)[0]
-            finished_task_ids.append(task_id)
-
-        for task_id in finished_task_ids:
-            fut = _pending_futures.get(task_id)
-            if fut is not None and not fut.done():
-                try:
-                    current_status = get_status(task_id)
-                    if current_status in ("Completed", "Failed", "Cancelled"):
-                        fut.set_result(current_status)
-                        _pending_futures.pop(task_id, None)
-                except Exception as e:
-                    fut.set_exception(e)
-                    _pending_futures.pop(task_id, None)
-    except Exception:
-        pass
-
+def _waker_thread_loop() -> None:
+    global _waker_r, _pending_futures
+    buffer = bytearray()
+    while True:
+        try:
+            if _waker_r is None:
+                break
+            data = os.read(_waker_r, 4096)
+            if not data:
+                break
+            buffer.extend(data)
+            while len(buffer) >= 8:
+                chunk = buffer[:8]
+                del buffer[:8]
+                task_id = struct.unpack("<Q", chunk)[0]
+                fut = _pending_futures.get(task_id)
+                if fut is not None:
+                    try:
+                        loop = fut.get_loop()
+                        if not loop.is_closed():
+                            loop.call_soon_threadsafe(_resolve_future_safe, task_id)
+                    except Exception:
+                        pass
+        except Exception:
+            time.sleep(0.01)
 
 def ensure_waker_registered(loop: asyncio.AbstractEventLoop) -> None:
-    global _waker_r, _waker_w, _waker_registered, _last_registered_loop
+    global _waker_r, _waker_w, _waker_thread
     if sys.platform == "win32":
         return
 
-    if _last_registered_loop is not None and _last_registered_loop != loop:
-        # Loop changed, remove reader from old loop
-        try:
-            if _waker_r is not None:
-                _last_registered_loop.remove_reader(_waker_r)
-        except Exception:
-            pass
-        _waker_registered = False
-
-    if not _waker_registered:
+    if _waker_thread is None:
         try:
             from ._pyroxide import register_async_waker
 
-            if _waker_r is None:
-                _waker_r, _waker_w = os.pipe()
-                os.set_blocking(_waker_r, False)
-                register_async_waker(_waker_w)
+            _waker_r, _waker_w = os.pipe()
+            register_async_waker(_waker_w)
 
-            loop.add_reader(_waker_r, _waker_callback)
-            _waker_registered = True
-            _last_registered_loop = loop
+            _waker_thread = threading.Thread(target=_waker_thread_loop, daemon=True)
+            _waker_thread.start()
         except Exception:
             pass
 
@@ -104,10 +99,16 @@ class TaskHandle:
         Blocks the Python runtime until the background Rust worker completes the task.
         Uses native Rust condvar signal to sleep with 0% CPU usage.
         """
-        timeout_ms: Optional[int] = (
-            int(timeout_sec * 1000) if timeout_sec is not None else None
-        )
+        if timeout_sec is not None:
+            if timeout_sec < 0:
+                raise ValueError("timeout_sec must be non-negative")
+            timeout_ms: Optional[int] = int(timeout_sec * 1000)
+        else:
+            timeout_ms = None
         current_status: str = wait_status(self.task_id, timeout_ms)
+
+        if current_status == "Cancelled":
+            raise RuntimeError("Task cancelled")
 
         if timeout_sec is not None and current_status not in ("Completed", "Failed"):
             raise TimeoutError(f"Task {self.task_id} timed out.")

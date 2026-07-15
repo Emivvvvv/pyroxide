@@ -42,10 +42,16 @@ fn set_global_queue_timeout_ms(ms: u64) {
     CONFIG.queue_timeout_ms.store(ms, Ordering::Relaxed);
 }
 
+#[derive(Hash, Eq, PartialEq, Clone)]
+pub(crate) struct SymbolKey {
+    pub(crate) symbol_name: String,
+    pub(crate) signature: Option<(Vec<String>, String)>,
+}
+
 pub(crate) struct DylibPlugin {
     pub(crate) lib: libloading::Library,
     pub(crate) free_fn: Option<PluginFreeFn>,
-    pub(crate) symbol_cache: RwLock<HashMap<String, PluginRunFn>>,
+    pub(crate) symbol_cache: RwLock<HashMap<SymbolKey, usize>>,
 }
 
 static DYLIB_PLUGINS: OnceLock<RwLock<HashMap<String, Arc<DylibPlugin>>>> = OnceLock::new();
@@ -83,15 +89,20 @@ pub type PluginRunFn =
     unsafe extern "C" fn(ptr: *const u8, len: usize, out_len: *mut usize) -> *mut u8;
 pub type PluginFreeFn = unsafe extern "C" fn(ptr: *mut u8, len: usize);
 
-pub(crate) fn register_dylib_internal(name: String, library_path: String) -> Result<(), String> {
+pub(crate) fn register_dylib_internal(
+    name: String,
+    library_path: String,
+    free_fn_name: Option<String>,
+) -> Result<(), String> {
     // Safety: the library comes from a user-compiled source, the symbols are checked
     // by `get()` and return Err on mismatch, and the plugin never escapes the process.
     unsafe {
         let lib = libloading::Library::new(&library_path)
             .map_err(|e| format!("Failed to load dynamic library: {e}"))?;
 
+        let free_symbol_name = free_fn_name.unwrap_or_else(|| "pyroxide_plugin_free".to_string());
         let free_fn = lib
-            .get::<PluginFreeFn>(b"pyroxide_plugin_free")
+            .get::<PluginFreeFn>(free_symbol_name.as_bytes())
             .map(|sym| *sym)
             .ok();
 
@@ -112,14 +123,36 @@ pub(crate) fn register_dylib_internal(name: String, library_path: String) -> Res
 
 /// Registers a dynamic shared library (.so / .dylib / .dll) with the Pyroxide engine.
 #[pyfunction]
-fn register_dylib(name: String, library_path: String) -> PyResult<()> {
-    register_dylib_internal(name.clone(), library_path.clone())
+#[pyo3(signature = (name, library_path, free_fn_name=None))]
+fn register_dylib(
+    name: String,
+    library_path: String,
+    free_fn_name: Option<String>,
+) -> PyResult<()> {
+    register_dylib_internal(name.clone(), library_path.clone(), free_fn_name.clone())
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
     let paths = DYLIB_PATHS.get_or_init(|| RwLock::new(HashMap::new()));
+    let val_to_store = if let Some(ref free_name) = free_fn_name {
+        format!("{library_path};{free_name}")
+    } else {
+        library_path
+    };
     paths
         .write()
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?
-        .insert(name, library_path);
+        .insert(name, val_to_store);
+    Ok(())
+}
+
+/// Unregisters a dynamic shared library from the registries.
+#[pyfunction]
+fn unregister_dylib(name: String) -> PyResult<()> {
+    if let Some(Ok(mut paths_guard)) = DYLIB_PATHS.get().map(|p| p.write()) {
+        paths_guard.remove(&name);
+    }
+    if let Some(Ok(mut plugins_guard)) = DYLIB_PLUGINS.get().map(|p| p.write()) {
+        plugins_guard.remove(&name);
+    }
     Ok(())
 }
 
@@ -128,6 +161,10 @@ pub(crate) fn execute_dylib(
     symbol_name: &str,
     payload: &[u8],
 ) -> Result<Vec<u8>, String> {
+    if payload.is_empty() {
+        return Err("Payload cannot be empty for raw binary tasks".to_string());
+    }
+
     let registry = DYLIB_PLUGINS
         .get()
         .ok_or_else(|| "Dylib registry not initialized".to_string())?;
@@ -140,17 +177,22 @@ pub(crate) fn execute_dylib(
             .ok_or_else(|| format!("Dynamic library '{name}' not registered"))?
     };
 
+    let key = SymbolKey {
+        symbol_name: symbol_name.to_string(),
+        signature: None,
+    };
+
     // 1. Check if the symbol is already in the cache using a read lock
-    let cached_fn = {
+    let cached_val = {
         let cache = plugin
             .symbol_cache
             .read()
             .map_err(|e| format!("Symbol cache read lock poisoned: {e}"))?;
-        cache.get(symbol_name).cloned()
+        cache.get(&key).cloned()
     };
 
-    let run_fn = match cached_fn {
-        Some(f) => f,
+    let run_ptr_val = match cached_val {
+        Some(v) => v,
         None => {
             // 2. Not cached. Acquire a write lock, resolve the symbol from the library, and insert it
             let mut cache = plugin
@@ -159,8 +201,8 @@ pub(crate) fn execute_dylib(
                 .map_err(|e| format!("Symbol cache write lock poisoned: {e}"))?;
 
             // Double check inside the write lock to prevent race conditions
-            if let Some(&f) = cache.get(symbol_name) {
-                f
+            if let Some(&v) = cache.get(&key) {
+                v
             } else {
                 unsafe {
                     let symbol: libloading::Symbol<PluginRunFn> = plugin
@@ -168,21 +210,22 @@ pub(crate) fn execute_dylib(
                         .get(symbol_name.as_bytes())
                         .map_err(|e| format!("Failed to find symbol '{symbol_name}': {e}"))?;
                     let f = *symbol;
-                    cache.insert(symbol_name.to_string(), f);
-                    f
+                    let val = f as *const std::ffi::c_void as usize;
+                    cache.insert(key, val);
+                    val
                 }
             }
         }
     };
+    let run_fn: PluginRunFn =
+        unsafe { std::mem::transmute(run_ptr_val as *const std::ffi::c_void) };
 
     let free_fn = plugin.free_fn.ok_or_else(|| {
         "Raw binary tasks require the symbol 'pyroxide_plugin_free' to prevent memory leaks."
             .to_string()
     })?;
 
-    // Safety: run_fn/free_fn come from a trusted library, out_ptr is null-checked,
-    // and free_fn is called exactly once with the pointer run_fn gave us.
-    unsafe {
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
         let mut out_len: usize = 0;
         let out_ptr = (run_fn)(payload.as_ptr(), payload.len(), &mut out_len);
         if out_ptr.is_null() {
@@ -191,6 +234,10 @@ pub(crate) fn execute_dylib(
         let output = std::slice::from_raw_parts(out_ptr, out_len).to_vec();
         (free_fn)(out_ptr, out_len);
         Ok(output)
+    }));
+    match res {
+        Ok(inner_res) => inner_res,
+        Err(_) => Err("Dynamic library execution panicked".to_string()),
     }
 }
 
@@ -290,6 +337,21 @@ pub(crate) fn execute_dylib_ffi(
     ret_sig: &str,
     payload: &[u8],
 ) -> Result<Vec<u8>, String> {
+    let mut expected_len = 0;
+    for arg in args_sig {
+        match arg.as_str() {
+            "i32" | "f32" => expected_len += 4,
+            "i64" | "f64" => expected_len += 8,
+            _ => return Err(format!("Unsupported argument type: {arg}")),
+        }
+    }
+    if payload.len() != expected_len {
+        return Err(format!(
+            "Payload length mismatch for FFI call: expected {expected_len} bytes, got {}",
+            payload.len()
+        ));
+    }
+
     let registry = DYLIB_PLUGINS
         .get()
         .ok_or_else(|| "Dylib registry not initialized".to_string())?;
@@ -302,24 +364,54 @@ pub(crate) fn execute_dylib_ffi(
             .ok_or_else(|| format!("Dynamic library '{name}' not registered"))?
     };
 
-    let cached_ptr = {
+    // Validate signature against exported metadata if available
+    unsafe {
+        let symbol: Result<
+            libloading::Symbol<unsafe extern "C" fn() -> *const std::ffi::c_char>,
+            _,
+        > = plugin.lib.get(b"pyroxide_metadata");
+        if let Ok(sym) = symbol {
+            let ptr = sym();
+            let c_str_opt = if ptr.is_null() {
+                None
+            } else {
+                std::ffi::CStr::from_ptr(ptr).to_str().ok()
+            };
+            if let Some(c_str) = c_str_opt {
+                let expected_sig = format!("{}:{}|{}", symbol_name, args_sig.join(","), ret_sig);
+                let entries: Vec<&str> = c_str.split(';').collect();
+                if !entries.contains(&expected_sig.as_str()) {
+                    return Err(format!(
+                        "FFI signature mismatch for symbol '{symbol_name}': expected '{expected_sig}', metadata contains: {c_str}"
+                    ));
+                }
+            }
+        }
+    }
+
+    let key = SymbolKey {
+        symbol_name: symbol_name.to_string(),
+        signature: Some((args_sig.to_vec(), ret_sig.to_string())),
+    };
+
+    let cached_val = {
         let cache = plugin
             .symbol_cache
             .read()
             .map_err(|e| format!("Symbol cache read lock poisoned: {e}"))?;
-        cache.get(symbol_name).cloned()
+        cache.get(&key).cloned()
     };
 
-    let run_ptr = match cached_ptr {
-        Some(f) => f as *const std::ffi::c_void,
+    let run_ptr_val = match cached_val {
+        Some(v) => v,
         None => {
             let mut cache = plugin
                 .symbol_cache
                 .write()
                 .map_err(|e| format!("Symbol cache write lock poisoned: {e}"))?;
 
-            if let Some(&f) = cache.get(symbol_name) {
-                f as *const std::ffi::c_void
+            if let Some(&v) = cache.get(&key) {
+                v
             } else {
                 unsafe {
                     let symbol: libloading::Symbol<*const std::ffi::c_void> = plugin
@@ -327,13 +419,15 @@ pub(crate) fn execute_dylib_ffi(
                         .get(symbol_name.as_bytes())
                         .map_err(|e| format!("Failed to find symbol '{symbol_name}': {e}"))?;
                     let ptr = *symbol;
-                    let f: PluginRunFn = std::mem::transmute(ptr);
-                    cache.insert(symbol_name.to_string(), f);
-                    ptr
+                    let val = ptr as usize;
+                    cache.insert(key, val);
+                    val
                 }
             }
         }
     };
+
+    let run_ptr = run_ptr_val as *const std::ffi::c_void;
 
     let mut offset = 0;
 
@@ -630,14 +724,19 @@ fn get_wasm_exports(module_name: String) -> PyResult<Vec<String>> {
 #[pyfunction]
 fn get_dylib_exports(plugin_name: String) -> PyResult<Vec<String>> {
     let paths = get_dylib_paths();
-    let library_path = paths.get(&plugin_name).ok_or_else(|| {
+    let raw_path = paths.get(&plugin_name).ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err(format!(
             "Dynamic library '{plugin_name}' not registered"
         ))
     })?;
 
+    let parts: Vec<&str> = raw_path.split(';').collect();
+    let library_path = parts[0];
+
     let file_data = std::fs::read(library_path).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("Failed to read dylib file: {e}"))
+        pyo3::exceptions::PyIOError::new_err(format!(
+            "Failed to read dylib file {library_path}: {e}"
+        ))
     })?;
 
     let file = object::File::parse(&*file_data).map_err(|e| {
@@ -706,6 +805,15 @@ fn get_dylib_metadata(name: &str) -> PyResult<Option<String>> {
 }
 
 #[pyfunction]
+fn get_dylib_path(name: String) -> PyResult<Option<String>> {
+    let paths = DYLIB_PATHS.get_or_init(|| RwLock::new(HashMap::new()));
+    let map = paths
+        .read()
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    Ok(map.get(&name).cloned())
+}
+
+#[pyfunction]
 fn start_worker_loop(socket_path: String) -> PyResult<()> {
     worker_process::start_worker_loop(&socket_path)
         .map_err(pyo3::exceptions::PyRuntimeError::new_err)
@@ -727,15 +835,34 @@ fn register_async_waker(fd: std::os::fd::RawFd) {
 
 #[cfg(unix)]
 pub(crate) fn notify_waker(task_id: usize) {
-    use std::os::fd::FromRawFd;
     if let Some(&fd) = ASYNC_WAKER_FD.get() {
-        unsafe {
-            let mut file = std::fs::File::from_raw_fd(fd);
-            use std::io::Write;
-            let bytes = (task_id as u64).to_le_bytes();
-            let _ = file.write_all(&bytes);
-            let _ = file.flush();
-            std::mem::forget(file);
+        let bytes = (task_id as u64).to_le_bytes();
+        let mut written = 0;
+        for _ in 0..3 {
+            unsafe {
+                let res = libc::write(
+                    fd,
+                    bytes[written..].as_ptr() as *const libc::c_void,
+                    bytes.len() - written,
+                );
+                if res > 0 {
+                    written += res as usize;
+                    if written >= bytes.len() {
+                        break;
+                    }
+                } else if res < 0 {
+                    let err_kind = std::io::Error::last_os_error().kind();
+                    if err_kind == std::io::ErrorKind::WouldBlock {
+                        std::thread::yield_now();
+                    } else if err_kind == std::io::ErrorKind::Interrupted {
+                        continue;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
         }
     }
 }
@@ -758,10 +885,12 @@ fn _pyroxide(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(register_wasm_wat, m)?)?;
     m.add_function(wrap_pyfunction!(submit_wasm_task, m)?)?;
     m.add_function(wrap_pyfunction!(register_dylib, m)?)?;
+    m.add_function(wrap_pyfunction!(unregister_dylib, m)?)?;
     m.add_function(wrap_pyfunction!(submit_dylib_task, m)?)?;
     m.add_function(wrap_pyfunction!(get_wasm_exports, m)?)?;
     m.add_function(wrap_pyfunction!(get_dylib_exports, m)?)?;
     m.add_function(wrap_pyfunction!(get_dylib_metadata, m)?)?;
+    m.add_function(wrap_pyfunction!(get_dylib_path, m)?)?;
     m.add_function(wrap_pyfunction!(start_worker_loop, m)?)?;
     m.add_function(wrap_pyfunction!(set_autofree, m)?)?;
     #[cfg(unix)]

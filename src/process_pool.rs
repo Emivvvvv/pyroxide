@@ -17,6 +17,11 @@ pub(crate) struct IpcWorker {
 
 impl Drop for IpcWorker {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            let pid = self.child.id();
+            cleanup_worker_shm(pid);
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         if cfg!(unix) && std::path::Path::new(&self.socket_path).exists() {
@@ -31,9 +36,46 @@ pub(crate) struct IsolatedProcessPool {
 
 static PROCESS_POOL: OnceLock<Arc<IsolatedProcessPool>> = OnceLock::new();
 
+#[cfg(unix)]
+pub(crate) fn cleanup_worker_shm(pid: u32) {
+    if let Ok(entries) = std::fs::read_dir("/dev/shm") {
+        let prefix = format!("pyroxide_shm_res_{pid}_");
+        for entry in entries.flatten() {
+            let is_match = entry
+                .file_name()
+                .into_string()
+                .map(|name| name.starts_with(&prefix))
+                .unwrap_or(false);
+            if is_match {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
 pub(crate) fn get_process_pool() -> Arc<IsolatedProcessPool> {
     PROCESS_POOL
         .get_or_init(|| {
+            #[cfg(unix)]
+            {
+                if let Ok(entries) = std::fs::read_dir("/tmp") {
+                    for entry in entries.flatten() {
+                        let is_stale_socket = entry
+                            .file_name()
+                            .into_string()
+                            .map(|filename| {
+                                filename.starts_with("pyro3_ipc_") && filename.ends_with(".sock")
+                            })
+                            .unwrap_or(false);
+                        if is_stale_socket
+                            && interprocess::local_socket::LocalSocketStream::connect(entry.path())
+                                .is_err()
+                        {
+                            let _ = std::fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            }
             let pool = Arc::new(IsolatedProcessPool {
                 workers: Mutex::new(Vec::new()),
             });
@@ -106,16 +148,8 @@ impl IsolatedProcessPool {
 
         let mut cmd = Command::new(&python_path);
         cmd.env("PYROXIDE_WORKER", "1")
+            .env("PYROXIDE_PARENT_PID", std::process::id().to_string())
             .args(["-m", "pyroxide.worker", "--socket", &socket_path]);
-
-        #[cfg(target_os = "linux")]
-        unsafe {
-            use std::os::unix::process::CommandExt;
-            cmd.pre_exec(|| {
-                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-                Ok(())
-            });
-        }
 
         let mut child = cmd
             .spawn()

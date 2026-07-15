@@ -3,9 +3,86 @@ import subprocess
 import tempfile
 import sys
 import shutil
+import threading
+import time
 from typing import Dict, Optional, Callable, Any
 from ._pyroxide import register_dylib, submit_dylib_task
 from .types import TaskHandle
+
+_compile_lock = threading.Lock()
+
+class CrossProcessLock:
+    def __init__(self, lock_path: str, timeout: float = 60.0):
+        self.lock_path = lock_path
+        self.timeout = timeout
+        self.locked = False
+
+    def _is_pid_running(self, pid: int) -> bool:
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                handle = ctypes.windll.kernel32.OpenProcess(0x0400, False, pid)
+                if handle:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                    return True
+                return ctypes.windll.kernel32.GetLastError() == 5  # Access Denied
+            except Exception:
+                return True  # Fallback to safe
+        else:
+            try:
+                os.kill(pid, 0)
+                return True
+            except OSError:
+                return False
+
+    def acquire(self):
+        start = time.time()
+        parent_dir = os.path.dirname(self.lock_path)
+        os.makedirs(parent_dir, exist_ok=True)
+        pid_file = os.path.join(self.lock_path, "owner.pid")
+        my_pid = os.getpid()
+        while True:
+            try:
+                os.mkdir(self.lock_path)
+                with open(pid_file, "w") as f:
+                    f.write(str(my_pid))
+                self.locked = True
+                return True
+            except FileExistsError:
+                try:
+                    with open(pid_file, "r") as f:
+                        owner_pid = int(f.read().strip())
+                except (OSError, ValueError):
+                    owner_pid = None
+
+                if owner_pid is not None and not self._is_pid_running(owner_pid):
+                    try:
+                        os.remove(pid_file)
+                    except OSError:
+                        pass
+                    try:
+                        os.rmdir(self.lock_path)
+                    except OSError:
+                        pass
+                    continue
+
+                if time.time() - start > self.timeout:
+                    raise TimeoutError(f"Timeout waiting for compilation lock at {self.lock_path}")
+                time.sleep(0.05)
+
+    def release(self):
+        if self.locked:
+            pid_file = os.path.join(self.lock_path, "owner.pid")
+            try:
+                os.remove(pid_file)
+            except OSError:
+                pass
+            try:
+                os.rmdir(self.lock_path)
+            except OSError:
+                pass
+            self.locked = False
+
 
 
 def _verify_compiler(binary: str) -> None:
@@ -57,6 +134,12 @@ def compile_rust(
     """
     _check_compilation_enabled()
     _verify_compiler("cargo")
+
+    cache_dir = os.path.expanduser("~/.pyroxide/cache")
+    lock_path = os.path.join(cache_dir, "compile.lock")
+    lock = CrossProcessLock(lock_path)
+    _compile_lock.acquire()
+    lock.acquire()
 
     temp_dir = tempfile.mkdtemp(prefix=f"pyroxide_dylib_{name}_")
     try:
@@ -120,6 +203,11 @@ def compile_rust(
         cache_dir = os.path.expanduser("~/.pyroxide/cache")
         os.makedirs(cache_dir, exist_ok=True)
         dest_path = os.path.join(cache_dir, lib_name)
+        if os.path.exists(dest_path):
+            try:
+                os.unlink(dest_path)
+            except OSError:
+                pass
         shutil.copy2(compiled_path, dest_path)
 
         # Register dylib with the Rust core engine
@@ -130,6 +218,8 @@ def compile_rust(
         raise RuntimeError(f"Failed to compile dylib '{name}' via Cargo: {e}") from e
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+        lock.release()
+        _compile_lock.release()
 
 
 def compile_c(name: str, source_code: str) -> str:
@@ -146,6 +236,12 @@ def compile_c(name: str, source_code: str) -> str:
     _check_compilation_enabled()
     cc = os.environ.get("CC", "clang" if sys.platform == "darwin" else "gcc")
     _verify_compiler(cc)
+
+    cache_dir = os.path.expanduser("~/.pyroxide/cache")
+    lock_path = os.path.join(cache_dir, "compile.lock")
+    lock = CrossProcessLock(lock_path)
+    _compile_lock.acquire()
+    lock.acquire()
 
     temp_dir = tempfile.mkdtemp(prefix=f"pyroxide_c_{name}_")
     try:
@@ -173,6 +269,11 @@ def compile_c(name: str, source_code: str) -> str:
         cache_dir = os.path.expanduser("~/.pyroxide/cache")
         os.makedirs(cache_dir, exist_ok=True)
         dest_path = os.path.join(cache_dir, lib_name)
+        if os.path.exists(dest_path):
+            try:
+                os.unlink(dest_path)
+            except OSError:
+                pass
         shutil.copy2(compiled_path, dest_path)
 
         register_dylib(name, dest_path)
@@ -182,6 +283,8 @@ def compile_c(name: str, source_code: str) -> str:
         raise RuntimeError(f"Failed to compile C library '{name}': {e}") from e
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+        lock.release()
+        _compile_lock.release()
 
 
 def compile_zig(name: str, source_code: str) -> str:
@@ -197,6 +300,12 @@ def compile_zig(name: str, source_code: str) -> str:
     """
     _check_compilation_enabled()
     _verify_compiler("zig")
+
+    cache_dir = os.path.expanduser("~/.pyroxide/cache")
+    lock_path = os.path.join(cache_dir, "compile.lock")
+    lock = CrossProcessLock(lock_path)
+    _compile_lock.acquire()
+    lock.acquire()
 
     temp_dir = tempfile.mkdtemp(prefix=f"pyroxide_zig_{name}_")
     try:
@@ -228,6 +337,11 @@ def compile_zig(name: str, source_code: str) -> str:
         cache_dir = os.path.expanduser("~/.pyroxide/cache")
         os.makedirs(cache_dir, exist_ok=True)
         dest_path = os.path.join(cache_dir, lib_name)
+        if os.path.exists(dest_path):
+            try:
+                os.unlink(dest_path)
+            except OSError:
+                pass
         shutil.copy2(compiled_path, dest_path)
 
         register_dylib(name, dest_path)
@@ -237,6 +351,8 @@ def compile_zig(name: str, source_code: str) -> str:
         raise RuntimeError(f"Failed to compile Zig library '{name}': {e}") from e
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+        lock.release()
+        _compile_lock.release()
 
 
 def dylib_task(
@@ -391,11 +507,30 @@ def load_dylib(
     signatures: Optional[dict] = None,
     generate_stubs: bool = False,
     isolated: bool = False,
+    free_fn_name: Optional[str] = None,
 ) -> DylibProxy:
     """
     Loads a registered dynamic shared library (dylib) and returns an object-oriented proxy
     allowing direct invocation of any C-ABI exported symbol on the background worker pool.
     """
+    # 0. Auto-register if not already registered
+    try:
+        from pyroxide._pyroxide import get_dylib_exports, get_dylib_path
+        get_dylib_exports(lib_name)
+        if free_fn_name is not None:
+            try:
+                reg_path = get_dylib_path(lib_name)
+                if reg_path:
+                    clean_path = reg_path.split(';')[0]
+                    register_dylib(lib_name, clean_path, free_fn_name=free_fn_name)
+            except Exception:
+                pass
+    except ValueError:
+        try:
+            register_dylib(lib_name, lib_name, free_fn_name=free_fn_name)
+        except Exception:
+            pass
+
     # 1. Auto-discover signatures if none are provided
     if signatures is None:
         from pyroxide._pyroxide import get_dylib_metadata
@@ -427,3 +562,12 @@ def load_dylib(
         run_gen(lib_name, library_type="dylib")
 
     return proxy
+
+
+def unregister_dylib(name: str) -> None:
+    """
+    Unregisters a dynamic shared library from the Pyroxide registries.
+    """
+    from pyroxide._pyroxide import unregister_dylib as _raw_unregister
+    _raw_unregister(name)
+

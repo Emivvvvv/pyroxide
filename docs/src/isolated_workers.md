@@ -74,6 +74,7 @@ For large payloads, Pyroxide maps data to OS-level Shared Memory (SHM). If a wor
 To prevent this, Pyroxide implements strict **SHM Leak Protection**:
 - **RAII Drop Guards**: Both the master and worker runtimes wrap shared memory segments in a custom Rust `ShmemGuard`.
 - **Automatic Unmapping & Unlinking**: When the task finishes or if either the worker/master process crashes or panics mid-execution, Rust's panic unwinding automatically drops the guard, unmapping and unlinking the shared memory segment from the OS filesystem (POSIX `shm_unlink` on macOS/Linux).
+- **Proactive Master Teardown Cleanup**: If an isolated task is explicitly cancelled, the master process terminates the worker via `SIGKILL` (which bypasses standard Rust RAII drop guards in the child). To prevent leaks, the master process automatically scans and unlinks the corresponding segment from `/dev/shm` on Unix.
 
 ## Orphan Process Mitigation
 
@@ -81,4 +82,5 @@ If the master Python process crashes unexpectedly or is killed (e.g. `SIGKILL`),
 
 Pyroxide guarantees immediate worker termination on master crashes across all major platforms:
 - **Linux**: Child processes are spawned with `libc::PR_SET_PDEATHSIG`, instructing the Linux kernel to instantly send `SIGKILL` to the child if the parent process dies.
-- **macOS/Unix**: A lightweight background thread is injected into every worker process. It polls `libc::getppid()` every 500ms; if the parent PID changes to `1` (indicating the parent died and the process was adopted by `init`), the worker instantly terminates.
+- **macOS/Unix**: A lightweight background thread is injected into every worker process. It polls the parent PID using `libc::getppid()` every 500ms; if the parent PID changes (indicating the parent died and the process was adopted by `init` or a session manager), the worker instantly terminates.
+- **Windows**: A lightweight background thread in the worker process polls the parent process state every 500ms using the `OpenProcess` and `GetExitCodeProcess` Windows APIs. If the parent process is no longer active, the worker instantly terminates.

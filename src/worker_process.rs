@@ -16,15 +16,35 @@ impl ShmemGuard {
 impl Drop for ShmemGuard {
     fn drop(&mut self) {
         if let Some(shmem) = self.shmem.take() {
+            #[cfg(unix)]
+            {
+                let os_id = shmem.get_os_id();
+                if let Ok(c_name) = std::ffi::CString::new(os_id) {
+                    unsafe {
+                        libc::shm_unlink(c_name.as_ptr());
+                    }
+                }
+            }
             std::mem::drop(shmem);
         }
     }
 }
 
+#[cfg(target_os = "windows")]
+unsafe extern "system" {
+    fn OpenProcess(
+        dwDesiredAccess: u32,
+        bInheritHandle: i32,
+        dwProcessId: u32,
+    ) -> *mut std::ffi::c_void;
+    fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
+    fn GetExitCodeProcess(hProcess: *mut std::ffi::c_void, lpExitCode: *mut u32) -> i32;
+}
+
 /// Start the high-performance worker IPC loop.
 /// This connects to the master socket/pipe and executes incoming tasks.
 pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
-    #[cfg(all(unix, not(target_os = "linux")))]
+    #[cfg(unix)]
     {
         let ppid = unsafe { libc::getppid() };
         std::thread::spawn(move || {
@@ -35,6 +55,31 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
                 }
             }
         });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(parent_pid_str) = std::env::var("PYROXIDE_PARENT_PID") {
+            if let Ok(parent_pid) = parent_pid_str.parse::<u32>() {
+                std::thread::spawn(move || {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        unsafe {
+                            let handle = OpenProcess(0x0400, 0, parent_pid);
+                            if handle.is_null() {
+                                std::process::exit(1);
+                            }
+                            let mut exit_code: u32 = 0;
+                            let res = GetExitCodeProcess(handle, &mut exit_code);
+                            CloseHandle(handle);
+                            if res == 0 || exit_code != 259 {
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                });
+            }
+        }
     }
 
     let mut stream = LocalSocketStream::connect(socket_path)
@@ -99,6 +144,16 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
                 .os_id(&shm_name)
                 .open()
                 .map_err(|e| format!("Failed to open request SHM {shm_name}: {e}"))?;
+
+            #[cfg(unix)]
+            {
+                if let Ok(c_name) = std::ffi::CString::new(shm_name.clone()) {
+                    unsafe {
+                        libc::shm_unlink(c_name.as_ptr());
+                    }
+                }
+            }
+
             let ptr = shmem.as_ptr();
             let size = shmem.len();
             // Store guard locally to keep mapped until the end of this task execution
@@ -384,8 +439,15 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, 
         11 => {
             // Register Dylib in worker
             let plugin_name = metadata.to_string();
-            let library_path = String::from_utf8_lossy(payload).into_owned();
-            match crate::register_dylib_internal(plugin_name, library_path) {
+            let payload_str = String::from_utf8_lossy(payload).into_owned();
+            let parts: Vec<&str> = payload_str.split(';').collect();
+            let library_path = parts[0].to_string();
+            let free_fn_name = if parts.len() > 1 && !parts[1].is_empty() {
+                Some(parts[1].to_string())
+            } else {
+                None
+            };
+            match crate::register_dylib_internal(plugin_name, library_path, free_fn_name) {
                 Ok(_) => (true, Vec::new()),
                 Err(e) => (false, e.into_bytes()),
             }

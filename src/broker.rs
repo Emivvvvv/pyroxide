@@ -554,5 +554,12 @@ pub(crate) fn set_autofree(task_id: usize) {
     let engine = get_engine();
     if let Some(task) = engine.broker.tasks.get(task_id) {
         task.autofree.store(true, Ordering::Release);
+        let current_status = task.status.load(Ordering::Acquire);
+        if current_status == TaskStatus::Completed as u8
+            || current_status == TaskStatus::Failed as u8
+            || current_status == TaskStatus::Cancelled as u8
+        {
+            free_task(task_id);
+        }
     }
 }

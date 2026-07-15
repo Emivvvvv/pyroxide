@@ -98,3 +98,20 @@ The `TaskHandle` provides the `.status` property to track execution:
 *   `Completed`: Finished successfully; results are ready to retrieve.
 *   `Failed`: Stopped due to panic or exception.
 *   `Cancelled`: Explicitly cancelled before or during execution.
+
+---
+
+## 5. Environment Variable Reference
+
+You can configure Pyroxide's runtime dynamically using the following environment variables:
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `PYROXIDE_WORKERS` | Number of background worker threads in the Rust thread pool. | CPU core count |
+| `PYROXIDE_SHM_THRESHOLD` | Payload size threshold in bytes above which data uses Shared Memory (SHM) instead of socket pipes. | `1048576` (1MB) |
+| `PYROXIDE_WASM_TICK_MS` | Granularity of the WASM epoch deadline interruption loop in milliseconds. | `10` |
+| `PYROXIDE_MAX_TASKS_PER_WORKER` | Maximum number of tasks an isolated worker runs before it is recycled to prevent memory leaks. | `100` |
+| `PYROXIDE_WORKER_STARTUP_TIMEOUT_SEC` | Timeout in seconds for a new worker process to start up and connect. | `5` |
+| `PYROXIDE_IDLE_TIMEOUT_SEC` | Idle time in seconds before an inactive isolated worker process is terminated. | `60` |
+| `PYROXIDE_MIN_WORKERS` | Minimum number of warm worker processes to keep alive at all times. | `0` |
+| `PYROXIDE_DISABLE_COMPILATION` | Set to `1` or `true` to disable runtime compilation of C/Zig/Rust plugins for strict security compliance. | Disabled |

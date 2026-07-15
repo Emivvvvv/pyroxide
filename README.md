@@ -227,6 +227,17 @@ pyroxide build-stubs --scan --scan-dir . --out-dir .
 pyroxide build-stubs
 ```
 
+### 8. Environment Variable Reference
+Configure Pyroxide dynamically using the following environment variables:
+*   `PYROXIDE_WORKERS`: Number of background worker threads in the Rust thread pool (default: available CPU cores).
+*   `PYROXIDE_SHM_THRESHOLD`: Payload size threshold in bytes above which data uses Shared Memory (SHM) instead of the local socket (default: `1048576` = 1MB).
+*   `PYROXIDE_WASM_TICK_MS`: Granularity of the WASM epoch timeout tick loop in milliseconds (default: `10`ms).
+*   `PYROXIDE_MAX_TASKS_PER_WORKER`: Maximum number of tasks an isolated process worker runs before it is recycled to prevent memory leaks (default: `100`).
+*   `PYROXIDE_WORKER_STARTUP_TIMEOUT_SEC`: Timeout in seconds for a new worker process to start up and connect (default: `5` seconds).
+*   `PYROXIDE_IDLE_TIMEOUT_SEC`: Idle time in seconds before an inactive isolated worker process is terminated (default: `60` seconds).
+*   `PYROXIDE_MIN_WORKERS`: Minimum number of warm worker processes to keep alive at all times (default: `0`).
+*   `PYROXIDE_DISABLE_COMPILATION`: Set to `1` or `true` to disable runtime compilation of C/Zig/Rust plugins for strict security compliance.
+
 ---
 
 ## Dive Deeper (Documentation Book)

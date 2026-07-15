@@ -95,7 +95,7 @@ def test_load_dylib_metadata_and_stubs():
             content = f.read()
 
         assert "class Dyn_metaDylibProxy:" in content
-        assert "def my_sub(self, arg0: Any, arg1: Any) -> TaskHandle: ..." in content
+        assert "def my_sub(self, arg0: int, arg1: int) -> TaskHandle: ..." in content
     finally:
         if os.path.exists(stub_file):
             os.remove(stub_file)
