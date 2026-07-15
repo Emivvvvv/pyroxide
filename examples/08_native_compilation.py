@@ -1,5 +1,5 @@
 import shutil
-from pyroxide import compile_c, compile_dylib, compile_zig, dylib_task
+from pyroxide import compile_c, compile_rust, compile_zig, dylib_task
 
 # Check compiler availability
 cc_available = (
@@ -89,7 +89,7 @@ if __name__ == "__main__":
     # Compile and load Rust code
     if rust_available:
         print("Compiling Rust plugin on-the-fly...")
-        compile_dylib("caesar_shift_rust", RUST_SRC)
+        compile_rust("caesar_shift_rust", RUST_SRC)
         
         @dylib_task("caesar_shift_rust")
         def apply_rust(payload: bytes) -> bytes:

@@ -33,13 +33,21 @@
 
 Pyroxide (`pyro3`) is a lightweight, ultra-high-performance background task broker designed to bridge Python and Rust. It allows CPU-bound or blocking workloads to bypass the Python Global Interpreter Lock (GIL) with minimal memory overhead and zero CPU-sleep polling.
 
+💡 **Pyroxide is the perfect fit if you want to:**
+*   **Prevent async event loops (like FastAPI) from freezing** on heavy CPU calculations.
+*   **Bypass the GIL** without the slow startup and heavy pickling overhead of `multiprocessing`.
+*   **Safely run untrusted user plugins** in-process using isolated WASM sandboxes.
+*   **Reuse pre-existing system libraries** (`.so` / `.dylib` / `.dll`) GIL-free with zero wrapper code.
+
+---
+
 ## Why Pyroxide?
 
 *   🚀 **GIL-Free Performance**: Execute CPU-intensive tasks on background threads or isolated processes without holding the Python GIL.
 *   ⚡ **Microsecond Latency**: Dispatch and complete tasks in under **25 microseconds** using OS-level signaling (`Condvar`) instead of polling.
 *   📦 **Zero Infrastructure**: Run entirely in-process with no Redis, RabbitMQ, or Celery worker daemons to configure or maintain.
 *   💾 **Zero-Copy Transport**: Route large payloads ($\ge 1\text{MB}$) via OS Shared Memory (SHM) to bypass serialization copying bottlenecks.
-*   🛡️ **Sandbox & Queue Safety**: Enforce memory/time limits on WASM tasks to prevent OOM/hangs, and use bounded queues to avoid memory runs.
+*   🛡️ **WASM Sandbox Security**: Run untrusted user plugins or SaaS workflows in a secure JIT sandbox with strict CPU/memory limits.
 *   🛠️ **Dynamic FFI Compilation**: Compile code strings on-the-fly (Rust, C, Zig) into native libraries with persistent binary caching.
 
 ---
@@ -89,6 +97,9 @@ def calculate_square(x: int) -> int:
 handle = calculate_square(12)
 result = handle.result() # Blocks natively (0% CPU) until complete
 print(result) # 144
+
+# Or await it non-blockingly inside an async event loop (like FastAPI)
+# result = await handle.result_async()
 
 # Pure Python tasks can fully bypass the GIL with `isolated=True`
 @task(isolated=True)
@@ -142,9 +153,9 @@ print(cipher.run("hello").result()) # "uryyb"
 ```
 
 ### 4. Dynamic Shared Libraries (On-the-Fly Compilation)
-Compile and load native code strings on-the-fly. **Rust** (`compile_dylib`), **C** (`compile_c`), and **Zig** (`compile_zig`) are supported:
+Compile and load native code strings on-the-fly. **Rust** (`compile_rust`), **C** (`compile_c`), and **Zig** (`compile_zig`) are supported:
 ```python
-from pyroxide import compile_dylib, dylib_task, load_dylib
+from pyroxide import compile_rust, dylib_task, load_dylib
 
 RUST_SRC = """
 #[no_mangle]
@@ -164,7 +175,7 @@ pub unsafe extern "C" fn pyroxide_plugin_free(ptr: *mut u8, len: usize) {
 """
 
 # Compile, register and load the Rust library on-the-fly!
-compile_dylib("rust_upper", RUST_SRC)
+compile_rust("rust_upper", RUST_SRC)
 
 # 1. Execute via decorators
 @dylib_task("rust_upper")
@@ -178,7 +189,21 @@ rust_upper = load_dylib("rust_upper")
 print(rust_upper.pyroxide_plugin_run("hello from rust").result())  # "HELLO FROM RUST"
 ```
 
-### 5. Programmatic Sandbox Configuration (v0.7.0)
+### 5. Universal FFI (Reusing Precompiled Libraries)
+Load standard precompiled system libraries natively without compiling custom code:
+```python
+import sys
+from pyroxide import load_dylib
+
+# Load system math library natively - no pyroxide_plugin_free required for primitives!
+libm_name = "libm.dylib" if sys.platform == "darwin" else "libm.so.6"
+libm = load_dylib(libm_name, signatures={
+    "cos": {"args": ["f64"], "ret": "f64"}
+})
+print(libm.cos(3.1415926535).result())  # -1.0
+```
+
+### 6. Programmatic Sandbox Configuration
 Configure WebAssembly memory limits, execution timeouts, and queue block/drop timeouts thread-safely:
 ```python
 import pyroxide
@@ -192,7 +217,7 @@ with pyroxide.config.scoped(wasm_timeout_ms=50, wasm_memory_limit_bytes=10 * 102
     handle = rot13_cipher("hello")
 ```
 
-### 6. Static Stub Compilation CLI (v0.7.0)
+### 7. Static Stub Compilation CLI
 Avoid runtime filesystem writes during application startup (which triggers FastAPI reload loops) by statically building type stubs:
 ```bash
 # Scan Python files recursively to generate proxy .pyi stubs

@@ -185,7 +185,9 @@ def test_task_group_workflow():
     assert tg.status == "Completed"
 
     # 2. Test group cancellation
-    h_cancel = python_square.batch([20, 30])
+    h_cancel = native_sleep.batch(["SLEEP:500", "SLEEP:500"])
     tg_cancel = group(h_cancel)
+    # Give a tiny sleep to allow the tasks to enter the running/pending state
+    time.sleep(0.01)
     tg_cancel.cancel()
     assert tg_cancel.status == "Cancelled"

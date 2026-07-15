@@ -52,11 +52,11 @@ pub unsafe extern "C" fn pyroxide_plugin_free(
 
 On-the-fly compilation compiles source code strings into shared libraries at runtime using your local toolchain, then registers them with the engine.
 
-### Rust (`compile_dylib`)
+### Rust (`compile_rust`)
 Uses your local `cargo` toolchain under the hood to compile Rust source code. You can also specify Cargo dependencies.
 
 ```python
-from pyroxide import compile_dylib, dylib_task
+from pyroxide import compile_rust, dylib_task
 
 RUST_LOGGER = """
 use std::fs::OpenOptions;
@@ -84,7 +84,7 @@ pub unsafe extern "C" fn pyroxide_plugin_free(ptr: *mut u8, len: usize) {
 """
 
 # Compile and register. Optional Cargo dependencies can be provided.
-compile_dylib("file_logger", RUST_LOGGER)
+compile_rust("file_logger", RUST_LOGGER)
 
 @dylib_task("file_logger")
 def log_event(message: str) -> str:
@@ -170,7 +170,7 @@ print(to_upper_zig("hello from zig").result())  # "HELLO FROM ZIG"
 
 ### Compiler PATH Verification
 To avoid cryptic system errors when dynamic compilation fails, Pyroxide performs early checks on the host environment's system path:
-- `compile_dylib` verifies that `cargo` is available on the system `PATH`.
+- `compile_rust` verifies that `cargo` is available on the system `PATH`.
 - `compile_c` verifies that the defined C compiler (e.g. `clang` or `gcc`, or custom via the `CC` environment variable) is present.
 - `compile_zig` verifies that `zig` is present.
 

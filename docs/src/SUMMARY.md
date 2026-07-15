@@ -9,6 +9,7 @@
 - [Task Cancellation](cancellation.md)
 - [Traceback Preservation](tracebacks.md)
 - [Dynamic Shared Libraries (dylib)](native_plugins.md)
+- [Universal FFI (Reusable Libraries)](universal_ffi.md)
 - [WebAssembly Execution Engine](wasm_engine.md)
 - [Performance & Benchmarks](benchmarks.md)
 - [Library Comparison](comparison.md)

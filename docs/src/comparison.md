@@ -79,7 +79,7 @@ Celery and RQ are distributed task queues designed to run jobs on separate worke
 Writing a custom Rust C-Extension using PyO3 is the standard way to speed up Python with Rust.
 
 ### Comparison
-*   **Development Speed**: With raw PyO3, any change to your native code requires compiling a new wheel, rebuilding the Python environment, and re-deploying. **Pyroxide** compiles and loads dynamic code on-the-fly (`compile_dylib()`), providing rapid iteration directly in Python script files.
+*   **Development Speed**: With raw PyO3, any change to your native code requires compiling a new wheel, rebuilding the Python environment, and re-deploying. **Pyroxide** compiles and loads dynamic code on-the-fly (`compile_rust()`), providing rapid iteration directly in Python script files.
 *   **GIL Offloading**: PyO3 requires manually calling `py.allow_threads(...)` to release the GIL, and managing cross-thread safety. **Pyroxide** abstracts all thread dispatching, lock-free status monitoring, and GIL-release boundaries automatically.
 *   **Call Overhead**: Statically compiled raw PyO3 function calls have an overhead of **0.2 µs - 0.8 µs**. As measured in **[Benchmark Scenario G](benchmarks.md#scenario-g-pyroxide-vs-raw-pyo3-c-extension)**, Pyroxide `@dylib_task` runs at **1.0 µs** call overhead, meaning Pyroxide matches raw PyO3 speeds with **zero runtime penalty** while gaining dynamic compilation.
 

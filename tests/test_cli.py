@@ -119,3 +119,35 @@ test_pyproj_wasm = {{ type = "wat", wat = '''{WAT_CODE}''' }}
 
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_cli_warn_missing_deallocator(capsys):
+    """Verifies that generate_stubs prints a warning to stderr when a library lacks a deallocator for raw tasks."""
+    from pyroxide import compile_rust, generate_stubs
+
+    RUST_NO_FREE_SRC = """
+    #[no_mangle]
+    pub extern "C" fn add_ints(a: i32, b: i32) -> i32 {
+        a + b
+    }
+    """
+
+    # 1. Compile the dylib without free_fn
+    compile_rust("dyn_warn_lib", RUST_NO_FREE_SRC)
+
+    # 2. Call generate_stubs and capture output
+    temp_dir = tempfile.mkdtemp(prefix="pyroxide_cli_warn_")
+    try:
+        out_path = os.path.join(temp_dir, "dyn_warn_lib_proxy.pyi")
+        generate_stubs("dyn_warn_lib", "dylib", out_path=out_path)
+        
+        # Capture stdout/stderr
+        captured = capsys.readouterr()
+        
+        # Verify warning is printed to stderr
+        assert "Warning: Library 'dyn_warn_lib' exposes raw binary tasks" in captured.err
+        assert "does not export 'pyroxide_plugin_free'" in captured.err
+        
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+

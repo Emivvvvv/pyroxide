@@ -43,7 +43,7 @@ fn set_global_queue_timeout_ms(ms: u64) {
 
 pub(crate) struct DylibPlugin {
     pub(crate) lib: libloading::Library,
-    pub(crate) free_fn: unsafe extern "C" fn(ptr: *mut u8, len: usize),
+    pub(crate) free_fn: Option<PluginFreeFn>,
     pub(crate) symbol_cache: RwLock<HashMap<String, PluginRunFn>>,
 }
 
@@ -89,9 +89,10 @@ pub(crate) fn register_dylib_internal(name: String, library_path: String) -> Res
         let lib = libloading::Library::new(&library_path)
             .map_err(|e| format!("Failed to load dynamic library: {e}"))?;
 
-        let free_fn = *lib
+        let free_fn = lib
             .get::<PluginFreeFn>(b"pyroxide_plugin_free")
-            .map_err(|e| format!("Missing symbol 'pyroxide_plugin_free': {e}"))?;
+            .map(|sym| *sym)
+            .ok();
 
         let plugin = DylibPlugin {
             lib,
@@ -171,6 +172,11 @@ pub(crate) fn execute_dylib(
         }
     };
 
+    let free_fn = plugin.free_fn.ok_or_else(|| {
+        "Raw binary tasks require the symbol 'pyroxide_plugin_free' to prevent memory leaks."
+            .to_string()
+    })?;
+
     // Safety: run_fn/free_fn come from a trusted library, out_ptr is null-checked,
     // and free_fn is called exactly once with the pointer run_fn gave us.
     unsafe {
@@ -180,7 +186,7 @@ pub(crate) fn execute_dylib(
             return Err("Execution returned NULL pointer".to_string());
         }
         let output = std::slice::from_raw_parts(out_ptr, out_len).to_vec();
-        (plugin.free_fn)(out_ptr, out_len);
+        (free_fn)(out_ptr, out_len);
         Ok(output)
     }
 }

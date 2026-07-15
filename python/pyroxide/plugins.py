@@ -17,7 +17,7 @@ def _verify_compiler(binary: str) -> None:
         )
 
 
-def compile_dylib(
+def compile_rust(
     name: str, source_code: str, dependencies: Optional[Dict[str, str]] = None
 ) -> str:
     """
@@ -44,7 +44,7 @@ def compile_dylib(
         FileNotFoundError: If the compiled library binary is not found after build.
 
     Example:
-        >>> compile_dylib("my_lib", RUST_SOURCE_CODE)
+        >>> compile_rust("my_lib", RUST_SOURCE_CODE)
         >>> @dylib_task("my_lib")
         ... def process(payload): pass
         >>> handle = process("hello")
@@ -242,10 +242,10 @@ def dylib_task(
     Decorator that routes task payloads to a registered dynamic shared library (dylib)
     for GIL-free execution on the background Rust worker pool.
 
-    The dylib must have been previously compiled and registered via ``compile_dylib()``.
+    The dylib must have been previously compiled and registered via ``compile_rust()``.
 
     Args:
-        dylib_name: The name of the dylib as registered with ``compile_dylib()``.
+        dylib_name: The name of the dylib as registered with ``compile_rust()``.
         symbol_name: The function symbol to load from the dylib. Defaults to "pyroxide_plugin_run".
         ffi_sig: Optional FFI signature tuple, e.g. (['i32', 'i32'], 'i32')
         isolated: Set to True to run in an isolated worker process for crash isolation.

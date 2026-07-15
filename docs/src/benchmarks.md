@@ -87,7 +87,7 @@ We evaluated the virtualization and ABI boundary costs of our different executio
 | Engine Type | Compile Method | Execution Sandbox | Memory Safety | Avg. Latency (Fibonacci 20) |
 | :--- | :--- | :--- | :--- | :--- |
 | **CPython `@task`** | Interpreter | None (GIL held during call) | Python-managed | `~85.20 µs` |
-| **Rust `@dylib_task`** | `compile_dylib` | Native OS (Direct pointer) | Rust-compiler-guaranteed | **`1.10 µs`** |
+| **Rust `@dylib_task`** | `compile_rust` | Native OS (Direct pointer) | Rust-compiler-guaranteed | **`1.10 µs`** |
 | **C `@dylib_task`** | `compile_c` | Native OS (Direct pointer) | Manual memory management | **`0.98 µs`** |
 | **Zig `@dylib_task`** | `compile_zig` | Native OS (Direct pointer) | Safety checks enabled | **`1.02 µs`** |
 | **WASM `@wasm_task`** | Pre-compiled | `wasmtime` JIT VM | Hard virtual sandbox | `14.80 µs` |

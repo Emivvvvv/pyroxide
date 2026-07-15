@@ -53,9 +53,9 @@ handle = cipher.run("data")
 Load compiled native C, Rust, or Zig libraries:
 
 ```python
-from pyroxide import compile_dylib, dylib_task, load_dylib
+from pyroxide import compile_rust, dylib_task, load_dylib
 
-compile_dylib("my_lib", RUST_SOURCE_CODE)
+compile_rust("my_lib", RUST_SOURCE_CODE)
 
 # 1. Access via decorator:
 @dylib_task("my_lib", "my_func")

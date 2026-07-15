@@ -1,6 +1,6 @@
 import pytest
 import os
-from pyroxide import compile_dylib, dylib_task
+from pyroxide import compile_rust, dylib_task
 
 RUST_PLUGIN_SRC = """
 use std::fs;
@@ -32,7 +32,7 @@ def test_dylib_lifecycle():
     if os.path.exists(marker_path):
         os.remove(marker_path)
 
-    compile_dylib("dyn_greeter", RUST_PLUGIN_SRC)
+    compile_rust("dyn_greeter", RUST_PLUGIN_SRC)
 
     @dylib_task("dyn_greeter")
     def greet(payload: str) -> str:
@@ -53,7 +53,7 @@ def test_dylib_lifecycle():
 
 def test_dylib_bytes():
     """Verifies that dylib tasks correctly handle raw byte payloads."""
-    compile_dylib("dyn_bytes", RUST_PLUGIN_SRC)
+    compile_rust("dyn_bytes", RUST_PLUGIN_SRC)
 
     @dylib_task("dyn_bytes")
     def process_bytes(payload: bytes) -> bytes:
@@ -68,7 +68,7 @@ def test_dylib_compilation_failure():
     """Verifies that malformed Rust source code raises a clear RuntimeError."""
     bad_src = "this is not rust code"
     with pytest.raises(RuntimeError) as exc_info:
-        compile_dylib("dyn_bad", bad_src)
+        compile_rust("dyn_bad", bad_src)
     assert "Failed to compile dylib" in str(exc_info.value)
 
 
@@ -103,7 +103,7 @@ def test_dylib_oop_proxy():
     }
     """
 
-    compile_dylib("dyn_oop", RUST_OOP_SRC)
+    compile_rust("dyn_oop", RUST_OOP_SRC)
     proxy = load_dylib("dyn_oop")
 
     # Call custom symbols
@@ -116,7 +116,7 @@ def test_dylib_oop_proxy():
 
 def test_dylib_mini_ffi():
     """Verifies that load_dylib works with signatures dictionary for FFI calls."""
-    from pyroxide import load_dylib, compile_dylib
+    from pyroxide import load_dylib, compile_rust
 
     RUST_FFI_SRC = """
     #[no_mangle]
@@ -135,7 +135,7 @@ def test_dylib_mini_ffi():
     }
     """
 
-    compile_dylib("dyn_ffi", RUST_FFI_SRC)
+    compile_rust("dyn_ffi", RUST_FFI_SRC)
 
     # Load with signatures
     proxy = load_dylib(
@@ -156,7 +156,7 @@ def test_dylib_mini_ffi():
 
 def test_dylib_ffi_large_signature():
     """Verifies FFI dispatcher with a large 8-argument signature."""
-    from pyroxide import load_dylib, compile_dylib
+    from pyroxide import load_dylib, compile_rust
 
     RUST_LARGE_SRC = """
     #[no_mangle]
@@ -173,7 +173,7 @@ def test_dylib_ffi_large_signature():
     }
     """
 
-    compile_dylib("dyn_large_ffi", RUST_LARGE_SRC)
+    compile_rust("dyn_large_ffi", RUST_LARGE_SRC)
 
     proxy = load_dylib(
         "dyn_large_ffi",
@@ -187,3 +187,51 @@ def test_dylib_ffi_large_signature():
 
     handle = proxy.ffi_sum_8(1, 2, 3, 4, 5, 6, 7, 8)
     assert handle.result() == 36
+
+
+def test_dylib_no_free_success():
+    """Verifies that FFI signature tasks can execute successfully without a free function."""
+    from pyroxide import load_dylib, compile_rust
+
+    RUST_NO_FREE_SRC = """
+    #[no_mangle]
+    pub extern "C" fn add_ints(a: i32, b: i32) -> i32 {
+        a + b
+    }
+    """
+
+    compile_rust("dyn_no_free", RUST_NO_FREE_SRC)
+
+    proxy = load_dylib(
+        "dyn_no_free",
+        signatures={
+            "add_ints": {
+                "args": ["i32", "i32"],
+                "ret": "i32",
+            }
+        },
+    )
+
+    handle = proxy.add_ints(10, 20)
+    assert handle.result() == 30
+
+
+def test_dylib_no_free_raw_fail():
+    """Verifies that raw bytes execution fails with RuntimeError if pyroxide_plugin_free is missing."""
+    from pyroxide import load_dylib, compile_rust
+
+    RUST_NO_FREE_SRC = """
+    #[no_mangle]
+    pub extern "C" fn add_ints(a: i32, b: i32) -> i32 {
+        a + b
+    }
+    """
+
+    compile_rust("dyn_no_free_raw", RUST_NO_FREE_SRC)
+
+    proxy = load_dylib("dyn_no_free_raw", signatures={})
+
+    with pytest.raises(Exception) as exc_info:
+        proxy.add_ints(b"payload").result()
+    assert "require the symbol 'pyroxide_plugin_free'" in str(exc_info.value)
+

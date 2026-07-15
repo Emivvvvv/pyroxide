@@ -46,6 +46,23 @@ def generate_stubs(name: str, library_type: str, out_path: Optional[str] = None)
     else:
         raise ValueError("library_type must be either 'wasm' or 'dylib'")
 
+    # Print compile-time warnings for potential memory leaks if pyroxide_plugin_free is missing for raw tasks
+    if library_type.lower() == "dylib" and "pyroxide_plugin_free" not in exports:
+        raw_funcs = [
+            s
+            for s in exports
+            if s not in ("pyroxide_metadata", "pyroxide_plugin_free") and s not in sigs
+        ]
+        if raw_funcs:
+            import sys
+
+            print(
+                f"⚠️  Warning: Library '{name}' exposes raw binary tasks {raw_funcs} but "
+                f"does not export 'pyroxide_plugin_free'. Memory leaks will occur "
+                f"if these functions return heap-allocated pointers.",
+                file=sys.stderr,
+            )
+
     if not out_path:
         out_path = f"{name}_proxy.pyi"
 

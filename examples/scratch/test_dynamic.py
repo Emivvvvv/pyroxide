@@ -1,4 +1,4 @@
-from pyroxide import task, compile_dylib, dylib_task
+from pyroxide import task, compile_rust, dylib_task
 
 
 # 1. Test Python callable execution (default)
@@ -31,7 +31,7 @@ pub unsafe extern "C" fn pyroxide_plugin_free(ptr: *mut u8, len: usize) {
 }
 """
 
-compile_dylib("greeter_dylib", RUST_SRC)
+compile_rust("greeter_dylib", RUST_SRC)
 
 
 @dylib_task("greeter_dylib")

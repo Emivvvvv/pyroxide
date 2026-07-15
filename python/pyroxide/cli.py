@@ -68,7 +68,7 @@ def parse_pyproject(path: str = "pyproject.toml") -> Dict[str, Any]:
 def scan_py_files(target_dir: str = ".") -> Dict[str, Dict[str, str]]:
     """
     Scans Python files recursively and extracts literal registration/compilation calls:
-    - compile_dylib("name", "source_code")
+    - compile_rust("name", "source_code")
     - compile_c("name", "source_code")
     - compile_zig("name", "source_code")
     - register_dylib("name", "path")
@@ -98,7 +98,7 @@ def scan_py_files(target_dir: str = ".") -> Dict[str, Dict[str, str]]:
                             func_name = node.func.attr
 
                         if func_name in [
-                            "compile_dylib",
+                            "compile_rust",
                             "compile_c",
                             "compile_zig",
                             "register_dylib",
@@ -123,11 +123,15 @@ def scan_py_files(target_dir: str = ".") -> Dict[str, Dict[str, str]]:
                                                 "path": val,
                                             }
                                         elif func_name in [
-                                            "compile_dylib",
+                                            "compile_rust",
                                             "compile_c",
                                             "compile_zig",
                                         ]:
-                                            lang = func_name.split("_")[1]
+                                            lang = (
+                                                "rust"
+                                                if func_name == "compile_rust"
+                                                else func_name.split("_")[1]
+                                            )
                                             modules[name] = {
                                                 "type": lang,
                                                 "source": val,
@@ -221,7 +225,7 @@ def run_build_stubs(args) -> int:
                 )
                 success_count += 1
             elif mtype == "rust" and "source" in opts:
-                pyroxide.compile_dylib(name, opts["source"])
+                pyroxide.compile_rust(name, opts["source"])
                 generate_stubs(name, "dylib", out_path=out_path)
                 print(
                     f"Compiled and generated Rust stubs for '{name}' -> {out_path or name + '_proxy.pyi'}"

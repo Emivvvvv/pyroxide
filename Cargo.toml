@@ -1,6 +1,6 @@
 [package]
 name = "pyroxide"
-version = "0.7.0"
+version = "0.8.0"
 authors = ["Emirhan TALA <tala.emirhan@gmail.com>"]
 description = "A lock-free, high-concurrency background task broker for Python, powered by Rust."
 edition = "2024"
