@@ -75,3 +75,10 @@ To prevent this, Pyroxide implements strict **SHM Leak Protection**:
 - **RAII Drop Guards**: Both the master and worker runtimes wrap shared memory segments in a custom Rust `ShmemGuard`.
 - **Automatic Unmapping & Unlinking**: When the task finishes or if either the worker/master process crashes or panics mid-execution, Rust's panic unwinding automatically drops the guard, unmapping and unlinking the shared memory segment from the OS filesystem (POSIX `shm_unlink` on macOS/Linux).
 
+## Orphan Process Mitigation
+
+If the master Python process crashes unexpectedly or is killed (e.g. `SIGKILL`), running isolated worker processes could potentially become orphaned "zombie" processes that leak CPU and memory indefinitely. 
+
+Pyroxide guarantees immediate worker termination on master crashes across all major platforms:
+- **Linux**: Child processes are spawned with `libc::PR_SET_PDEATHSIG`, instructing the Linux kernel to instantly send `SIGKILL` to the child if the parent process dies.
+- **macOS/Unix**: A lightweight background thread is injected into every worker process. It polls `libc::getppid()` every 500ms; if the parent PID changes to `1` (indicating the parent died and the process was adopted by `init`), the worker instantly terminates.

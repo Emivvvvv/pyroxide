@@ -58,6 +58,35 @@ print(results)     # [100, 400, 900, 1600]
 print(tg.status)   # "Completed"
 ```
 
+### Async Context Manager (`async with`)
+
+`TaskGroup` fully supports asynchronous context managers, aligning with standard `asyncio.TaskGroup` behavior. Entering the context manager allows you to group tasks, and exiting it automatically awaits all results. If an exception occurs in any task or inside the block, pending tasks are cancelled, and all task exceptions are collected and raised as an `ExceptionGroup` (requires Python 3.11+).
+
+```python
+from pyroxide import task, group
+import asyncio
+
+@task
+def calculate_square(x: int) -> int:
+    return x * x
+
+async def main():
+    payloads = [10, 20, 30, 40]
+    handles = calculate_square.batch(payloads)
+    
+    try:
+        async with group(handles) as tg:
+            pass # Exiting the block will await all tasks concurrently
+        
+        # Results are preserved safely on the handles
+        results = [h.result(consume=True) for h in tg.handles]
+        print(results)
+    except ExceptionGroup as eg:
+        print("One or more tasks failed:", eg)
+
+asyncio.run(main())
+```
+
 ### TaskGroup Methods
 
 A `TaskGroup` exposes the following API:
