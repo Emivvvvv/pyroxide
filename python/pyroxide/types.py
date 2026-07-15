@@ -12,35 +12,37 @@ _waker_registered: bool = False
 _last_registered_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
+_waker_buffer: bytearray = bytearray()
+
 def _waker_callback() -> None:
-    global _waker_r, _pending_futures
+    global _waker_r, _pending_futures, _waker_buffer
     if _waker_r is None:
         return
     try:
-        # Read all available bytes to clear the pipe buffer
-        os.read(_waker_r, 4096)
+        import struct
+        data = os.read(_waker_r, 4096)
+        _waker_buffer.extend(data)
+        
+        finished_task_ids = []
+        while len(_waker_buffer) >= 8:
+            chunk = _waker_buffer[:8]
+            del _waker_buffer[:8]
+            task_id = struct.unpack("<Q", chunk)[0]
+            finished_task_ids.append(task_id)
+
+        for task_id in finished_task_ids:
+            fut = _pending_futures.get(task_id)
+            if fut is not None and not fut.done():
+                try:
+                    current_status = get_status(task_id)
+                    if current_status in ("Completed", "Failed", "Cancelled"):
+                        fut.set_result(current_status)
+                        _pending_futures.pop(task_id, None)
+                except Exception as e:
+                    fut.set_exception(e)
+                    _pending_futures.pop(task_id, None)
     except Exception:
         pass
-
-    # Check all pending futures to see if their tasks have finished
-    finished_task_ids = []
-    for task_id, fut in list(_pending_futures.items()):
-        if fut.done():
-            finished_task_ids.append(task_id)
-            continue
-        try:
-            current_status = get_status(task_id)
-            if current_status in ("Completed", "Failed", "Cancelled"):
-                if not fut.done():
-                    fut.set_result(current_status)
-                finished_task_ids.append(task_id)
-        except Exception as e:
-            if not fut.done():
-                fut.set_exception(e)
-            finished_task_ids.append(task_id)
-
-    for task_id in finished_task_ids:
-        _pending_futures.pop(task_id, None)
 
 
 def ensure_waker_registered(loop: asyncio.AbstractEventLoop) -> None:
@@ -177,9 +179,15 @@ class TaskHandle:
         if getattr(self, "_consumed", False):
             return
         try:
-            from ._pyroxide import free_task
+            current_status = self.status
+            if current_status in ("Completed", "Failed", "Cancelled"):
+                from ._pyroxide import free_task
 
-            free_task(self.task_id)
+                free_task(self.task_id)
+            else:
+                from ._pyroxide import set_autofree
+
+                set_autofree(self.task_id)
             self._consumed = True
         except Exception:
             pass

@@ -29,14 +29,14 @@ impl Drop for ShmemGuard {
 fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>) {
     while let Ok(task_id) = receiver.recv() {
         // 1. Get task from Slab using a read lock
-        let task = {
-            let slab = broker.tasks.read().unwrap_or_else(|e| e.into_inner());
-            slab.get(task_id).cloned()
-        };
+        let task = broker.tasks.get(task_id).map(|e| Arc::clone(&*e));
 
         if let Some(task) = task {
             // Check cancellation before starting
             if task.cancelled.load(Ordering::Acquire) {
+                if task.autofree.load(Ordering::Acquire) {
+                    crate::broker::free_task(task_id);
+                }
                 continue;
             }
 
@@ -49,6 +49,9 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
             ) {
                 Ok(_) => {}
                 Err(_) => {
+                    if task.autofree.load(Ordering::Acquire) {
+                        crate::broker::free_task(task_id);
+                    }
                     continue;
                 }
             }
@@ -57,7 +60,7 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
             if task.isolated {
                 let task_clone = Arc::clone(&task);
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                    execute_isolated_task(&task_clone);
+                    execute_isolated_task(task_id, &task_clone);
                 }));
                 continue;
             }
@@ -327,7 +330,9 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
             //    it will overwrite the result with "Task cancelled".
             {
                 let mut res_guard = task.result.lock().unwrap_or_else(|e| e.into_inner());
-                *res_guard = Some(resolved_result);
+                if task.status.load(Ordering::Acquire) != TaskStatus::Cancelled as u8 {
+                    *res_guard = Some(resolved_result);
+                }
             }
 
             // 5. Update status (preserving Cancelled status)
@@ -362,7 +367,12 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
             }
             task.completed_cvar.notify_all();
             #[cfg(unix)]
-            crate::notify_waker();
+            crate::notify_waker(task_id);
+
+            // 7. Auto-free task if requested by TaskHandle.__del__
+            if task.autofree.load(Ordering::Acquire) {
+                crate::broker::free_task(task_id);
+            }
         }
     }
 }
@@ -384,13 +394,15 @@ pub(crate) fn spawn_workers(
 
 use pyo3::types::PyBytes;
 
-fn execute_isolated_task(task: &Arc<Task>) {
+fn execute_isolated_task(task_id: usize, task: &Arc<Task>) {
     let result = execute_isolated_task_inner(task);
 
     // Store result FIRST, then update status (see worker_loop for rationale).
     {
         let mut res_guard = task.result.lock().unwrap_or_else(|e| e.into_inner());
-        *res_guard = Some(result);
+        if task.status.load(Ordering::Acquire) != TaskStatus::Cancelled as u8 {
+            *res_guard = Some(result);
+        }
     }
 
     let mut current = task.status.load(Ordering::Acquire);
@@ -424,7 +436,12 @@ fn execute_isolated_task(task: &Arc<Task>) {
     }
     task.completed_cvar.notify_all();
     #[cfg(unix)]
-    crate::notify_waker();
+    crate::notify_waker(task_id);
+
+    // Auto-free task if requested by TaskHandle.__del__
+    if task.autofree.load(Ordering::Acquire) {
+        crate::broker::free_task(task_id);
+    }
 }
 
 fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
@@ -611,7 +628,32 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
         return Err(format!("IPC read error: {e}"));
     }
 
-    let final_data = if success && (res_flags & 1) == 1 {
+    fn unpack_worker_response(
+        py: Python<'_>,
+        data: &[u8],
+        task: &Arc<Task>,
+    ) -> Result<Py<PyAny>, String> {
+        if task.callable.is_some() {
+            let pickle = PyModule::import(py, "pickle").map_err(|e| e.to_string())?;
+            let val = pickle
+                .call_method1("loads", (PyBytes::new(py, data),))
+                .map_err(|e| e.to_string())?;
+            Ok(val.unbind())
+        } else {
+            let is_str = task.payload.bind(py).extract::<String>().is_ok();
+            if is_str {
+                let s = std::str::from_utf8(data)
+                    .map_err(|e| format!("Invalid UTF-8 output from worker: {e}"))?;
+                let py_str = pyo3::types::PyString::new(py, s);
+                Ok(py_str.into_any().unbind())
+            } else {
+                let py_bytes = pyo3::types::PyBytes::new(py, data);
+                Ok(py_bytes.into_any().unbind())
+            }
+        }
+    }
+
+    let final_res = if success && (res_flags & 1) == 1 {
         let shm_name =
             String::from_utf8(data_bytes).map_err(|e| format!("Invalid SHM name string: {e}"))?;
         match shared_memory::ShmemConf::new().os_id(&shm_name).open() {
@@ -619,49 +661,29 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
                 let ptr = shmem.as_ptr();
                 let size = shmem.len();
                 let slice = unsafe { std::slice::from_raw_parts(ptr, size) };
-                let res = slice.to_vec();
+
+                let py_res = Python::attach(|py| unpack_worker_response(py, slice, task));
+
                 let _ = worker.stream.write_all(&[1u8]);
                 let _ = worker.stream.flush();
-                res
+                py_res
             }
             Err(e) => {
                 let _ = worker.stream.write_all(&[0u8]);
                 let _ = worker.stream.flush();
-                return Err(format!("Failed to open response SHM {shm_name}: {e}"));
+                Err(format!("Failed to open response SHM {shm_name}: {e}"))
             }
         }
+    } else if success {
+        Python::attach(|py| unpack_worker_response(py, &data_bytes, task))
     } else {
-        data_bytes
+        let err_msg =
+            String::from_utf8(data_bytes).unwrap_or_else(|_| "Unknown worker error".to_string());
+        Err(err_msg)
     };
 
     worker.tasks_run += 1;
     pool.release_worker(worker);
 
-    // 5. Unpack response
-    if success {
-        Python::attach(|py| -> Result<Py<PyAny>, String> {
-            if task.callable.is_some() {
-                let pickle = PyModule::import(py, "pickle").map_err(|e| e.to_string())?;
-                let val = pickle
-                    .call_method1("loads", (PyBytes::new(py, &final_data),))
-                    .map_err(|e| e.to_string())?;
-                Ok(val.unbind())
-            } else {
-                let is_str = task.payload.bind(py).extract::<String>().is_ok();
-                if is_str {
-                    let s = String::from_utf8(final_data)
-                        .map_err(|e| format!("Invalid UTF-8 output from worker: {e}"))?;
-                    let py_str = pyo3::types::PyString::new(py, &s);
-                    Ok(py_str.into_any().unbind())
-                } else {
-                    let py_bytes = pyo3::types::PyBytes::new(py, &final_data);
-                    Ok(py_bytes.into_any().unbind())
-                }
-            }
-        })
-    } else {
-        let err_msg =
-            String::from_utf8(final_data).unwrap_or_else(|_| "Unknown worker error".to_string());
-        Err(err_msg)
-    }
+    final_res
 }

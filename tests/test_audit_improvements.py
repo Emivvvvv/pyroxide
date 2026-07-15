@@ -262,3 +262,60 @@ def test_repr_no_poll():
     rep = repr(handle)
     assert f"id={handle.task_id}" in rep
     assert "status=" not in rep
+
+
+# 8. Regression: Fire-and-Forget Task Retention
+def test_fire_and_forget_retention():
+    from pyroxide import task
+    import gc
+    
+    execution_event = threading.Event()
+    
+    @task
+    def event_setting_task(x):
+        execution_event.set()
+        return x
+        
+    # Call the task and immediately discard the handle so it is garbage collected
+    event_setting_task("forgotten")
+    gc.collect() # Trigger garbage collection
+    
+    # Verify that the task still executes successfully
+    assert execution_event.wait(timeout=2.0) is True
+
+
+# 9. Regression: Task Cancellation Result Overwrite
+def test_cancellation_no_overwrite():
+    from pyroxide import task
+    
+    task_block_event = threading.Event()
+    
+    @task
+    def blockable_task(x):
+        task_block_event.wait()
+        return x
+        
+    handle = blockable_task("result_value")
+    time.sleep(0.05) # Let it enter pending/running status
+    
+    # Cancel the task while it is blocked in worker execution
+    assert handle.cancel() is True
+    
+    # Allow the worker function to complete
+    task_block_event.set()
+    time.sleep(0.1) # Wait for worker loop to finish result write
+    
+    # Verify the result has not been overwritten and still raises Task cancelled
+    with pytest.raises(RuntimeError, match="Task cancelled"):
+        handle.result(consume=False)
+
+
+# 10. Regression: Disable Dynamic Compilation via Env Var
+def test_disable_compilation_env():
+    os.environ["PYROXIDE_DISABLE_COMPILATION"] = "1"
+    try:
+        with pytest.raises(PermissionError, match="compilation is disabled"):
+            compile_c("should_fail_compilation", "void dummy() {}")
+    finally:
+        os.environ.pop("PYROXIDE_DISABLE_COMPILATION", None)
+

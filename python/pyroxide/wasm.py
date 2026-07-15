@@ -90,7 +90,9 @@ def load_wasm(
     Loads a registered WebAssembly (WASM) module and returns an object-oriented proxy
     allowing direct invocation of any exported WASM function on the background worker pool.
     """
-    proxy = WasmProxy(module_name, isolated=isolated)
+    proxy_class_name = f"{module_name.capitalize()}WasmProxy"
+    ProxyClass = type(proxy_class_name, (WasmProxy,), {})
+    proxy = ProxyClass(module_name, isolated=isolated)
     if generate_stubs:
         from pyroxide.stubs import generate_stubs as run_gen
 

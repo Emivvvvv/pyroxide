@@ -1,12 +1,12 @@
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::worker::spawn_workers;
 use pyo3::prelude::*;
-use slab::Slab;
+use sharded_slab::Slab;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
@@ -39,6 +39,7 @@ pub(crate) struct Task {
     pub(crate) completed_cvar: Condvar,
     pub(crate) completed_mutex: Mutex<bool>,
     pub(crate) cancelled: AtomicBool,
+    pub(crate) autofree: AtomicBool,
     pub(crate) wasm_module: Option<String>,
     pub(crate) wasm_func: Option<String>,
     pub(crate) dylib: Option<String>,
@@ -50,13 +51,15 @@ pub(crate) struct Task {
 }
 
 pub(crate) struct Broker {
-    pub(crate) tasks: RwLock<Slab<Arc<Task>>>,
+    pub(crate) tasks: Slab<Arc<Task>>,
+    pub(crate) task_count: AtomicUsize,
 }
 
 impl Broker {
     fn new() -> Self {
         Self {
-            tasks: RwLock::new(Slab::new()),
+            tasks: Slab::new(),
+            task_count: AtomicUsize::new(0),
         }
     }
 }
@@ -118,6 +121,7 @@ pub(crate) fn submit_task(
         completed_cvar: Condvar::new(),
         completed_mutex: Mutex::new(false),
         cancelled: AtomicBool::new(false),
+        autofree: AtomicBool::new(false),
         wasm_module: None,
         wasm_func: None,
         dylib: None,
@@ -128,14 +132,12 @@ pub(crate) fn submit_task(
         wasm_timeout_ms: None,
     });
 
-    let task_id = {
-        let mut slab = engine
-            .broker
-            .tasks
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        slab.insert(task)
-    };
+    let task_id = engine
+        .broker
+        .tasks
+        .insert(task)
+        .ok_or_else(|| pyo3::exceptions::PyBufferError::new_err("Task registry is full"))?;
+    engine.broker.task_count.fetch_add(1, Ordering::Relaxed);
 
     let timeout_ms = queue_timeout_ms.unwrap_or_else(|| {
         crate::CONFIG
@@ -165,14 +167,10 @@ pub(crate) fn submit_task(
     };
 
     if let Err(err) = send_res {
-        let mut slab = engine
-            .broker
-            .tasks
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        if slab.contains(task_id) {
-            slab.remove(task_id);
-        }
+        Python::attach(|_| {
+            engine.broker.tasks.remove(task_id);
+            engine.broker.task_count.fetch_sub(1, Ordering::Relaxed);
+        });
         return Err(pyo3::exceptions::PyBufferError::new_err(err));
     }
 
@@ -188,33 +186,32 @@ pub(crate) fn submit_batch(
     let engine = get_engine();
     let mut ids = Vec::with_capacity(payloads.len());
 
-    {
-        let mut slab = engine
+    for (callable, payload) in callables.into_iter().zip(payloads) {
+        let task = Arc::new(Task {
+            status: AtomicU8::new(TaskStatus::Pending as u8),
+            callable,
+            payload,
+            result: Mutex::new(None),
+            completed_cvar: Condvar::new(),
+            completed_mutex: Mutex::new(false),
+            cancelled: AtomicBool::new(false),
+            autofree: AtomicBool::new(false),
+            wasm_module: None,
+            wasm_func: None,
+            dylib: None,
+            dylib_symbol: None,
+            ffi_sig: None,
+            isolated,
+            wasm_memory_limit_bytes: None,
+            wasm_timeout_ms: None,
+        });
+        let task_id = engine
             .broker
             .tasks
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        for (callable, payload) in callables.into_iter().zip(payloads) {
-            let task = Arc::new(Task {
-                status: AtomicU8::new(TaskStatus::Pending as u8),
-                callable,
-                payload,
-                result: Mutex::new(None),
-                completed_cvar: Condvar::new(),
-                completed_mutex: Mutex::new(false),
-                cancelled: AtomicBool::new(false),
-                wasm_module: None,
-                wasm_func: None,
-                dylib: None,
-                dylib_symbol: None,
-                ffi_sig: None,
-                isolated,
-                wasm_memory_limit_bytes: None,
-                wasm_timeout_ms: None,
-            });
-            let task_id = slab.insert(task);
-            ids.push(task_id);
-        }
+            .insert(task)
+            .ok_or_else(|| pyo3::exceptions::PyBufferError::new_err("Task registry is full"))?;
+        engine.broker.task_count.fetch_add(1, Ordering::Relaxed);
+        ids.push(task_id);
     }
 
     let timeout_ms = queue_timeout_ms.unwrap_or_else(|| {
@@ -261,16 +258,14 @@ pub(crate) fn submit_batch(
     }
 
     if let Some(err) = send_err {
-        let mut slab = engine
-            .broker
-            .tasks
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        for &task_id in &ids {
-            if !sent_ids.contains(&task_id) && slab.contains(task_id) {
-                slab.remove(task_id);
+        Python::attach(|_| {
+            for &task_id in &ids {
+                if !sent_ids.contains(&task_id) {
+                    engine.broker.tasks.remove(task_id);
+                    engine.broker.task_count.fetch_sub(1, Ordering::Relaxed);
+                }
             }
-        }
+        });
         return Err(pyo3::exceptions::PyBufferError::new_err(err));
     }
 
@@ -296,6 +291,7 @@ pub(crate) fn submit_wasm_task(
         completed_cvar: Condvar::new(),
         completed_mutex: Mutex::new(false),
         cancelled: AtomicBool::new(false),
+        autofree: AtomicBool::new(false),
         wasm_module: Some(module_name),
         wasm_func: Some(func_name),
         dylib: None,
@@ -306,14 +302,12 @@ pub(crate) fn submit_wasm_task(
         wasm_timeout_ms,
     });
 
-    let task_id = {
-        let mut slab = engine
-            .broker
-            .tasks
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        slab.insert(task)
-    };
+    let task_id = engine
+        .broker
+        .tasks
+        .insert(task)
+        .ok_or_else(|| pyo3::exceptions::PyBufferError::new_err("Task registry is full"))?;
+    engine.broker.task_count.fetch_add(1, Ordering::Relaxed);
 
     let timeout_ms = queue_timeout_ms.unwrap_or_else(|| {
         crate::CONFIG
@@ -343,14 +337,10 @@ pub(crate) fn submit_wasm_task(
     };
 
     if let Err(err) = send_res {
-        let mut slab = engine
-            .broker
-            .tasks
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        if slab.contains(task_id) {
-            slab.remove(task_id);
-        }
+        Python::attach(|_| {
+            engine.broker.tasks.remove(task_id);
+            engine.broker.task_count.fetch_sub(1, Ordering::Relaxed);
+        });
         return Err(pyo3::exceptions::PyBufferError::new_err(err));
     }
 
@@ -375,6 +365,7 @@ pub(crate) fn submit_dylib_task(
         completed_cvar: Condvar::new(),
         completed_mutex: Mutex::new(false),
         cancelled: AtomicBool::new(false),
+        autofree: AtomicBool::new(false),
         wasm_module: None,
         wasm_func: None,
         dylib: Some(plugin_name),
@@ -385,14 +376,12 @@ pub(crate) fn submit_dylib_task(
         wasm_timeout_ms: None,
     });
 
-    let task_id = {
-        let mut slab = engine
-            .broker
-            .tasks
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        slab.insert(task)
-    };
+    let task_id = engine
+        .broker
+        .tasks
+        .insert(task)
+        .ok_or_else(|| pyo3::exceptions::PyBufferError::new_err("Task registry is full"))?;
+    engine.broker.task_count.fetch_add(1, Ordering::Relaxed);
 
     let timeout_ms = queue_timeout_ms.unwrap_or_else(|| {
         crate::CONFIG
@@ -422,14 +411,10 @@ pub(crate) fn submit_dylib_task(
     };
 
     if let Err(err) = send_res {
-        let mut slab = engine
-            .broker
-            .tasks
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        if slab.contains(task_id) {
-            slab.remove(task_id);
-        }
+        Python::attach(|_| {
+            engine.broker.tasks.remove(task_id);
+            engine.broker.task_count.fetch_sub(1, Ordering::Relaxed);
+        });
         return Err(pyo3::exceptions::PyBufferError::new_err(err));
     }
 
@@ -438,14 +423,7 @@ pub(crate) fn submit_dylib_task(
 
 pub(crate) fn cancel_task(task_id: usize) -> bool {
     let engine = get_engine();
-    let task = {
-        let slab = engine
-            .broker
-            .tasks
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-        slab.get(task_id).cloned()
-    };
+    let task = engine.broker.tasks.get(task_id).map(|e| Arc::clone(&*e));
 
     if let Some(task) = task {
         let mut current = task.status.load(Ordering::Acquire);
@@ -477,7 +455,7 @@ pub(crate) fn cancel_task(task_id: usize) -> bool {
                     }
                     task.completed_cvar.notify_all();
                     #[cfg(unix)]
-                    crate::notify_waker();
+                    crate::notify_waker(task_id);
                     return true;
                 }
                 Err(actual) => current = actual,
@@ -490,12 +468,7 @@ pub(crate) fn cancel_task(task_id: usize) -> bool {
 pub(crate) fn get_task_status(task_id: usize) -> Option<String> {
     let engine = get_engine();
 
-    let slab = engine
-        .broker
-        .tasks
-        .read()
-        .unwrap_or_else(|e| e.into_inner());
-    slab.get(task_id).map(|task| {
+    engine.broker.tasks.get(task_id).map(|task| {
         let status_val = task.status.load(Ordering::Acquire);
         TaskStatus::to_status_string(status_val)
     })
@@ -504,14 +477,7 @@ pub(crate) fn get_task_status(task_id: usize) -> Option<String> {
 pub(crate) fn wait_task(task_id: usize, timeout_ms: Option<u64>) -> Option<String> {
     let engine = get_engine();
 
-    let task = {
-        let slab = engine
-            .broker
-            .tasks
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-        slab.get(task_id).cloned()
-    };
+    let task = engine.broker.tasks.get(task_id).map(|e| Arc::clone(&*e));
 
     if let Some(task) = task {
         let mut completed = task
@@ -559,14 +525,7 @@ pub(crate) fn wait_task(task_id: usize, timeout_ms: Option<u64>) -> Option<Strin
 pub(crate) fn get_task_result(py: Python<'_>, task_id: usize) -> Option<Result<Py<PyAny>, String>> {
     let engine = get_engine();
 
-    let task = {
-        let slab = engine
-            .broker
-            .tasks
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-        slab.get(task_id).cloned()
-    };
+    let task = engine.broker.tasks.get(task_id).map(|e| Arc::clone(&*e));
 
     task.and_then(|t| {
         let res = t.result.lock().unwrap_or_else(|e| e.into_inner());
@@ -579,22 +538,21 @@ pub(crate) fn get_task_result(py: Python<'_>, task_id: usize) -> Option<Result<P
 
 pub(crate) fn free_task(task_id: usize) {
     let engine = get_engine();
-    let mut slab = engine
-        .broker
-        .tasks
-        .write()
-        .unwrap_or_else(|e| e.into_inner());
-    if slab.contains(task_id) {
-        slab.remove(task_id);
-    }
+    Python::attach(|_| {
+        if engine.broker.tasks.remove(task_id) {
+            engine.broker.task_count.fetch_sub(1, Ordering::Relaxed);
+        }
+    });
 }
 
 pub(crate) fn get_slab_size() -> usize {
     let engine = get_engine();
-    let slab = engine
-        .broker
-        .tasks
-        .read()
-        .unwrap_or_else(|e| e.into_inner());
-    slab.len()
+    engine.broker.task_count.load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_autofree(task_id: usize) {
+    let engine = get_engine();
+    if let Some(task) = engine.broker.tasks.get(task_id) {
+        task.autofree.store(true, Ordering::Release);
+    }
 }

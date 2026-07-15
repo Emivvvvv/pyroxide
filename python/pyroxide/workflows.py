@@ -37,6 +37,28 @@ class TaskGroup:
         results = [h.cancel() for h in self.handles]
         return all(results)
 
+    async def __aenter__(self):
+        """Enters the asynchronous context manager."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """
+        Exits the asynchronous context manager.
+        If an exception occurred, cancels all tasks. Otherwise, waits for all tasks to complete.
+        """
+        if exc_type is not None:
+            self.cancel()
+        
+        exceptions = []
+        for h in self.handles:
+            try:
+                await h.result_async(consume=False)
+            except Exception as e:
+                exceptions.append(e)
+                
+        if exceptions:
+            raise ExceptionGroup("TaskGroup errors", exceptions)
+
 
 def group(handles: Iterable[TaskHandle]) -> TaskGroup:
     """Wraps multiple task handles into a parallel TaskGroup."""

@@ -718,6 +718,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lazy_static"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+
+[[package]]
 name = "leb128"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1018,14 +1024,16 @@ dependencies = [
 
 [[package]]
 name = "pyroxide"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "crossbeam-channel",
  "interprocess",
+ "libc",
  "libloading",
  "object 0.36.7",
  "pyo3",
  "rand",
+ "sharded-slab",
  "shared_memory",
  "slab",
  "wasmtime",
@@ -1247,6 +1255,15 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
+]
+
+[[package]]
+name = "sharded-slab"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
+dependencies = [
+ "lazy_static",
 ]
 
 [[package]]

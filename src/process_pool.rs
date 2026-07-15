@@ -104,9 +104,20 @@ impl IsolatedProcessPool {
         let listener = LocalSocketListener::bind(socket_path.as_str())
             .map_err(|e| format!("Failed to bind local socket {socket_path}: {e}"))?;
 
-        let mut child = Command::new(&python_path)
-            .env("PYROXIDE_WORKER", "1")
-            .args(["-m", "pyroxide.worker", "--socket", &socket_path])
+        let mut cmd = Command::new(&python_path);
+        cmd.env("PYROXIDE_WORKER", "1")
+            .args(["-m", "pyroxide.worker", "--socket", &socket_path]);
+
+        #[cfg(target_os = "linux")]
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            cmd.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+
+        let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn pyroxide worker child process: {e}"))?;
 

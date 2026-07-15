@@ -17,6 +17,11 @@ def _verify_compiler(binary: str) -> None:
         )
 
 
+def _check_compilation_enabled() -> None:
+    if os.environ.get("PYROXIDE_DISABLE_COMPILATION") in ("1", "true", "TRUE"):
+        raise PermissionError("On-the-fly compilation is disabled in this environment.")
+
+
 def compile_rust(
     name: str, source_code: str, dependencies: Optional[Dict[str, str]] = None
 ) -> str:
@@ -50,6 +55,7 @@ def compile_rust(
         >>> handle = process("hello")
         >>> print(handle.result())
     """
+    _check_compilation_enabled()
     _verify_compiler("cargo")
 
     temp_dir = tempfile.mkdtemp(prefix=f"pyroxide_dylib_{name}_")
@@ -137,6 +143,7 @@ def compile_c(name: str, source_code: str) -> str:
             - ``pyroxide_plugin_run(ptr, len, out_len) -> uint8_t*``
             - ``pyroxide_plugin_free(ptr, len)``
     """
+    _check_compilation_enabled()
     cc = os.environ.get("CC", "clang" if sys.platform == "darwin" else "gcc")
     _verify_compiler(cc)
 
@@ -188,6 +195,7 @@ def compile_zig(name: str, source_code: str) -> str:
             - ``pyroxide_plugin_run(ptr, len, out_len) -> [*]u8``
             - ``pyroxide_plugin_free(ptr, len)``
     """
+    _check_compilation_enabled()
     _verify_compiler("zig")
 
     temp_dir = tempfile.mkdtemp(prefix=f"pyroxide_zig_{name}_")
@@ -408,7 +416,9 @@ def load_dylib(
                         signatures[func_name] = {"args": args, "ret": ret_type}
 
     # 2. Create the proxy
-    proxy = DylibProxy(lib_name, signatures=signatures, isolated=isolated)
+    proxy_class_name = f"{lib_name.capitalize()}DylibProxy"
+    ProxyClass = type(proxy_class_name, (DylibProxy,), {})
+    proxy = ProxyClass(lib_name, signatures=signatures, isolated=isolated)
 
     # 3. Generate stubs if requested
     if generate_stubs:

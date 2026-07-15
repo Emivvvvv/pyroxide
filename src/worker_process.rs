@@ -24,6 +24,19 @@ impl Drop for ShmemGuard {
 /// Start the high-performance worker IPC loop.
 /// This connects to the master socket/pipe and executes incoming tasks.
 pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        let ppid = unsafe { libc::getppid() };
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if unsafe { libc::getppid() } != ppid {
+                    std::process::exit(1);
+                }
+            }
+        });
+    }
+
     let mut stream = LocalSocketStream::connect(socket_path)
         .map_err(|e| format!("Failed to connect to local socket {socket_path}: {e}"))?;
 
@@ -77,8 +90,9 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
             .read_exact(&mut payload_bytes)
             .map_err(|e| format!("Failed to read payload bytes: {e}"))?;
 
+        let _shm_guard;
         // Resolve SHM payload if flags say so
-        let actual_payload = if (flags & 1) == 1 {
+        let actual_payload_slice: &[u8] = if (flags & 1) == 1 {
             let shm_name =
                 String::from_utf8(payload_bytes).map_err(|e| format!("Invalid SHM name: {e}"))?;
             let shmem = shared_memory::ShmemConf::new()
@@ -87,14 +101,18 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
                 .map_err(|e| format!("Failed to open request SHM {shm_name}: {e}"))?;
             let ptr = shmem.as_ptr();
             let size = shmem.len();
-            // Safety: SHM was just opened; data is copied into a Vec before shmem drops.
-            unsafe { std::slice::from_raw_parts(ptr, size) }.to_vec()
+            // Store guard locally to keep mapped until the end of this task execution
+            _shm_guard = Some(ShmemGuard::new(shmem));
+            // Safety: SHM is mapped and valid for the duration of this loop iteration.
+            unsafe { std::slice::from_raw_parts(ptr, size) }
         } else {
-            payload_bytes
+            _shm_guard = None;
+            &payload_bytes
         };
 
         // Process Task
-        let (success, response_bytes) = execute_worker_task(task_type, &metadata, actual_payload);
+        let (success, response_bytes) =
+            execute_worker_task(task_type, &metadata, actual_payload_slice);
 
         let use_shm = success && response_bytes.len() >= crate::get_shm_threshold();
         let mut res_flags = 0u8;
@@ -156,7 +174,7 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn execute_worker_task(task_type: u8, metadata: &str, payload: Vec<u8>) -> (bool, Vec<u8>) {
+fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, Vec<u8>) {
     match task_type {
         0 => {
             // Python Callable Task (Metadata contains func description, payload is pickled func + arguments)
@@ -166,7 +184,7 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: Vec<u8>) -> (bool
                 // Unpack metadata: "has_callable:bool"
                 // For python tasks, payload is: (pickled_func, pickled_payload)
                 let tuple: Bound<'_, pyo3::types::PyTuple> = pickle
-                    .call_method1("loads", (PyBytes::new(py, &payload),))?
+                    .call_method1("loads", (PyBytes::new(py, payload),))?
                     .extract()?;
 
                 let pickled_func: Bound<'_, PyBytes> = tuple.get_item(0)?.extract()?;
@@ -284,7 +302,7 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: Vec<u8>) -> (bool
 
                 // Write payload into WASM linear memory
                 memory
-                    .write(&mut store, guest_ptr as usize, &payload)
+                    .write(&mut store, guest_ptr as usize, payload)
                     .map_err(|e| format!("Failed to write to WASM memory: {e}"))?;
 
                 // Run execution
@@ -344,10 +362,10 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: Vec<u8>) -> (bool
                         .filter(|s| !s.is_empty())
                         .collect();
                     let ret = sig_parts[1];
-                    crate::execute_dylib_ffi(plugin_name, symbol_name, &args, ret, &payload)
+                    crate::execute_dylib_ffi(plugin_name, symbol_name, &args, ret, payload)
                 }
             } else {
-                crate::execute_dylib(plugin_name, symbol_name, &payload)
+                crate::execute_dylib(plugin_name, symbol_name, payload)
             };
 
             match processed {
@@ -358,7 +376,7 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: Vec<u8>) -> (bool
         10 => {
             // Register WASM module in worker
             let module_name = metadata.to_string();
-            match crate::register_wasm_module_internal(module_name, payload) {
+            match crate::register_wasm_module_internal(module_name, payload.to_vec()) {
                 Ok(_) => (true, Vec::new()),
                 Err(e) => (false, e.into_bytes()),
             }
@@ -366,7 +384,7 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: Vec<u8>) -> (bool
         11 => {
             // Register Dylib in worker
             let plugin_name = metadata.to_string();
-            let library_path = String::from_utf8(payload).unwrap_or_default();
+            let library_path = String::from_utf8_lossy(payload).into_owned();
             match crate::register_dylib_internal(plugin_name, library_path) {
                 Ok(_) => (true, Vec::new()),
                 Err(e) => (false, e.into_bytes()),

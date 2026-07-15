@@ -7,6 +7,7 @@ use crate::broker::{get_task_result, get_task_status, wait_task};
 use object::Object;
 use pyo3::prelude::*;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -47,7 +48,7 @@ pub(crate) struct DylibPlugin {
     pub(crate) symbol_cache: RwLock<HashMap<String, PluginRunFn>>,
 }
 
-static DYLIB_PLUGINS: OnceLock<RwLock<HashMap<String, DylibPlugin>>> = OnceLock::new();
+static DYLIB_PLUGINS: OnceLock<RwLock<HashMap<String, Arc<DylibPlugin>>>> = OnceLock::new();
 
 static DYLIB_PATHS: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
 static WASM_BYTES: OnceLock<RwLock<HashMap<String, Vec<u8>>>> = OnceLock::new();
@@ -94,11 +95,11 @@ pub(crate) fn register_dylib_internal(name: String, library_path: String) -> Res
             .map(|sym| *sym)
             .ok();
 
-        let plugin = DylibPlugin {
+        let plugin = Arc::new(DylibPlugin {
             lib,
             free_fn,
             symbol_cache: RwLock::new(HashMap::new()),
-        };
+        });
 
         let registry = DYLIB_PLUGINS.get_or_init(|| RwLock::new(HashMap::new()));
         let mut map = registry
@@ -130,12 +131,14 @@ pub(crate) fn execute_dylib(
     let registry = DYLIB_PLUGINS
         .get()
         .ok_or_else(|| "Dylib registry not initialized".to_string())?;
-    let map = registry
-        .read()
-        .map_err(|e| format!("Registry lock poisoned: {e}"))?;
-    let plugin = map
-        .get(name)
-        .ok_or_else(|| format!("Dynamic library '{name}' not registered"))?;
+    let plugin = {
+        let map = registry
+            .read()
+            .map_err(|e| format!("Registry lock poisoned: {e}"))?;
+        map.get(name)
+            .cloned()
+            .ok_or_else(|| format!("Dynamic library '{name}' not registered"))?
+    };
 
     // 1. Check if the symbol is already in the cache using a read lock
     let cached_fn = {
@@ -290,12 +293,14 @@ pub(crate) fn execute_dylib_ffi(
     let registry = DYLIB_PLUGINS
         .get()
         .ok_or_else(|| "Dylib registry not initialized".to_string())?;
-    let map = registry
-        .read()
-        .map_err(|e| format!("Registry lock poisoned: {e}"))?;
-    let plugin = map
-        .get(name)
-        .ok_or_else(|| format!("Dynamic library '{name}' not registered"))?;
+    let plugin = {
+        let map = registry
+            .read()
+            .map_err(|e| format!("Registry lock poisoned: {e}"))?;
+        map.get(name)
+            .cloned()
+            .ok_or_else(|| format!("Dynamic library '{name}' not registered"))?
+    };
 
     let cached_ptr = {
         let cache = plugin
@@ -666,12 +671,16 @@ fn get_dylib_metadata(name: &str) -> PyResult<Option<String>> {
     let registry = DYLIB_PLUGINS.get().ok_or_else(|| {
         PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Dylib registry not initialized")
     })?;
-    let map = registry.read().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Registry lock poisoned: {e}"))
-    })?;
-    let plugin = match map.get(name) {
-        Some(p) => p,
-        None => return Ok(None),
+    let plugin = {
+        let map = registry.read().map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                "Registry lock poisoned: {e}"
+            ))
+        })?;
+        match map.get(name) {
+            Some(p) => Arc::clone(p),
+            None => return Ok(None),
+        }
     };
 
     unsafe {
@@ -702,6 +711,11 @@ fn start_worker_loop(socket_path: String) -> PyResult<()> {
         .map_err(pyo3::exceptions::PyRuntimeError::new_err)
 }
 
+#[pyfunction]
+fn set_autofree(task_id: usize) {
+    broker::set_autofree(task_id);
+}
+
 #[cfg(unix)]
 static ASYNC_WAKER_FD: OnceLock<std::os::fd::RawFd> = OnceLock::new();
 
@@ -712,13 +726,14 @@ fn register_async_waker(fd: std::os::fd::RawFd) {
 }
 
 #[cfg(unix)]
-pub(crate) fn notify_waker() {
+pub(crate) fn notify_waker(task_id: usize) {
     use std::os::fd::FromRawFd;
     if let Some(&fd) = ASYNC_WAKER_FD.get() {
         unsafe {
             let mut file = std::fs::File::from_raw_fd(fd);
             use std::io::Write;
-            let _ = file.write_all(&[1]);
+            let bytes = (task_id as u64).to_le_bytes();
+            let _ = file.write_all(&bytes);
             let _ = file.flush();
             std::mem::forget(file);
         }
@@ -748,6 +763,7 @@ fn _pyroxide(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_dylib_exports, m)?)?;
     m.add_function(wrap_pyfunction!(get_dylib_metadata, m)?)?;
     m.add_function(wrap_pyfunction!(start_worker_loop, m)?)?;
+    m.add_function(wrap_pyfunction!(set_autofree, m)?)?;
     #[cfg(unix)]
     m.add_function(wrap_pyfunction!(register_async_waker, m)?)?;
 

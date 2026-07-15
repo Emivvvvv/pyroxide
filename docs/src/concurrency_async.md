@@ -35,4 +35,6 @@ asyncio.run(main())
 
 ### Under the Hood
 
-The `result_async` method offloads Pyroxide's native condvar blocking check to the asyncio event loop's default `ThreadPoolExecutor`. This keeps the main thread running the event loop while background OS threads wait for the completion signal from Rust.
+On Unix systems (Linux and macOS), the `result_async` method utilizes an extremely efficient native waker pipe. When a task completes, Rust writes to a registered wake-up file descriptor, which triggers a callback directly in Python's event loop via `loop.add_reader(fd, ...)`. This avoids polling or thread pool starvation.
+
+On Windows, `result_async` falls back to running Pyroxide's native condvar blocking check inside the asyncio event loop's default `ThreadPoolExecutor`.
