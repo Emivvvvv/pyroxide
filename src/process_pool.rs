@@ -75,6 +75,26 @@ pub(crate) fn get_process_pool() -> Arc<IsolatedProcessPool> {
                         }
                     }
                 }
+                if let Ok(entries) = std::fs::read_dir("/dev/shm") {
+                    for entry in entries.flatten() {
+                        if let Ok(filename) = entry.file_name().into_string()
+                            && filename.starts_with("pyroxide_shm_")
+                        {
+                            let parts: Vec<&str> = filename.split('_').collect();
+                            let pid_str = if filename.starts_with("pyroxide_shm_res_") {
+                                parts.get(3)
+                            } else {
+                                parts.get(2)
+                            };
+                            if let Some(pid_str) = pid_str
+                                && let Ok(pid) = pid_str.parse::<i32>()
+                                && unsafe { libc::kill(pid, 0) } != 0
+                            {
+                                let _ = std::fs::remove_file(entry.path());
+                            }
+                        }
+                    }
+                }
             }
             let pool = Arc::new(IsolatedProcessPool {
                 workers: Mutex::new(Vec::new()),
@@ -323,7 +343,7 @@ fn spawn_idle_reaper(pool: Arc<IsolatedProcessPool>) {
                     if workers_guard.len() > min_workers
                         && now.duration_since(workers_guard[i].last_used) > idle_timeout
                     {
-                        let dead_worker = workers_guard.remove(i);
+                        let dead_worker = workers_guard.swap_remove(i);
                         victims.push(dead_worker);
                     } else {
                         i += 1;

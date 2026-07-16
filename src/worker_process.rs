@@ -39,12 +39,38 @@ unsafe extern "system" {
     ) -> *mut std::ffi::c_void;
     fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
     fn GetExitCodeProcess(hProcess: *mut std::ffi::c_void, lpExitCode: *mut u32) -> i32;
+    fn WaitForSingleObject(hHandle: *mut std::ffi::c_void, dwMilliseconds: u32) -> u32;
 }
 
 /// Start the high-performance worker IPC loop.
 /// This connects to the master socket/pipe and executes incoming tasks.
 pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
+    {
+        let ppid = unsafe { libc::getppid() };
+        std::thread::spawn(move || unsafe {
+            let kq = libc::kqueue();
+            if kq == -1 {
+                std::process::exit(1);
+            }
+            let ke = libc::kevent {
+                ident: ppid as usize,
+                filter: libc::EVFILT_PROC,
+                flags: libc::EV_ADD | libc::EV_ENABLE,
+                fflags: libc::NOTE_EXIT,
+                data: 0,
+                udata: std::ptr::null_mut(),
+            };
+            libc::kevent(kq, &ke, 1, std::ptr::null_mut(), 0, std::ptr::null());
+            let mut ke_out: libc::kevent = std::mem::zeroed();
+            let res = libc::kevent(kq, std::ptr::null(), 0, &mut ke_out, 1, std::ptr::null());
+            if res > 0 {
+                std::process::exit(1);
+            }
+        });
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         let ppid = unsafe { libc::getppid() };
         std::thread::spawn(move || {
@@ -62,20 +88,14 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
         if let Ok(parent_pid_str) = std::env::var("PYROXIDE_PARENT_PID") {
             if let Ok(parent_pid) = parent_pid_str.parse::<u32>() {
                 std::thread::spawn(move || {
-                    loop {
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                        unsafe {
-                            let handle = OpenProcess(0x0400, 0, parent_pid);
-                            if handle.is_null() {
-                                std::process::exit(1);
-                            }
-                            let mut exit_code: u32 = 0;
-                            let res = GetExitCodeProcess(handle, &mut exit_code);
-                            CloseHandle(handle);
-                            if res == 0 || exit_code != 259 {
-                                std::process::exit(1);
-                            }
+                    unsafe {
+                        let handle = OpenProcess(0x00100000 /* SYNCHRONIZE */, 0, parent_pid);
+                        if handle.is_null() {
+                            std::process::exit(1);
                         }
+                        WaitForSingleObject(handle, 0xFFFFFFFF);
+                        CloseHandle(handle);
+                        std::process::exit(1);
                     }
                 });
             }
