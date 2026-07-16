@@ -8,7 +8,10 @@ def test_cargo_missing():
     with patch("shutil.which", return_value=None):
         with pytest.raises(RuntimeError) as exc_info:
             compile_rust("test_missing", "fn main() {}")
-        assert "Required compiler system binary 'cargo' is not found on your PATH" in str(exc_info.value)
+        assert (
+            "Required compiler system binary 'cargo' is not found on your PATH"
+            in str(exc_info.value)
+        )
 
 
 def test_cc_missing():
@@ -22,4 +25,6 @@ def test_zig_missing():
     with patch("shutil.which", return_value=None):
         with pytest.raises(RuntimeError) as exc_info:
             compile_zig("test_missing", "pub fn main() void {}")
-        assert "Required compiler system binary 'zig' is not found on your PATH" in str(exc_info.value)
+        assert "Required compiler system binary 'zig' is not found on your PATH" in str(
+            exc_info.value
+        )

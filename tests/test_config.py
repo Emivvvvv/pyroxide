@@ -22,6 +22,7 @@ WAT_INFINITE_LOOP = """
 )
 """
 
+
 def test_config_global_and_scoped_wasm_timeout():
     register_wasm_wat("infinite_loop_mod", WAT_INFINITE_LOOP)
 
@@ -65,17 +66,19 @@ def test_config_thread_safety():
             # Wait a moment to let the other thread dispatch
             time.sleep(0.1)
             from pyroxide.config import _local
+
             results["override_thread_val"] = getattr(_local, "wasm_timeout_ms", None)
 
     def worker_without_override():
         # Sleep to let override enter
         time.sleep(0.05)
         from pyroxide.config import _local
+
         results["normal_thread_val"] = getattr(_local, "wasm_timeout_ms", None)
 
     t1 = threading.Thread(target=worker_with_override)
     t2 = threading.Thread(target=worker_without_override)
-    
+
     t1.start()
     t2.start()
     t1.join()

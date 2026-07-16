@@ -14,6 +14,7 @@ _waker_w: Optional[int] = None
 _pending_futures: dict[int, asyncio.Future] = {}
 _waker_thread: Optional[threading.Thread] = None
 
+
 def _resolve_future_safe(task_id: int) -> None:
     fut = _pending_futures.get(task_id)
     if fut is not None and not fut.done():
@@ -25,6 +26,7 @@ def _resolve_future_safe(task_id: int) -> None:
         except Exception as e:
             fut.set_exception(e)
             _pending_futures.pop(task_id, None)
+
 
 def _waker_thread_loop() -> None:
     global _waker_r, _pending_futures
@@ -50,7 +52,33 @@ def _waker_thread_loop() -> None:
                     except Exception:
                         pass
         except Exception:
+            if _waker_r is None:
+                break
             time.sleep(0.01)
+
+
+def _cleanup_waker():
+    global _waker_r, _waker_w, _waker_thread
+    w_fd = _waker_w
+    r_fd = _waker_r
+    _waker_w = None
+    _waker_r = None
+    if w_fd is not None:
+        try:
+            os.close(w_fd)
+        except Exception:
+            pass
+    if r_fd is not None:
+        try:
+            os.close(r_fd)
+        except Exception:
+            pass
+    if _waker_thread is not None:
+        try:
+            _waker_thread.join(timeout=0.1)
+        except Exception:
+            pass
+
 
 def ensure_waker_registered(loop: asyncio.AbstractEventLoop) -> None:
     global _waker_r, _waker_w, _waker_thread
@@ -66,6 +94,10 @@ def ensure_waker_registered(loop: asyncio.AbstractEventLoop) -> None:
 
             _waker_thread = threading.Thread(target=_waker_thread_loop, daemon=True)
             _waker_thread.start()
+
+            import atexit
+
+            atexit.register(_cleanup_waker)
         except Exception:
             pass
 

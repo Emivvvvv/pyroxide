@@ -20,6 +20,7 @@ WAT_CODE = """
 )
 """
 
+
 def test_cli_stub_compilation_from_scan():
     temp_dir = tempfile.mkdtemp(prefix="pyroxide_cli_test_")
     try:
@@ -49,7 +50,7 @@ pyroxide.register_wasm_wat("test_cli_wasm", r'''{WAT_CODE}''')
             temp_dir,
             "--out-dir",
             temp_dir,
-            "--no-pyproject"
+            "--no-pyproject",
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
         assert res.returncode == 0, f"CLI failed: {res.stderr}\n{res.stdout}"
@@ -101,7 +102,7 @@ test_pyproj_wasm = {{ type = "wat", wat = '''{WAT_CODE}''' }}
             "--pyproject",
             pyproject_path,
             "--out-dir",
-            temp_dir
+            temp_dir,
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
         assert res.returncode == 0, f"CLI failed: {res.stderr}\n{res.stdout}"
@@ -110,8 +111,12 @@ test_pyproj_wasm = {{ type = "wat", wat = '''{WAT_CODE}''' }}
         pyi_path = os.path.join(temp_dir, "test_pyproj_wasm_proxy.pyi")
         py_path = os.path.join(temp_dir, "test_pyproj_wasm_proxy.py")
 
-        assert os.path.exists(pyi_path), "Proxy .pyi file from pyproject was not generated"
-        assert os.path.exists(py_path), "Proxy .py file from pyproject was not generated"
+        assert os.path.exists(pyi_path), (
+            "Proxy .pyi file from pyproject was not generated"
+        )
+        assert os.path.exists(py_path), (
+            "Proxy .py file from pyproject was not generated"
+        )
 
         with open(pyi_path, "r") as f:
             pyi_content = f.read()
@@ -140,14 +145,15 @@ def test_cli_warn_missing_deallocator(capsys):
     try:
         out_path = os.path.join(temp_dir, "dyn_warn_lib_proxy.pyi")
         generate_stubs("dyn_warn_lib", "dylib", out_path=out_path)
-        
+
         # Capture stdout/stderr
         captured = capsys.readouterr()
-        
+
         # Verify warning is printed to stderr
-        assert "Warning: Library 'dyn_warn_lib' exposes raw binary tasks" in captured.err
+        assert (
+            "Warning: Library 'dyn_warn_lib' exposes raw binary tasks" in captured.err
+        )
         assert "does not export 'pyroxide_plugin_free'" in captured.err
-        
+
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
-

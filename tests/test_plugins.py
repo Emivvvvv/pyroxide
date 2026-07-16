@@ -234,4 +234,3 @@ def test_dylib_no_free_raw_fail():
     with pytest.raises(Exception) as exc_info:
         proxy.add_ints(b"payload").result()
     assert "require the symbol 'pyroxide_plugin_free'" in str(exc_info.value)
-

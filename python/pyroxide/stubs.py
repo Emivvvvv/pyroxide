@@ -82,13 +82,17 @@ def generate_stubs(name: str, library_type: str, out_path: Optional[str] = None)
     else:
         for symbol in exports:
             if symbol in sigs:
+
                 def _map_ffi(ffi_type: str) -> str:
                     if ffi_type in ("i32", "i64", "u32", "u64", "isize", "usize"):
                         return "int"
                     if ffi_type in ("f32", "f64"):
                         return "float"
                     return "Any"
-                arg_list = [f"arg{i}: {_map_ffi(t)}" for i, t in enumerate(sigs[symbol]["args"])]
+
+                arg_list = [
+                    f"arg{i}: {_map_ffi(t)}" for i, t in enumerate(sigs[symbol]["args"])
+                ]
                 args_str = ", ".join(arg_list)
                 if args_str:
                     lines.append(
@@ -128,7 +132,7 @@ def generate_stubs(name: str, library_type: str, out_path: Optional[str] = None)
             "",
             f"class {class_name}(DylibProxy):",
             "    def __init__(self, isolated: bool = False):",
-            f'        signatures = {repr(sigs)}',
+            f"        signatures = {repr(sigs)}",
             f'        super().__init__("{name}", signatures=signatures, isolated=isolated)',
             "",
             f"def {factory_name}(isolated: bool = False) -> {class_name}:",

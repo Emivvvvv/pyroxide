@@ -232,8 +232,8 @@ Configure Pyroxide dynamically using the following environment variables:
 *   `PYROXIDE_WORKERS`: Number of background worker threads in the Rust thread pool (default: available CPU cores).
 *   `PYROXIDE_SHM_THRESHOLD`: Payload size threshold in bytes above which data uses Shared Memory (SHM) instead of the local socket (default: `1048576` = 1MB).
 *   `PYROXIDE_WASM_TICK_MS`: Granularity of the WASM epoch timeout tick loop in milliseconds (default: `10`ms).
-*   `PYROXIDE_WASM_MEMORY_LIMIT_BYTES`: Maximum memory allowed for a single WASM instance in bytes.
-*   `PYROXIDE_WASM_TIMEOUT_MS`: Timeout for WASM execution in milliseconds.
+*   `PYROXIDE_WASM_MEMORY_LIMIT_BYTES`: Maximum memory allowed for a single WASM instance in bytes (default: `104857600` = 100MB).
+*   `PYROXIDE_WASM_TIMEOUT_MS`: Timeout for WASM execution in milliseconds (default: `1000` = 1s).
 *   `PYROXIDE_MAX_TASKS_PER_WORKER`: Maximum number of tasks an isolated process worker runs before it is recycled to prevent memory leaks (default: `100`).
 *   `PYROXIDE_WORKER_STARTUP_TIMEOUT_SEC`: Timeout in seconds for a new worker process to start up and connect (default: `5` seconds).
 *   `PYROXIDE_IDLE_TIMEOUT_SEC`: Idle time in seconds before an inactive isolated worker process is terminated (default: `60` seconds).
@@ -261,36 +261,33 @@ We benchmarked Pyroxide against CPython's standard concurrency pools using ident
 
 | Metric (500 Tasks) | Pyroxide `@dylib_task` | Pyroxide `@task(isolated=True)` | Pyroxide `@task` | Threading (std) | Multiprocessing |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Execution Time** | **`0.0200 s`** | **`0.0769 s`** | `0.3878 s` | `0.3742 s` | `2.0786 s` |
-| **GIL Bypass** | **✅ Yes (GIL-Free)** | **✅ Yes** | ❌ No | ❌ No | ✅ Yes |
-| **IPC / Serialization** | **✅ None (Shared Memory)** | **✅ Zero-Copy SHM** | ✅ None | ✅ None | ❌ High (`pickle` cost) |
-| **Relative Speedup** | **🔥 100x faster** | **🔥 27x faster** | 5x faster | 5x faster | Baseline (1x) |
+| **Execution Time** | **`0.0158 s`** | **`2.2551 s`** | `0.3957 s` | `0.4152 s` | `2.0339 s` |
 
-*   **Bypassing the Multiprocessing Bottleneck**: While Python's `ProcessPoolExecutor` takes **over 2 seconds** due to slow process spawning and heavy `pickle` IPC serialization, Pyroxide's `@dylib_task` runs native compiled plugins in just **20 milliseconds**—offering a **100x speedup** with zero-copy shared memory.
+*   **Bypassing the Multiprocessing Bottleneck**: While Python's `ProcessPoolExecutor` takes **over 2 seconds** due to slow process spawning and heavy `pickle` IPC serialization, Pyroxide's `@dylib_task` runs native compiled plugins in just **15 milliseconds**—offering a **128x speedup** with zero-copy shared memory.
 
 ### Real-World Odoo Enterprise Arrow Ledger Audit Benchmark
 
 To test performance under realistic enterprise data movement workloads, we ran a simulated Odoo Ledger Audit benchmark processing a **9.62 MB Apache Arrow serialized transaction recordset** (200,000 journal items) across 10 concurrent requests comparing different concurrency strategies:
-*   **CPython ThreadPoolExecutor (GIL-Locked)**: `0.3221 s`
-*   **Pyroxide Threaded `@task` (GIL-Locked)**: `0.3298 s` (matches Python's native scheduling overhead perfectly)
-*   **ProcessPoolExecutor (Python, Pickled Pipes)**: `0.2758 s`
-*   **Pyroxide SHM Isolated `@task` (Zero-Copy SHM)**: `0.3272 s`
-*   **Pyroxide `@dylib_task` (C-compiled, GIL-Free)**: **`0.0091 s`** (bypasses GIL entirely)
+*   **CPython ThreadPoolExecutor (GIL-Locked)**: `0.3453 s`
+*   **Pyroxide Threaded `@task` (GIL-Locked)**: `0.3239 s` (matches Python's native scheduling overhead perfectly)
+*   **ProcessPoolExecutor (Python, Pickled Pipes)**: `0.2625 s`
+*   **Pyroxide SHM Isolated `@task` (Zero-Copy SHM)**: `0.3241 s`
+*   **Pyroxide `@dylib_task` (C-compiled, GIL-Free)**: **`0.0095 s`** (bypasses GIL entirely)
 
-**Key Takeaway**: By offloading the audit logic to a dynamically compiled C/Rust plugin running on Pyroxide's background thread pool, we achieve a **35.3x speedup** over CPython's standard `ThreadPoolExecutor` by completely bypassing the GIL.
+**Key Takeaway**: By offloading the audit logic to a dynamically compiled C/Rust plugin running on Pyroxide's background thread pool, we achieve a **36.3x speedup** over CPython's standard `ThreadPoolExecutor` by completely bypassing the GIL.
 
 To run the Odoo simulation suite locally:
 ```bash
-python examples/odoo_poc/odoo_complex_simulation.py
+PYTHONPATH=python:. python3 examples/odoo_poc/odoo_complex_simulation.py
 ```
 
 To run the comparative and basic benchmark suites locally:
 ```bash
 # 1. Run detailed comparative benchmarks against CPython concurrency pools
-python examples/benchmarks/benchmark_vs_alternatives.py
+PYTHONPATH=python:examples/benchmarks python3 examples/benchmarks/benchmark_vs_alternatives.py
 
 # 2. Run basic scheduling latency and asyncio benchmarks
-python examples/benchmarks/benchmark.py
+PYTHONPATH=python python3 examples/benchmarks/benchmark.py
 ```
 
 ---

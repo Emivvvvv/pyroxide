@@ -11,6 +11,7 @@ from .types import TaskHandle
 
 _compile_lock = threading.Lock()
 
+
 class CrossProcessLock:
     def __init__(self, lock_path: str, timeout: float = 60.0):
         self.lock_path = lock_path
@@ -21,6 +22,7 @@ class CrossProcessLock:
         if sys.platform == "win32":
             try:
                 import ctypes
+
                 handle = ctypes.windll.kernel32.OpenProcess(0x0400, False, pid)
                 if handle:
                     ctypes.windll.kernel32.CloseHandle(handle)
@@ -67,7 +69,9 @@ class CrossProcessLock:
                     continue
 
                 if time.time() - start > self.timeout:
-                    raise TimeoutError(f"Timeout waiting for compilation lock at {self.lock_path}")
+                    raise TimeoutError(
+                        f"Timeout waiting for compilation lock at {self.lock_path}"
+                    )
                 time.sleep(0.05)
 
     def release(self):
@@ -82,7 +86,6 @@ class CrossProcessLock:
             except OSError:
                 pass
             self.locked = False
-
 
 
 def _verify_compiler(binary: str) -> None:
@@ -516,12 +519,13 @@ def load_dylib(
     # 0. Auto-register if not already registered
     try:
         from pyroxide._pyroxide import get_dylib_exports, get_dylib_path
+
         get_dylib_exports(lib_name)
         if free_fn_name is not None:
             try:
                 reg_path = get_dylib_path(lib_name)
                 if reg_path:
-                    clean_path = reg_path.split(';')[0]
+                    clean_path = reg_path.split(";")[0]
                     register_dylib(lib_name, clean_path, free_fn_name=free_fn_name)
             except Exception:
                 pass
@@ -569,5 +573,5 @@ def unregister_dylib(name: str) -> None:
     Unregisters a dynamic shared library from the Pyroxide registries.
     """
     from pyroxide._pyroxide import unregister_dylib as _raw_unregister
-    _raw_unregister(name)
 
+    _raw_unregister(name)

@@ -21,11 +21,14 @@ def echo_large_payload(payload):
 def get_worker_pid(dummy):
     return os.getpid()
 
+
 @task(isolated=True)
 def long_isolated_task_helper(x):
     import time
+
     time.sleep(0.5)
     return x
+
 
 @task(isolated=True)
 def large_payload_task_helper(payload):

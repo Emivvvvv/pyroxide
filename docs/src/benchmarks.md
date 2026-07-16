@@ -34,15 +34,15 @@ We submitted sequential tasks (waiting for each to finish before submitting the 
 
 | Metric | Python Thread-Polling Queue (Baseline) | Pyroxide (Single Task `@task`) | Pyroxide (Batch Submission) |
 | :--- | :--- | :--- | :--- |
-| **10 Tasks** | `1.0180 s` | `0.0003 s` | `0.0003 s` |
-| **50 Tasks** | `3.5289 s` | `0.0012 s` | `0.0013 s` |
-| **200 Tasks** | `14.1082 s` | `0.0051 s` | `0.0038 s` |
-| **Avg. Overhead per Task** | **`70.54 ms`** | **`25.50 µs` (0.02ms)** | **`19.00 µs` (0.01ms)** |
+| **10 Tasks** | `1.0180 s` | `0.0003 s` | `0.0002 s` |
+| **50 Tasks** | `3.5289 s` | `0.0013 s` | `0.0007 s` |
+| **200 Tasks** | `14.1082 s` | `0.0047 s` | `0.0027 s` |
+| **Avg. Overhead per Task** | **`70.54 ms`** | **`23.50 µs` (0.02ms)** | **`13.50 µs` (0.01ms)** |
 
 **Key Takeaways**:
 - **Why the Baseline is Slow**: Typical Python queues rely on lock-polling. If a task finishes right after a thread goes to sleep, the result waits for the next poll cycle, inflating average latency to `~70ms`.
-- **Why Pyroxide is Fast**: Pyroxide utilizes Rust's OS-native `Condvar` signaling. When a background thread completes a task, it notifies the waiting Python thread in microseconds, resulting in an average dispatch overhead of just **25 microseconds**.
-- **Batching Advantage**: By using `.batch()`, Pyroxide acquires the broker's write lock once, reducing write lock acquisition contention to a minimum and driving average overhead down to **19 microseconds** per task.
+- **Why Pyroxide is Fast**: Pyroxide utilizes Rust's OS-native `Condvar` signaling. When a background thread completes a task, it notifies the waiting Python thread in microseconds, resulting in an average dispatch overhead of just **23.5 microseconds**.
+- **Batching Advantage**: By using `.batch()`, Pyroxide acquires the broker's write lock once, reducing write lock acquisition contention to a minimum and driving average overhead down to **13.5 microseconds** per task.
 
 ---
 
@@ -129,15 +129,15 @@ The results gathered on **Apple M1 Pro (8 cores, 16GB RAM)**:
 #### Task Execution Times
 | Execution Strategy | 100 Tasks | 500 Tasks |
 | :--- | :--- | :--- |
-| **ThreadPoolExecutor** (Python) | 0.0773s | 0.3818s |
-| **ProcessPoolExecutor** (Python) | 1.5217s | 2.9161s |
-| **Pyroxide `@task`** (Threads) | 0.0910s | 0.3979s |
-| **Pyroxide `@task(isolated=True)`** | **0.0701s** | **0.0769s** |
-| **Pyroxide `@dylib_task` (C)** | **0.0046s** | **0.0229s** |
+| **ThreadPoolExecutor** (Python) | 0.0795s | 0.4152s |
+| **ProcessPoolExecutor** (Python) | 3.0016s | 2.0339s |
+| **Pyroxide `@task`** (Threads) | 0.0816s | 0.3957s |
+| **Pyroxide `@task(isolated=True)`** | **1.5979s** | **2.2551s** |
+| **Pyroxide `@dylib_task` (C)** | **0.0031s** | **0.0158s** |
 
 **Analysis**:
-- For 500 tasks, Pyroxide `@dylib_task` is **16x faster** than Python's standard `ThreadPoolExecutor` and **65x faster** than `ProcessPoolExecutor` (multiprocessing).
-- For smaller task counts (100 tasks), the process spawning and `pickle` serialization overhead of `ProcessPoolExecutor` makes it **380x slower** than Pyroxide's lightweight, in-process C-ABI dynamic execution.
+- For 500 tasks, Pyroxide `@dylib_task` is **26x faster** than Python's standard `ThreadPoolExecutor` and **128x faster** than `ProcessPoolExecutor` (multiprocessing).
+- For smaller task counts (100 tasks), the process spawning and `pickle` serialization overhead of `ProcessPoolExecutor` makes it **968x slower** than Pyroxide's lightweight, in-process C-ABI dynamic execution.
 - Pyroxide's `@task` performs on par with `ThreadPoolExecutor`, demonstrating that when executing Python code, both are bound by the CPython interpreter speed, but Pyroxide does so with less setup boilerplate.
 
 ---
@@ -189,19 +189,19 @@ This test simulates how Odoo processes database records by serializing them to A
 - **Pyroxide `@dylib_task` (C-compiled, GIL-Free)**: Compiles the audit logic into a native dynamic library and runs it completely GIL-free.
 
 #### Results (10 Concurrent Tasks)
-- **CPython ThreadPoolExecutor (GIL-Locked)**: `0.3221 s`
-- **Pyroxide Threaded `@task`**: `0.3298 s`
-- **ProcessPoolExecutor (Pickled Pipes)**: `0.2758 s`
-- **Pyroxide SHM Isolated `@task`**: `0.3272 s`
-- **Pyroxide `@dylib_task` (C-compiled, GIL-Free)**: **`0.0091 s`**
+- **CPython ThreadPoolExecutor (GIL-Locked)**: `0.3453 s`
+- **Pyroxide Threaded `@task`**: `0.3239 s`
+- **ProcessPoolExecutor (Pickled Pipes)**: `0.2625 s`
+- **Pyroxide SHM Isolated `@task`**: `0.3241 s`
+- **Pyroxide `@dylib_task` (C-compiled, GIL-Free)**: **`0.0095 s`**
 
 **Key Takeaways**:
-- **GIL Bypass Performance**: By moving the Odoo audit logic into a dynamically compiled native C library, Pyroxide runs the workload in just **9 milliseconds**, compared to **322 milliseconds** using CPython's standard `ThreadPoolExecutor`—a **35.3x speedup**.
+- **GIL Bypass Performance**: By moving the Odoo audit logic into a dynamically compiled native C library, Pyroxide runs the workload in just **9.5 milliseconds**, compared to **345 milliseconds** using CPython's standard `ThreadPoolExecutor`—a **36.3x speedup**.
 - **Low Scheduler Overhead**: Pyroxide's threaded `@task` performs identically to CPython's ThreadPoolExecutor, proving that Pyroxide's lock-free thread dispatch scheduling introduces near-zero overhead.
 
 To run the Odoo simulation suite locally:
 ```bash
-python examples/odoo_poc/odoo_complex_simulation.py
+PYTHONPATH=python:. python3 examples/odoo_poc/odoo_complex_simulation.py
 ```
 
 ---
@@ -222,8 +222,8 @@ You can execute the performance suite and the alternative comparison suite local
 
 ```bash
 # 1. Run basic latency and asyncio benchmarks
-python examples/benchmarks/benchmark.py
+PYTHONPATH=python python3 examples/benchmarks/benchmark.py
 
 # 2. Run detailed comparative benchmarks against Python standard libraries
-python examples/benchmarks/benchmark_vs_alternatives.py
+PYTHONPATH=python:examples/benchmarks python3 examples/benchmarks/benchmark_vs_alternatives.py
 ```
