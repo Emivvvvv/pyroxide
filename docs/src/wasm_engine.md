@@ -159,6 +159,12 @@ To prevent infinite loops and host process Out-Of-Memory (OOM) crashes, Pyroxide
 - **Epoch-Based Interruption (Timeout)**: Pyroxide runs a background ticking thread that advances the WASM engine epoch. Every WASM execution is assigned a deadline (default: 1000ms). If a guest module gets stuck in an infinite loop, it is interrupted and terminated with a trap error once the deadline is exceeded.
 - **Linear Memory Limits**: Every WASM Store is configured with strict linear memory growth limits to prevent host process OOM (default: 100MB).
 
+### Environment Configuration
+
+You can configure default limits at startup using the following environment variables:
+- `PYROXIDE_WASM_MEMORY_LIMIT_BYTES`: Sets the maximum linear memory allowed for a single WASM instance.
+- `PYROXIDE_WASM_TIMEOUT_MS`: Sets the maximum execution duration for a WASM instance.
+
 ### Programmatic Configuration
 
 Instead of relying on environment variables, you can configure these limits dynamically and safely in Python using `pyroxide.config`:

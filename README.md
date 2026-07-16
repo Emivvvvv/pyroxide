@@ -232,6 +232,8 @@ Configure Pyroxide dynamically using the following environment variables:
 *   `PYROXIDE_WORKERS`: Number of background worker threads in the Rust thread pool (default: available CPU cores).
 *   `PYROXIDE_SHM_THRESHOLD`: Payload size threshold in bytes above which data uses Shared Memory (SHM) instead of the local socket (default: `1048576` = 1MB).
 *   `PYROXIDE_WASM_TICK_MS`: Granularity of the WASM epoch timeout tick loop in milliseconds (default: `10`ms).
+*   `PYROXIDE_WASM_MEMORY_LIMIT_BYTES`: Maximum memory allowed for a single WASM instance in bytes.
+*   `PYROXIDE_WASM_TIMEOUT_MS`: Timeout for WASM execution in milliseconds.
 *   `PYROXIDE_MAX_TASKS_PER_WORKER`: Maximum number of tasks an isolated process worker runs before it is recycled to prevent memory leaks (default: `100`).
 *   `PYROXIDE_WORKER_STARTUP_TIMEOUT_SEC`: Timeout in seconds for a new worker process to start up and connect (default: `5` seconds).
 *   `PYROXIDE_IDLE_TIMEOUT_SEC`: Idle time in seconds before an inactive isolated worker process is terminated (default: `60` seconds).
