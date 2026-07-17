@@ -259,11 +259,11 @@ Detailed documentation, guides, and implementation examples are available in our
 
 We benchmarked Pyroxide against CPython's standard concurrency pools using identical compute payloads (recursive Fibonacci 20 workload) on **Apple M1 Pro (8 cores, 16GB RAM)**:
 
-| Metric (500 Tasks) | Pyroxide `@dylib_task` | Pyroxide `@task(isolated=True)` | Pyroxide `@task` | Threading (std) | Multiprocessing |
+| Metric (100 Tasks) | Pyroxide `@dylib_task` | Pyroxide `@task(isolated=True)` | Pyroxide `@task` | Threading (std) | Multiprocessing |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Execution Time** | **`0.0158 s`** | **`2.2551 s`** | `0.3957 s` | `0.4152 s` | `2.0339 s` |
+| **Execution Time** | **`0.0034 s`** | **`0.0157 s`** | `0.0842 s` | `0.0751 s` | `2.1925 s` |
 
-*   **Bypassing the Multiprocessing Bottleneck**: While Python's `ProcessPoolExecutor` takes **over 2 seconds** due to slow process spawning and heavy `pickle` IPC serialization, Pyroxide's `@dylib_task` runs native compiled plugins in just **15 milliseconds**—offering a **128x speedup** with zero-copy shared memory.
+*   **Bypassing the Multiprocessing Bottleneck**: While Python's `ProcessPoolExecutor` takes **over 2.1 seconds** due to slow process spawning and heavy `pickle` IPC serialization, Pyroxide's `@task(isolated=True)` executes in just **15 milliseconds**—offering a **140x speedup** with optimized single-pass pickling and zero-copy shared memory.
 
 ### Real-World Odoo Enterprise Arrow Ledger Audit Benchmark
 

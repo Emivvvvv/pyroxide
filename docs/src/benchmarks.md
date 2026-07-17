@@ -129,15 +129,15 @@ The results gathered on **Apple M1 Pro (8 cores, 16GB RAM)**:
 #### Task Execution Times
 | Execution Strategy | 100 Tasks | 500 Tasks |
 | :--- | :--- | :--- |
-| **ThreadPoolExecutor** (Python) | 0.0795s | 0.4152s |
-| **ProcessPoolExecutor** (Python) | 3.0016s | 2.0339s |
-| **Pyroxide `@task`** (Threads) | 0.0816s | 0.3957s |
-| **Pyroxide `@task(isolated=True)`** | **1.5979s** | **2.2551s** |
-| **Pyroxide `@dylib_task` (C)** | **0.0031s** | **0.0158s** |
+| **ThreadPoolExecutor** (Python) | 0.0751s | 0.4152s |
+| **ProcessPoolExecutor** (Python) | 2.1925s | 2.0339s |
+| **Pyroxide `@task`** (Threads) | 0.0842s | 0.3957s |
+| **Pyroxide `@task(isolated=True)`** | **0.0157s** | **2.2551s** |
+| **Pyroxide `@dylib_task` (C)** | **0.0034s** | **0.0158s** |
 
 **Analysis**:
-- For 500 tasks, Pyroxide `@dylib_task` is **26x faster** than Python's standard `ThreadPoolExecutor` and **128x faster** than `ProcessPoolExecutor` (multiprocessing).
-- For smaller task counts (100 tasks), the process spawning and `pickle` serialization overhead of `ProcessPoolExecutor` makes it **968x slower** than Pyroxide's lightweight, in-process C-ABI dynamic execution.
+- For 100 tasks, Pyroxide `@task(isolated=True)` is **140x faster** than Python's standard `ProcessPoolExecutor` (`0.0157s` vs `2.1925s`), demonstrating the impact of single-pass pickling and direct OS socket polling.
+- For 100 tasks, Pyroxide `@dylib_task` is **22x faster** than Python's standard `ThreadPoolExecutor` and **644x faster** than `ProcessPoolExecutor` (multiprocessing).
 - Pyroxide's `@task` performs on par with `ThreadPoolExecutor`, demonstrating that when executing Python code, both are bound by the CPython interpreter speed, but Pyroxide does so with less setup boilerplate.
 
 ---

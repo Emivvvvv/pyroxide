@@ -256,23 +256,16 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, 
             let result = Python::attach(|py| -> PyResult<Vec<u8>> {
                 let pickle = PyModule::import(py, "pickle")?;
 
-                // Unpack metadata: "has_callable:bool"
-                // For python tasks, payload is: (pickled_func, pickled_payload)
+                // Unpack payload: (func, payload)
                 let tuple: Bound<'_, pyo3::types::PyTuple> = pickle
                     .call_method1("loads", (PyBytes::new(py, payload),))?
                     .extract()?;
 
-                let pickled_func: Bound<'_, PyBytes> = tuple.get_item(0)?.extract()?;
-                let pickled_arg: Bound<'_, PyBytes> = tuple.get_item(1)?.extract()?;
-
-                let func: Py<PyAny> = pickle.call_method1("loads", (pickled_func,))?.unbind();
-                let arg: Py<PyAny> = pickle.call_method1("loads", (pickled_arg,))?.unbind();
+                let func = tuple.get_item(0)?;
+                let arg = tuple.get_item(1)?;
 
                 // Run callable
-                let bound_func = func.bind(py);
-                let bound_arg = arg.bind(py);
-
-                match bound_func.call1((bound_arg,)) {
+                match func.call1((arg,)) {
                     Ok(val) => {
                         let pickled_val = pickle.call_method1("dumps", (val,))?;
                         let bytes: Vec<u8> = pickled_val.extract()?;

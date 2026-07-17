@@ -1,11 +1,21 @@
 === Pyroxide Performance Benchmark ===
 
 1. Single Threaded Task Submission & Waiting:
-   Tasks:   10 | Total Time: 0.0002s | Avg Latency: 0.02ms
-   Tasks:   20 | Total Time: 0.0003s | Avg Latency: 0.01ms
-   Tasks:   50 | Total Time: 0.0006s | Avg Latency: 0.01ms
+   Tasks:   10 | Total Time: 0.0004s | Avg Latency: 0.04ms
+   Tasks:   50 | Total Time: 0.0012s | Avg Latency: 0.02ms
+   Tasks:  200 | Total Time: 0.0049s | Avg Latency: 0.02ms
 
-2. Multi-Threaded Concurrent Submission (Lock Contention & Polling):
-   Tasks:   40 | Threads:  2 | Total Time: 0.0043s
-   Tasks:   40 | Threads:  4 | Total Time: 0.0012s
-   Tasks:   40 | Threads:  8 | Total Time: 0.0015s
+2. Batch Task Submission & Waiting (Lock-Free Optimization):
+   Tasks:   10 | Total Time: 0.0002s | Avg Latency: 0.02ms (Batching)
+   Tasks:   50 | Total Time: 0.0007s | Avg Latency: 0.01ms (Batching)
+   Tasks:  200 | Total Time: 0.0026s | Avg Latency: 0.01ms (Batching)
+
+3. Asyncio Non-Blocking Parallel Waiting (result_async):
+   Tasks:   10 | Total Time: 0.0005s | Avg Latency: 0.05ms (Async)
+   Tasks:   50 | Total Time: 0.0013s | Avg Latency: 0.03ms (Async)
+   Tasks:  200 | Total Time: 0.0053s | Avg Latency: 0.03ms (Async)
+
+4. Multi-Threaded Concurrent Submission (Lock Contention & Polling):
+   Tasks:   40 | Threads:  2 | Total Time: 0.0036s
+   Tasks:   40 | Threads:  4 | Total Time: 0.0026s
+   Tasks:   40 | Threads:  8 | Total Time: 0.0028s

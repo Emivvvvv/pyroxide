@@ -335,6 +335,11 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                 Err(_) => Err("Rust worker panicked during task execution".to_string()),
             };
 
+            let final_status = match &resolved_result {
+                Ok(_) => TaskStatus::Completed as u8,
+                Err(_) => TaskStatus::Failed as u8,
+            };
+
             // 4. Store result FIRST, then update status.
             //    This ensures when a reader sees Completed/Failed, the result
             //    is already available. If cancel_task wins the CAS race below,
@@ -352,11 +357,6 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                 if current == TaskStatus::Cancelled as u8 {
                     break;
                 }
-                let final_status = match &*task.result.lock().unwrap_or_else(|e| e.into_inner()) {
-                    Some(Ok(_)) => TaskStatus::Completed as u8,
-                    Some(Err(_)) => TaskStatus::Failed as u8,
-                    _ => TaskStatus::Failed as u8,
-                };
                 match task.status.compare_exchange_weak(
                     current,
                     final_status,
@@ -403,10 +403,35 @@ pub(crate) fn spawn_workers(
         .collect()
 }
 
+#[cfg(unix)]
+fn wait_readable(
+    stream: &interprocess::local_socket::LocalSocketStream,
+    timeout_ms: i32,
+) -> Result<bool, std::io::Error> {
+    use std::os::fd::AsRawFd;
+    let fd = stream.as_raw_fd();
+    let mut fds = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let ret = unsafe { libc::poll(&mut fds, 1, timeout_ms) };
+    if ret < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(ret > 0)
+    }
+}
+
 use pyo3::types::PyBytes;
 
 fn execute_isolated_task(task_id: usize, task: &Arc<Task>) {
     let result = execute_isolated_task_inner(task);
+
+    let final_status = match &result {
+        Ok(_) => TaskStatus::Completed as u8,
+        Err(_) => TaskStatus::Failed as u8,
+    };
 
     // Store result FIRST, then update status (see worker_loop for rationale).
     {
@@ -421,11 +446,6 @@ fn execute_isolated_task(task_id: usize, task: &Arc<Task>) {
         if current == TaskStatus::Cancelled as u8 {
             break;
         }
-        let final_status = match &*task.result.lock().unwrap_or_else(|e| e.into_inner()) {
-            Some(Ok(_)) => TaskStatus::Completed as u8,
-            Some(Err(_)) => TaskStatus::Failed as u8,
-            _ => TaskStatus::Failed as u8,
-        };
         match task.status.compare_exchange_weak(
             current,
             final_status,
@@ -464,13 +484,7 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
             if let Some(ref cb) = task.callable {
                 // Python callable
                 let pickle = PyModule::import(py, "pickle").map_err(|e| e.to_string())?;
-                let pickled_func = pickle
-                    .call_method1("dumps", (cb,))
-                    .map_err(|e| e.to_string())?;
-                let pickled_arg = pickle
-                    .call_method1("dumps", (task.payload.clone_ref(py),))
-                    .map_err(|e| e.to_string())?;
-                let tuple = pyo3::types::PyTuple::new(py, &[pickled_func, pickled_arg])
+                let tuple = pyo3::types::PyTuple::new(py, [cb.bind(py), task.payload.bind(py)])
                     .map_err(|e| e.to_string())?;
                 let pickled_tuple = pickle
                     .call_method1("dumps", (tuple,))
@@ -647,7 +661,18 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
                 header_read += n;
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(std::time::Duration::from_micros(100));
+                #[cfg(unix)]
+                {
+                    match wait_readable(&worker.stream, 5) {
+                        Ok(_) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(e) => return Err(format!("IPC poll error: {e}")),
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    std::thread::sleep(std::time::Duration::from_micros(100));
+                }
             }
             Err(e) => {
                 return Err(format!("IPC read error: {e}"));
@@ -681,7 +706,18 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
                 data_read += n;
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(std::time::Duration::from_micros(100));
+                #[cfg(unix)]
+                {
+                    match wait_readable(&worker.stream, 5) {
+                        Ok(_) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(e) => return Err(format!("IPC poll error: {e}")),
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    std::thread::sleep(std::time::Duration::from_micros(100));
+                }
             }
             Err(e) => {
                 return Err(format!("IPC read error: {e}"));

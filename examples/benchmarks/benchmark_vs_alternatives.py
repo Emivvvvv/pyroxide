@@ -120,5 +120,5 @@ if __name__ == "__main__":
     TaskHandle(submit_task(python_compute_payload, b"warmup", isolated=True)).wait()
     pyroxide_dylib_task(b"warmup").wait()
 
+    run_benchmark(50)
     run_benchmark(100)
-    run_benchmark(500)

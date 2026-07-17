@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pyro3"
-version = "0.8.2"
+version = "0.8.3"
 description = "A lock-free, high-concurrency task broker for Python, powered by Rust."
 readme = "README.md"
 requires-python = ">=3.8"
