@@ -89,7 +89,7 @@ from pyroxide import generate_stubs
 generate_stubs("my_lib", library_type="dylib")
 ```
 
-## 4. Querying Task Status
+## 4. Querying Task Status & Lifecycle Management
 
 The `TaskHandle` provides the `.status` property to track execution:
 
@@ -98,6 +98,23 @@ The `TaskHandle` provides the `.status` property to track execution:
 *   `Completed`: Finished successfully; results are ready to retrieve.
 *   `Failed`: Stopped due to panic or exception.
 *   `Cancelled`: Explicitly cancelled before or during execution.
+
+### Deterministic Resource Management (v0.9.0)
+You can use `with handle:` or call `handle.close()` to explicitly free Rust Slab memory slots immediately upon task completion:
+
+```python
+# Context Manager Usage (Recommended)
+with calculate_factorial(500) as handle:
+    result = handle.result()
+    print(result)
+
+# Or explicit closing
+handle = calculate_factorial(500)
+try:
+    result = handle.result()
+finally:
+    handle.close()
+```
 
 ---
 

@@ -204,10 +204,9 @@ class TaskHandle:
 
         return self.result(timeout_sec=0, consume=consume)
 
-    def __del__(self) -> None:
+    def close(self) -> None:
         """
-        Garbage collection destructor.
-        Automatically frees the task memory in the Rust Slab when the Python handle is deleted/dropped.
+        Explicitly releases and frees the task memory in the Rust Slab.
         """
         if getattr(self, "_consumed", False):
             return
@@ -224,3 +223,16 @@ class TaskHandle:
             self._consumed = True
         except Exception:
             pass
+
+    def __enter__(self) -> "TaskHandle":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        """
+        Garbage collection destructor.
+        Automatically frees the task memory in the Rust Slab when the Python handle is deleted/dropped.
+        """
+        self.close()

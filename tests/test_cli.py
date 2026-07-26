@@ -52,7 +52,8 @@ pyroxide.register_wasm_wat("test_cli_wasm", r'''{WAT_CODE}''')
             temp_dir,
             "--no-pyproject",
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        env = dict(os.environ, PYTHONPATH=os.path.pathsep.join(sys.path))
+        res = subprocess.run(cmd, capture_output=True, text=True, env=env)
         assert res.returncode == 0, f"CLI failed: {res.stderr}\n{res.stdout}"
 
         # 3. Verify files were generated
@@ -104,7 +105,8 @@ test_pyproj_wasm = {{ type = "wat", wat = '''{WAT_CODE}''' }}
             "--out-dir",
             temp_dir,
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        env = dict(os.environ, PYTHONPATH=os.path.pathsep.join(sys.path))
+        res = subprocess.run(cmd, capture_output=True, text=True, env=env)
         assert res.returncode == 0, f"CLI failed: {res.stderr}\n{res.stdout}"
 
         # 4. Verify files were generated

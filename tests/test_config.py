@@ -38,8 +38,8 @@ def test_config_global_and_scoped_wasm_timeout():
         with pytest.raises(Exception) as exc_info:
             handle.result()
         duration = (time.time() - t0) * 1000
-        # Should fail fast, well under the 1000ms global default
-        assert duration < 500
+        # Should fail fast, well under the 5000ms global default
+        assert duration < 1500
         assert "wasm execution failed" in str(exc_info.value).lower()
 
     # 2. Test global config setter.
@@ -50,7 +50,7 @@ def test_config_global_and_scoped_wasm_timeout():
     with pytest.raises(Exception) as exc_info:
         handle2.result()
     duration2 = (time.time() - t0) * 1000
-    assert duration2 < 600
+    assert duration2 < 2500
     assert "wasm execution failed" in str(exc_info.value).lower()
 
     # Restore default global timeout

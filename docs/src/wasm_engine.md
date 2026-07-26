@@ -131,15 +131,26 @@ print("Final Output:", handle_unzip.result())
 
 ---
 
-### IDE Autocomplete (Type Stub Generator)
+### 4. Dynamic On-The-Fly WASM Compilation (v0.9.0)
 
-Similar to dynamic libraries, you can generate standard Python PEP 484 type stub files (`.pyi`) for registered WASM modules, offering autocomplete for all exported functions:
+Instead of manually building `.wasm` binaries ahead of time using `rustc` or `clang`, Pyroxide provides on-the-fly WASM compilation helpers (`compile_rust_wasm`, `compile_c_wasm`, `compile_zig_wasm`, and `compile_wasm`):
 
 ```python
-from pyroxide import generate_stubs
+from pyroxide import compile_rust_wasm, compile_c_wasm, load_wasm
 
-# Automatically parses the WASM module exports and writes a .pyi stub file
-generate_stubs("compression_mod", library_type="wasm")
+# 1. Compile C source code directly to WebAssembly bytecode!
+C_WASM_SRC = """
+#include <stdint.h>
+
+uint64_t square(uint32_t x) {
+    return (uint64_t)x * (uint64_t)x;
+}
+"""
+compile_c_wasm("math_wasm", C_WASM_SRC)
+
+# 2. Load proxy and call functions in the WASM JIT Sandbox!
+math_proxy = load_wasm("math_wasm")
+print(math_proxy.square(12).result())  # 144
 ```
 
 ---

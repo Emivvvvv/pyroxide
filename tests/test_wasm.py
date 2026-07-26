@@ -72,13 +72,25 @@ def test_wasm_parallel_execution():
 
 
 def test_wasm_cancellation():
-    register_wasm("rot13_cancel", WASM_BYTES)
+    from pyroxide import register_wasm_wat
+    WAT_LOOP = """
+(module
+  (memory (export "memory") 1)
+  (func (export "run") (param i32 i32) (result i64)
+    (loop br 0)
+    i64.const 0
+  )
+  (func (export "alloc") (param i32) (result i32) i32.const 0)
+  (func (export "dealloc") (param i32) (param i32))
+)
+"""
+    register_wasm_wat("loop_cancel_mod", WAT_LOOP)
 
-    @wasm_task("rot13_cancel", "run")
-    def rot13_cipher(payload: str) -> str:
+    @wasm_task("loop_cancel_mod", "run")
+    def loop_task(payload: str) -> str:
         pass
 
-    handle = rot13_cipher("a" * 1000)
+    handle = loop_task("start")
     cancelled = handle.cancel()
     assert cancelled is True
     assert handle.status == "Cancelled"
@@ -97,3 +109,27 @@ def test_wasm_oop_proxy():
 
     handle = proxy.run("Hello OOP WASM!")
     assert handle.result() == "Uryyb BBC JNFZ!"
+
+
+def test_compile_wat_wasm():
+    """Verifies that compile_wasm and compile_wat_wasm register WAT strings and execute correctly."""
+    from pyroxide import compile_wasm, load_wasm
+
+    WAT_CODE = """
+    (module
+      (memory (export "memory") 1)
+      (func (export "run") (param i32 i32) (result i64)
+        i64.const 0
+      )
+      (func (export "alloc") (param i32) (result i32)
+        i32.const 0
+      )
+      (func (export "dealloc") (param i32) (param i32)
+      )
+    )
+    """
+    mod_name = compile_wasm("test_wat_comp", WAT_CODE, lang="wat")
+    proxy = load_wasm(mod_name)
+    handle = proxy.run("hello")
+    assert handle.result() == ""
+

@@ -140,16 +140,23 @@ impl IsolatedProcessPool {
     }
 
     fn spawn_new_worker(&self) -> Result<IpcWorker, String> {
-        let python_path = pyo3::Python::attach(|py| -> Result<String, String> {
-            let sys = py
-                .import("sys")
-                .map_err(|e| format!("Failed to import sys: {e}"))?;
-            let exe = sys
-                .getattr("executable")
-                .map_err(|e| format!("Failed to get sys.executable: {e}"))?;
-            exe.extract::<String>()
-                .map_err(|e| format!("Failed to extract sys.executable: {e}"))
-        })?;
+        let (python_path, sys_path_items) =
+            pyo3::Python::attach(|py| -> Result<(String, Vec<String>), String> {
+                let sys = py
+                    .import("sys")
+                    .map_err(|e| format!("Failed to import sys: {e}"))?;
+                let exe = sys
+                    .getattr("executable")
+                    .map_err(|e| format!("Failed to get sys.executable: {e}"))?;
+                let exe_str: String = exe
+                    .extract()
+                    .map_err(|e| format!("Failed to extract sys.executable: {e}"))?;
+                let path_list = sys
+                    .getattr("path")
+                    .map_err(|e| format!("Failed to get sys.path: {e}"))?;
+                let paths: Vec<String> = path_list.extract().unwrap_or_default();
+                Ok((exe_str, paths))
+            })?;
 
         let rand_num: u32 = rand::random();
 
@@ -168,8 +175,13 @@ impl IsolatedProcessPool {
 
         let mut cmd = Command::new(&python_path);
         cmd.env("PYROXIDE_WORKER", "1")
-            .env("PYROXIDE_PARENT_PID", std::process::id().to_string())
-            .args(["-m", "pyroxide.worker", "--socket", &socket_path]);
+            .env("PYROXIDE_PARENT_PID", std::process::id().to_string());
+
+        if let Ok(joined_path) = std::env::join_paths(&sys_path_items) {
+            cmd.env("PYTHONPATH", joined_path);
+        }
+
+        cmd.args(["-m", "pyroxide.worker", "--socket", &socket_path]);
 
         let mut child = cmd
             .spawn()

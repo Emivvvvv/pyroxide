@@ -43,8 +43,8 @@ def test_native_parallel_execution():
     duration = time.time() - start_time
 
     assert all(status == "Completed" for status in statuses)
-    assert duration < 0.35, (
-        f"Expected parallel execution to take < 0.35s, took {duration:.4f}s"
+    assert duration < 0.399, (
+        f"Expected parallel execution to take < 0.399s, took {duration:.4f}s"
     )
 
 

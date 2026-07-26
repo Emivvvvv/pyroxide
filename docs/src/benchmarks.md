@@ -121,24 +121,26 @@ Process RSS Memory (MB)
 
 ---
 
-### Scenario E: Pyroxide vs. Python ThreadPool & Multiprocessing
-To evaluate Pyroxide against Python's native concurrency libraries (`concurrent.futures.ThreadPoolExecutor` and `concurrent.futures.ProcessPoolExecutor`), we measured execution times for scaling task loads using identical compute payloads (a recursive Fibonacci 20 workload).
+### Scenario E: Comprehensive Concurrency Evaluation (CPython 3.11 vs. Python 3.14t Free-Threaded vs. Loky vs. Pyroxide)
 
-The results gathered on **Apple M1 Pro (8 cores, 16GB RAM)**:
+To evaluate Pyroxide against standard concurrency libraries (`ThreadPoolExecutor`, `ProcessPoolExecutor`, `loky`) and experimental free-threaded CPython (`Python 3.14t --disable-gil`), we measured execution times for scaling task loads using identical compute payloads (Fibonacci 20 workload).
 
-#### Task Execution Times
-| Execution Strategy | 100 Tasks | 500 Tasks |
-| :--- | :--- | :--- |
-| **ThreadPoolExecutor** (Python) | 0.0751s | 0.4152s |
-| **ProcessPoolExecutor** (Python) | 2.1925s | 2.0339s |
-| **Pyroxide `@task`** (Threads) | 0.0842s | 0.3957s |
-| **Pyroxide `@task(isolated=True)`** | **0.0157s** | **2.2551s** |
-| **Pyroxide `@dylib_task` (C)** | **0.0034s** | **0.0158s** |
+Empirical results gathered on **Apple M1 Pro (8 cores, 16GB RAM)**:
 
-**Analysis**:
-- For 100 tasks, Pyroxide `@task(isolated=True)` is **140x faster** than Python's standard `ProcessPoolExecutor` (`0.0157s` vs `2.1925s`), demonstrating the impact of single-pass pickling and direct OS socket polling.
-- For 100 tasks, Pyroxide `@dylib_task` is **22x faster** than Python's standard `ThreadPoolExecutor` and **644x faster** than `ProcessPoolExecutor` (multiprocessing).
-- Pyroxide's `@task` performs on par with `ThreadPoolExecutor`, demonstrating that when executing Python code, both are bound by the CPython interpreter speed, but Pyroxide does so with less setup boilerplate.
+#### Task Execution Times (100 Tasks)
+| Execution Engine / Strategy | Execution Time | Speedup vs CPython 3.11 ThreadPool | Architecture Tier | GIL Status |
+| :--- | :---: | :---: | :--- | :---: |
+| **Pyroxide `@dylib_task` (C Native)** | **`0.0038 s`** | **🔥 23.1x speedup** | Native Dynamic Plugin | Bypassed (C-ABI) |
+| **Python 3.14t Free-Threaded (PEP 703)** | **`0.0168 s`** | **🚀 5.2x speedup** | Free-Threaded CPython | Disabled (`3.14t`) |
+| **Pyroxide `@task(isolated=True)`** | **`0.1292 s`** | **⚡ 0.7x (1.94x faster than Loky)** | Zero-Copy SHM Process Pool | Bypassed (Subprocess) |
+| **ThreadPoolExecutor (CPython 3.11)** | `0.0881 s` | `1.0x (baseline)` | Standard Threading | Locked (GIL) |
+| **Loky Process Pool (Joblib)** | `0.2509 s` | `0.35x` | Subprocess Pool | Bypassed (Subprocess) |
+| **ProcessPoolExecutor (Multiprocessing)** | `2.7964 s` | `0.03x` | Pickled Subprocess Pipes | Bypassed (Subprocess) |
+
+#### Empirical Analysis & Insights
+1. **Python 3.14t Free-Threaded (PEP 703) Validation**: Installing and executing under `Python 3.14.6+freethreaded` (`GIL_disabled=True`) drops pure-Python `ThreadPoolExecutor` time from `0.0881s` to **`0.0168s` (a 5.2x speedup)**. This confirms that PEP 703 successfully allows pure Python bytecode threads to execute concurrently across multiple CPU cores without holding the GIL.
+2. **Why Pyroxide Dynamic Native Plugins Outperform Free-Threaded Python**: Pyroxide `@dylib_task` runs in **`0.0038s`—4.4x faster than Python 3.14t Free-Threaded**. While free-threading removes the GIL, pure Python bytecode execution remains interpreted. Pyroxide `@dylib_task` combines lock-free threadpool dispatching with compiled machine code, avoiding interpreter overhead altogether.
+3. **Subprocess Pool Efficiency**: Pyroxide `@task(isolated=True)` (`0.1292s`) runs **1.94x faster than Loky** (`0.2509s`) and **21.6x faster than ProcessPoolExecutor** (`2.7964s`). While all three bypass the GIL via separate OS processes, Pyroxide achieves lower latency by maintaining persistent worker daemons and routing payloads over zero-copy Shared Memory (`/dev/shm`).
 
 ---
 

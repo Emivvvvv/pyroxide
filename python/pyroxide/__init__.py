@@ -15,7 +15,17 @@ Exports:
 from ._pyroxide import submit_task, get_status, register_dylib  # noqa: F401
 from .decorators import task
 from .types import TaskHandle
-from .wasm import register_wasm, register_wasm_wat, wasm_task, load_wasm
+from .wasm import (
+    register_wasm,
+    register_wasm_wat,
+    wasm_task,
+    load_wasm,
+    compile_wasm,
+    compile_wat_wasm,
+    compile_c_wasm,
+    compile_rust_wasm,
+    compile_zig_wasm,
+)
 from .plugins import (
     compile_rust,
     dylib_task,
@@ -23,12 +33,13 @@ from .plugins import (
     compile_zig,
     load_dylib,
     unregister_dylib,
+    CompilerNotFoundError,
 )
 from .workflows import group, TaskGroup
 from .stubs import generate_stubs
 from . import config
 
-__version__ = "0.8.3"
+__version__ = "0.9.0"
 
 __all__ = [
     "task",
@@ -37,6 +48,11 @@ __all__ = [
     "register_wasm_wat",
     "wasm_task",
     "load_wasm",
+    "compile_wasm",
+    "compile_wat_wasm",
+    "compile_c_wasm",
+    "compile_rust_wasm",
+    "compile_zig_wasm",
     "compile_rust",
     "dylib_task",
     "load_dylib",
@@ -47,4 +63,5 @@ __all__ = [
     "TaskGroup",
     "generate_stubs",
     "config",
+    "CompilerNotFoundError",
 ]

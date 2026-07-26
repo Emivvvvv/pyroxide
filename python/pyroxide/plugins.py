@@ -88,12 +88,17 @@ class CrossProcessLock:
             self.locked = False
 
 
+class CompilerNotFoundError(RuntimeError):
+    """Raised when a required compiler binary (cargo, gcc, clang, zig) is missing from PATH."""
+    pass
+
+
 def _verify_compiler(binary: str) -> None:
     """Checks if the required compiler binary is available on the system PATH."""
     if not shutil.which(binary):
-        raise RuntimeError(
+        raise CompilerNotFoundError(
             f"Required compiler system binary '{binary}' is not found on your PATH. "
-            "Please install the compiler or use a pre-compiled binary."
+            "Please install the compiler toolchain or use pre-compiled binaries."
         )
 
 

@@ -1,4 +1,6 @@
+import sys
 import time
+import subprocess
 import concurrent.futures
 from pyroxide import task, compile_c, dylib_task
 
@@ -14,10 +16,7 @@ uint32_t fib(uint32_t n) {
 }
 
 uint8_t* pyroxide_plugin_run(const uint8_t* ptr, size_t len, size_t* out_len) {
-    // Perform Fibonacci 20 to simulate actual CPU computation
     uint32_t val = fib(20);
-    
-    // Echo payload back
     uint8_t* res = (uint8_t*)malloc(len);
     for (size_t i = 0; i < len; i++) {
         res[i] = ptr[i];
@@ -39,85 +38,116 @@ def pyroxide_dylib_task(payload: bytes) -> bytes:
     pass
 
 
-from bench_helper import python_compute_payload
+from bench_helper import (
+    python_compute_payload,
+    isolated_compute_task,
+    threaded_compute_task,
+)
 
-@task
-def pyroxide_python_task(payload):
-    return python_compute_payload(payload)
+
+def run_freethreaded_314_bench(num_tasks: int) -> float:
+    """Runs Python 3.14t free-threaded CPython via uv run if available."""
+    try:
+        cmd = [
+            "uv", "run", "--no-project", "--python", "3.14t",
+            "python3", "examples/benchmarks/run_freethreaded_314.py"
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                if line.startswith(f"RESULTS_314T:{num_tasks}:"):
+                    return float(line.split(":")[2])
+    except Exception:
+        pass
+    return 0.0
 
 
+def run_loky_bench(num_tasks: int) -> float:
+    """Runs loky (Joblib process pool executor)."""
+    try:
+        import loky
+        executor = loky.get_reusable_executor(max_workers=8)
+        payload = b"benchmarking_payload_data_string_123"
+        start = time.time()
+        futures = [executor.submit(python_compute_payload, payload) for _ in range(num_tasks)]
+        [f.result() for f in futures]
+        return time.time() - start
+    except Exception:
+        return 0.0
 
 
 def run_benchmark(num_tasks):
     payload = b"benchmarking_payload_data_string_123"
+    payloads = [payload for _ in range(num_tasks)]
 
-    print(f"\n--- Running Benchmark with {num_tasks} Tasks ---")
+    print(f"\n==========================================================================")
+    print(f"  Comprehensive Concurrency Benchmark: {num_tasks} Tasks")
+    print(f"  Host Python: {sys.version.split()[0]} (Standard CPython)")
+    print(f"==========================================================================\n")
 
-    # ==========================================
     # 1. ThreadPoolExecutor (Python Threading)
-    # ==========================================
     start = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-        futures = [
-            executor.submit(python_compute_payload, payload) for _ in range(num_tasks)
-        ]
+        futures = [executor.submit(python_compute_payload, payload) for _ in range(num_tasks)]
         [f.result() for f in futures]
     t_threads = time.time() - start
-    print(f"ThreadPoolExecutor (8 workers) : {t_threads:.4f}s")
 
-    # ==========================================
     # 2. ProcessPoolExecutor (Multiprocessing)
-    # ==========================================
     start = time.time()
     with concurrent.futures.ProcessPoolExecutor(max_workers=8) as executor:
-        futures = [
-            executor.submit(python_compute_payload, payload) for _ in range(num_tasks)
-        ]
+        futures = [executor.submit(python_compute_payload, payload) for _ in range(num_tasks)]
         [f.result() for f in futures]
     t_process = time.time() - start
-    print(f"ProcessPoolExecutor (8 workers): {t_process:.4f}s")
 
-    # ==========================================
-    # 3. Pyroxide Python Callable Task (@task)
-    # ==========================================
+    # 3. Loky (Joblib Process Pool)
+    t_loky = run_loky_bench(num_tasks)
+
+    # 4. Python 3.14t Free-Threaded (PEP 703 GIL Bypass)
+    t_314t = run_freethreaded_314_bench(num_tasks)
+
+    # 5. Pyroxide Python Callable Task (@task)
     start = time.time()
-    # Batch submit
-    payloads = [payload for _ in range(num_tasks)]
-    handles = pyroxide_python_task.batch(payloads)
+    handles = threaded_compute_task.batch(payloads)
     [h.result() for h in handles]
     t_pyroxide_py = time.time() - start
-    print(f"Pyroxide @task (8 workers)     : {t_pyroxide_py:.4f}s")
 
-    # ==========================================
-    # 4. Pyroxide Python Callable Task (@task isolated=True)
-    # ==========================================
-    from pyroxide._pyroxide import submit_batch
+    # 6. Pyroxide Python Callable Task (@task isolated=True, Zero-Copy SHM)
     start = time.time()
-    task_ids = submit_batch(python_compute_payload, payloads, isolated=True)
-    from pyroxide.types import TaskHandle
-    handles = [TaskHandle(tid) for tid in task_ids]
+    handles = isolated_compute_task.batch(payloads)
     [h.result() for h in handles]
     t_pyroxide_py_isolated = time.time() - start
-    print(f"Pyroxide @task isolated (8 process): {t_pyroxide_py_isolated:.4f}s")
 
-    # ==========================================
-    # 5. Pyroxide Dylib Task (@dylib_task)
-    # ==========================================
+    # 7. Pyroxide Dylib Task (@dylib_task, C-ABI Native)
     start = time.time()
     handles = pyroxide_dylib_task.batch(payloads)
     [h.result() for h in handles]
     t_pyroxide_dylib = time.time() - start
-    print(f"Pyroxide @dylib_task (C-ABI)       : {t_pyroxide_dylib:.4f}s")
 
+    print(f"1. ThreadPoolExecutor (std 8 workers)    : {t_threads:.4f}s")
+    print(f"2. ProcessPoolExecutor (std 8 workers)   : {t_process:.4f}s")
+    print(f"3. Loky Process Pool (8 workers)          : {t_loky:.4f}s")
+    if t_314t > 0:
+        print(f"4. Python 3.14t Free-Threaded (PEP 703)  : {t_314t:.4f}s")
+    print(f"5. Pyroxide @task (8 threads)             : {t_pyroxide_py:.4f}s")
+    print(f"6. Pyroxide @task isolated (8 SHM procs)  : {t_pyroxide_py_isolated:.4f}s")
+    print(f"7. Pyroxide @dylib_task (C-ABI GIL-Free)  : {t_pyroxide_dylib:.4f}s")
+
+    print("\n| Concurrency Strategy | Execution Time | Speedup vs std ThreadPool | Architecture Tier |")
+    print("| :--- | :---: | :---: | :--- |")
+    print(f"| **Pyroxide `@dylib_task` (C Native)** | **`{t_pyroxide_dylib:.4f} s`** | **{(t_threads / max(t_pyroxide_dylib, 1e-6)):.1f}x speedup** | **Native Dynamic Plugin** |")
+    if t_314t > 0:
+        print(f"| **Python 3.14t Free-Threaded (PEP 703)** | **`{t_314t:.4f} s`** | **{(t_threads / max(t_314t, 1e-6)):.1f}x speedup** | **Free-Threaded CPython** |")
+    print(f"| **Pyroxide `@task(isolated=True)`** | **`{t_pyroxide_py_isolated:.4f} s`** | **{(t_threads / max(t_pyroxide_py_isolated, 1e-6)):.1f}x speedup** | **Zero-Copy SHM Process Pool** |")
+    print(f"| **ThreadPoolExecutor (CPython 3.11)** | `{t_threads:.4f} s` | `1.0x (baseline)` | Standard Threading |")
+    print(f"| **Loky Process Pool** | `{t_loky:.4f} s` | `{(t_threads / max(t_loky, 1e-6)):.2f}x` | Joblib Subprocess Pool |")
+    print(f"| **ProcessPoolExecutor** | `{t_process:.4f} s` | `{(t_threads / max(t_process, 1e-6)):.2f}x` | Pickled Subprocess Pipes |")
 
 
 if __name__ == "__main__":
-    # Warmup
+    # Warmup all engines
     python_compute_payload(b"warmup")
-    pyroxide_python_task(b"warmup").wait()
-    from pyroxide._pyroxide import submit_task
-    from pyroxide.types import TaskHandle
-    TaskHandle(submit_task(python_compute_payload, b"warmup", isolated=True)).wait()
+    threaded_compute_task(b"warmup").wait()
+    isolated_compute_task(b"warmup").wait()
     pyroxide_dylib_task(b"warmup").wait()
 
     run_benchmark(50)

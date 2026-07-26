@@ -105,23 +105,31 @@ def test_isolated_large_payload_shm():
     assert result == large_data
 
 
-def test_isolated_scale_to_zero(monkeypatch):
-    # Set idle timeout to 1 second for fast testing
-    monkeypatch.setenv("PYROXIDE_IDLE_TIMEOUT_SEC", "1")
+def test_isolated_scale_to_zero():
+    import os
+    import subprocess
+    import sys
 
-    # Run first task to spawn worker
-    pid1 = get_worker_pid(0).result()
+    code = """
+import os
+import time
+import sys
+sys.path.insert(0, os.path.abspath("python"))
+sys.path.insert(0, os.path.abspath("."))
+from tests.isolated_helper import get_worker_pid
 
-    # Wait for reaper to kill it (timeout is 1s, check interval is 2s, so 3.5s is safe)
-    import time
-
-    time.sleep(3.5)
-
-    # Run second task
-    pid2 = get_worker_pid(0).result()
-
-    # PIDs should be different as the first worker was reaped and a new one spawned
-    assert pid1 != pid2
+pid1 = get_worker_pid(0).result()
+time.sleep(3.5)
+pid2 = get_worker_pid(0).result()
+assert pid1 != pid2
+print("SUCCESS")
+"""
+    env = os.environ.copy()
+    env["PYROXIDE_IDLE_TIMEOUT_SEC"] = "1"
+    env["PYTHONPATH"] = f"{os.path.abspath('python')}:{os.path.abspath('.')}:{env.get('PYTHONPATH', '')}"
+    res = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    assert res.returncode == 0, f"Subprocess failed: {res.stderr}"
+    assert "SUCCESS" in res.stdout
 
 
 def test_isolated_min_workers():

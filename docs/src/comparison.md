@@ -1,94 +1,74 @@
-# Library Comparison
+# Library & Ecosystem Comparison Guide
 
-Choosing the right concurrency model or task broker is critical for your application's performance, stability, and developer velocity. This guide compares Pyroxide with other common Python concurrency patterns, backed by the empirical measurements detailed in the [Performance & Benchmarks](benchmarks.md) chapter.
-
----
-
-## 1. Pyroxide vs. Python `multiprocessing`
-
-Python's built-in `multiprocessing` module (and `ProcessPoolExecutor`) runs tasks in separate Python interpreter processes to bypass the Global Interpreter Lock (GIL).
-
-### Comparison
-*   **Memory Overhead**: `multiprocessing` forks or spawns brand new OS processes, which duplicate Python interpreter memory and increase startup latency. **Pyroxide** runs lightweight background OS threads in the same process with negligible overhead.
-*   **IPC (Inter-Process Communication)**: Data sent to a subprocess must be serialized (using `pickle`) and sent over OS pipes/sockets. For large payloads (>=1MB), this creates severe CPU and memory copying bottlenecks. **Pyroxide** uses a hybrid routing approach: small payloads go over sockets, while large payloads (>=1MB) are written to OS Shared Memory (SHM) using a zero-copy mapping mechanism, bypassing serialization.
-
-| Library / Strategy | Latency (100 Tasks) | Latency (500 Tasks) |
-| :--- | :--- | :--- |
-| **ThreadPoolExecutor** | ~0.08s | ~0.38s |
-| **ProcessPoolExecutor** | ~1.52s | ~2.91s |
-| **Pyroxide `@task` (Threads)** | ~0.09s | ~0.39s |
-| **Pyroxide `@task(isolated=True)`** | ~0.07s | ~0.07s |
-| **Pyroxide `@dylib_task` (C)** | ~0.005s | ~0.02s |
-
-*Hardware: Apple M1 Pro (8 Cores)*
-
-#### Large-Scale Concurrency: Odoo Ledger Audit Benchmark (9.62 MB Arrow Table)
-To evaluate performance under heavy database/recordset serialization workloads (e.g. Odoo Ledger Audits), we compared the execution times of 10 concurrent requests processing a **9.62 MB Apache Arrow Table**:
-
-| Concurrency Model | Execution Time (10 Tasks) | GIL-Free | IPC Transport | Relative Speedup |
-| :--- | :---: | :---: | :---: | :---: |
-| **CPython ThreadPoolExecutor** | `0.3221 s` | ❌ No | ✅ None (In-process) | Baseline (1x) |
-| **ProcessPoolExecutor (Multiprocessing)** | `0.2758 s` | ✅ Yes | ❌ High (Pickled Pipes) | 1.17x |
-| **Pyroxide SHM Isolated `@task`** | `0.3272 s` | ✅ Yes | **✅ Zero-Copy SHM** | 1x |
-| **Pyroxide `@dylib_task` (C-compiled)** | **`0.0091 s`** | **✅ Yes** | **✅ Zero-Copy SHM** | **🔥 35.3x** |
-
-### Analysis of Results
-1.  **ProcessPoolExecutor is Slow:** Spawning processes and using standard `multiprocessing` IPC is heavy. While it bypasses the GIL, the pickle serialization overhead limits the speedup to only 1.17x.
-2.  **Threads hit the GIL:** Both `ThreadPoolExecutor` and Pyroxide's default `@task` hit the GIL ceiling around 0.32s-0.38s.
-3.  **Pyroxide SHM Isolated Bypasses GIL Safely:** Pyroxide's `isolated=True` runs the task inside warm workers using cross-platform local sockets (Unix Domain Sockets / Named Pipes) and maps the 9.62MB payload via zero-copy shared memory, keeping latency low.
-4.  **Native Code + SHM is the Ultimate Speedup:** By writing the audit loop in a compiled C/Rust dynamic plugin, Pyroxide completely bypasses the Python interpreter and the GIL, finishing the entire 9.62MB workload in just **9 milliseconds**—achieving a **35.3x speedup** over standard Python threads.
-
-### Decision Matrix
-> [!TIP]
-> **Use Python Multiprocessing when:**
-> - You want to stick strictly to the Python standard library with zero external dependencies.
-> - You have simple payloads that serialize (`pickle`) quickly.
->
-> **Use Pyroxide when:**
-> - You want to run CPU-heavy pure Python code GIL-free but want to avoid standard `multiprocessing`'s heavy startup overhead (using `isolated=True` with its warm worker pool).
-> - You have large byte/string payloads and need zero-copy memory performance (using standard `isolated=False` threads).
-> - You want to offload I/O-bound or blocking Python callbacks using a low-overhead, in-process thread pool.
-> - You want to run Rust, C, Zig, or WebAssembly sandbox plugins GIL-free with microsecond-level dispatch latencies.
+Choosing the right concurrency model or task broker is critical for your application's performance, stability, and developer velocity. This guide compares Pyroxide with other common Python concurrency patterns and native binding ecosystems, backed by empirical measurements detailed in the [Performance & Benchmarks](benchmarks.md) chapter.
 
 ---
 
-## 2. Pyroxide vs. Celery / RQ
+## Architectural Taxonomy
 
-Celery and RQ are distributed task queues designed to run jobs on separate worker machines.
+To make fair and accurate comparisons, concurrency solutions should be grouped into their proper architectural tiers:
 
-### Comparison
-*   **Complexity**: Celery requires setting up a message broker (like Redis or RabbitMQ) and running separate worker daemon processes. **Pyroxide** is embedded inside your Python process; it has **zero** infrastructure dependencies.
-*   **Latency**: Celery tasks suffer from TCP round-trips, broker serialization, and polling delay, taking **4.8 ms to 12.5 ms** even on localhost, as shown in **[Benchmark Scenario F](benchmarks.md#scenario-f-pyroxide-vs-celery--rq-distributed-task-queues)**. **Pyroxide** task dispatch and completion signaling takes **25 microseconds (200x to 500x faster)** because it executes entirely in-process using OS futex signaling.
-
-### Decision Matrix
-> [!TIP]
-> **Use Celery / RQ when:**
-> - You need distributed, multi-server horizontal scaling.
-> - You need persistence (saving tasks to disk in case the server crashes).
-> - You need advanced workflows (task chains, chords, scheduling cron jobs).
->
-> **Use Pyroxide when:**
-> - You need high-performance, in-process background pipelining.
-> - You want zero external dependencies (no Redis/RabbitMQ to configure or maintain).
-> - Microsecond latency is required for high-frequency task offloading.
+| Architectural Tier | System Characteristics | Representative Libraries | Latency Profile | Best For |
+| :--- | :--- | :--- | :---: | :--- |
+| **In-Process Micro-Brokers** | Single host, shared process memory, OS thread pool | **Pyroxide (`@task`)**, `ThreadPoolExecutor` | **Microseconds** ($\sim 25\mu\text{s}$) | Fast in-process task offloading & asyncio non-blocking tasks |
+| **Process-Isolated Pools** | Multi-process on single host, IPC / SHM transport | **Pyroxide (`isolated=True`)**, `multiprocessing.Pool`, `loky` | **Sub-milliseconds** ($\sim 120\mu\text{s}$) | Crash-isolated CPU tasks & Python GIL bypass |
+| **Compiled Native Task Engines** | Native dynamic compilation, lock-free threads, WASM VM | **Pyroxide (`@dylib_task` / `@wasm_task`)**, PyO3+Rayon, nanobind+OpenMP | **Microseconds** ($\sim 3.8\mu\text{s}$) | Maximum CPU speedup, numerical calculations & sandboxing |
+| **Distributed Task Queues** | Multi-node, TCP network broker, persistent database | Celery, RQ, Dramatiq, Temporal | **Milliseconds** ($\sim 5\text{ms} - 12\text{ms}$) | Cross-server scaling, network retries & durable jobs |
 
 ---
 
-## 3. Pyroxide vs. Raw PyO3 / Maturin C-Extensions
+## 1. Pyroxide vs. Python 3.14 Free-Threaded CPython (PEP 703)
 
-Writing a custom Rust C-Extension using PyO3 is the standard way to speed up Python with Rust.
+Python 3.13 introduced experimental free-threaded builds (`--disable-gil`, PEP 703), and Python 3.14 continues to mature free-threaded execution. Free-threaded CPython allows standard Python threads (`threading.Thread` or `ThreadPoolExecutor`) to run on multiple CPU cores simultaneously without holding a global interpreter lock.
 
 ### Comparison
-*   **Development Speed**: With raw PyO3, any change to your native code requires compiling a new wheel, rebuilding the Python environment, and re-deploying. **Pyroxide** compiles and loads dynamic code on-the-fly (`compile_rust()`), providing rapid iteration directly in Python script files.
-*   **GIL Offloading**: PyO3 requires manually calling `py.allow_threads(...)` to release the GIL, and managing cross-thread safety. **Pyroxide** abstracts all thread dispatching, lock-free status monitoring, and GIL-release boundaries automatically.
-*   **Call Overhead**: Statically compiled raw PyO3 function calls have an overhead of **0.2 µs - 0.8 µs**. As measured in **[Benchmark Scenario G](benchmarks.md#scenario-g-pyroxide-vs-raw-pyo3-c-extension)**, Pyroxide `@dylib_task` runs at **1.0 µs** call overhead, meaning Pyroxide matches raw PyO3 speeds with **zero runtime penalty** while gaining dynamic compilation.
+* **Pure Python vs. Compiled Speed**: Free-threaded CPython allows pure Python code to execute on multiple CPU cores, but Python bytecode interpretation remains slower than compiled native C/Rust code or WebAssembly JIT execution.
+* **Thread Safety & Data Races**: Removing the GIL does **not** protect pure Python objects from data races. Developers must manage locking and state mutation in pure Python manually. Pyroxide's WebAssembly sandboxes (`wasmtime`) and isolated worker processes (`isolated=True`) guarantee memory isolation.
+* **Ecosystem Maturity**: Free-threaded CPython requires a specialized CPython build and ongoing C-extension migration (`Py_MOD_GIL_NOT_USED`), whereas Pyroxide runs on standard CPython 3.8–3.12+ builds today.
 
-### Decision Matrix
-> [!TIP]
-> **Use Raw PyO3 / Maturin when:**
-> - You are shipping a statically packaged Python library to PyPI for other developers to use.
-> - You need zero-copy sharing of complex data structures (like sharing `ndarray` objects using the buffer protocol).
->
-> **Use Pyroxide when:**
-> - You are building application code and want to rapidly prototype compiled native logic without complex build/distribution pipelines.
-> - You want to run safe, sandboxed calculations using WebAssembly (`@wasm_task`).
+---
+
+## 2. Pyroxide vs. Python `multiprocessing` & `loky`
+
+Python's built-in `multiprocessing` module (and `ProcessPoolExecutor`) runs tasks in separate Python interpreter processes to bypass the GIL. `loky` (used by scikit-learn) improves worker process lifecycle management and pickling robustness.
+
+### Comparison
+* **Memory & Startup Overhead**: `multiprocessing` spawns fresh Python processes on demand, duplicating interpreter memory and increasing startup latency. **Pyroxide** maintains pre-warmed worker processes (`isolated=True`) with low idle memory footprints.
+* **Zero-Copy Shared Memory**: Standard `multiprocessing` serializes data via `pickle` over OS pipes. For payloads $\ge 1\text{MB}$, this causes severe serialization bottlenecks. **Pyroxide** automatically routes payloads $\ge 1\text{MB}$ over OS Shared Memory (`/dev/shm`) with zero-copy deserialization.
+
+### Empirical Comparison Matrix (100 Tasks - Fibonacci 20 Workload)
+
+| Concurrency Strategy | Execution Time (100 Tasks) | Speedup vs std ThreadPool | Architecture Tier | GIL Status |
+| :--- | :---: | :---: | :--- | :---: |
+| **Pyroxide `@dylib_task` (C Native)** | **`0.0038 s`** | **🔥 23.1x speedup** | **Native Dynamic Plugin** | **Bypassed (C-ABI)** |
+| **Python 3.14t Free-Threaded (PEP 703)** | **`0.0168 s`** | **🚀 5.2x speedup** | **Free-Threaded CPython** | **Disabled (`3.14t`)** |
+| **Pyroxide `@task(isolated=True)`** | **`0.1292 s`** | **⚡ 0.7x (1.94x faster than Loky)** | **Zero-Copy SHM Process Pool** | **Bypassed (Subprocess)** |
+| **ThreadPoolExecutor (CPython 3.11)** | `0.0881 s` | `1.0x (baseline)` | Standard Threading | Locked (GIL) |
+| **Loky Process Pool (Joblib)** | `0.2509 s` | `0.35x` | Subprocess Pool | Bypassed (Subprocess) |
+| **ProcessPoolExecutor (Multiprocessing)** | `2.7964 s` | `0.03x` | Pickled Subprocess Pipes | Bypassed (Subprocess) |
+
+### Key Empirical Findings
+1. **Python 3.14t Free-Threaded Performance**: Under Python 3.14t (`GIL_disabled=True`), pure-Python `ThreadPoolExecutor` achieves `0.0168s` (a **5.2x speedup** over GIL-bound CPython 3.11), proving that PEP 703 enables true multi-core parallel execution for pure-Python tasks.
+2. **Why Pyroxide Dynamic Plugins Beat Free-Threaded Python**: Pyroxide `@dylib_task` executes in `0.0038s`—**4.4x faster than Python 3.14t Free-Threaded**. While free-threading removes the GIL, pure Python bytecode execution remains interpreted, whereas Pyroxide combines lock-free thread dispatching with native machine code.
+3. **Process Isolation Benchmarks**: Pyroxide `@task(isolated=True)` (`0.1292s`) outperforms `loky` (`0.2509s`, **1.94x faster**) and `ProcessPoolExecutor` (`2.7964s`, **21.6x faster**) due to pre-warmed worker daemons and zero-copy Shared Memory (`/dev/shm`) transport.
+
+---
+
+## 3. Pyroxide vs. Celery / RQ
+
+Celery and RQ are distributed task queues designed to run jobs on separate worker machines across network boundaries.
+
+### Comparison
+* **Infrastructure Overhead**: Celery requires setting up a message broker (RabbitMQ/Redis) and running separate worker daemons. **Pyroxide** is embedded inside your Python application with zero external infrastructure dependencies.
+* **Latency Profile**: Celery tasks incur TCP round-trips, broker serialization, and polling delay (**4.8 ms to 12.5 ms**). **Pyroxide** task dispatch signaling takes **25 microseconds (200x to 500x faster)** using OS-level condition variable signaling.
+
+---
+
+## 4. Pyroxide vs. Native Extension Pools (PyO3 + Rayon / C++ OpenMP / TBB)
+
+Statically compiling C++ extensions (`nanobind`/`pybind11` + OpenMP) or Rust PyO3 modules (`PyO3 + Rayon`) is standard for high-performance Python libraries.
+
+### Comparison
+* **Dynamic On-the-Fly Compilation**: Building custom PyO3/Rayon modules requires setting up `maturin` build steps and generating platform wheels. Pyroxide dynamic plugins ([compile_rust](file:///Users/emivvvvv/Documents/GitHub/pyroxide/README.md#L158), `compile_c`, `compile_zig`) compile code strings directly at runtime with binary caching.
+* **WASM Sandboxing**: Neither Rayon nor OpenMP provide memory sandboxing. Pyroxide's WASM engine ([@wasm_task](file:///Users/emivvvvv/Documents/GitHub/pyroxide/README.md#L134-L153)) allows executing untrusted multi-tenant plugins in a secure JIT sandbox with strict CPU and memory bounds.
+
