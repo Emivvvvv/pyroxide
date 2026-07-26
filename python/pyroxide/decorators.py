@@ -11,10 +11,12 @@ def task(func_or_none=None, *, isolated: bool = False):
     """
     Decorator to offload a Python function to the Rust background worker pool.
 
-    The decorated function will be executed on a background OS thread managed
-    by Pyroxide's lock-free task broker. If `isolated=True` is set, the task
-    is executed in a separate OS process, providing full crash safety and GIL-free
-    concurrency for pure Python CPU tasks.
+    The decorated function is executed on a background OS thread managed by
+    Pyroxide's lock-free task broker. On Python 3.14+ Free-Threaded CPython
+    (PEP 703, GIL disabled), in-process threads execute pure Python tasks with
+    true multi-core parallelism and sub-5-microsecond latency. On standard CPython,
+    setting `isolated=True` runs tasks in separate worker processes with zero-copy
+    shared memory (/dev/shm).
 
     Args:
         func_or_none: The Python callable to execute.

@@ -36,10 +36,11 @@ from .plugins import (
     CompilerNotFoundError,
 )
 from .workflows import group, TaskGroup
+from .config import set_wasm_limits, set_queue_timeout, scoped, is_free_threaded
 from .stubs import generate_stubs
 from . import config
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 
 __all__ = [
     "task",

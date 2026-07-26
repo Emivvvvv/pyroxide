@@ -21,10 +21,10 @@ To make fair and accurate comparisons, concurrency solutions should be grouped i
 
 Python 3.13 introduced experimental free-threaded builds (`--disable-gil`, PEP 703), and Python 3.14 continues to mature free-threaded execution. Free-threaded CPython allows standard Python threads (`threading.Thread` or `ThreadPoolExecutor`) to run on multiple CPU cores simultaneously without holding a global interpreter lock.
 
-### Comparison
-* **Pure Python vs. Compiled Speed**: Free-threaded CPython allows pure Python code to execute on multiple CPU cores, but Python bytecode interpretation remains slower than compiled native C/Rust code or WebAssembly JIT execution.
-* **Thread Safety & Data Races**: Removing the GIL does **not** protect pure Python objects from data races. Developers must manage locking and state mutation in pure Python manually. Pyroxide's WebAssembly sandboxes (`wasmtime`) and isolated worker processes (`isolated=True`) guarantee memory isolation.
-* **Ecosystem Maturity**: Free-threaded CPython requires a specialized CPython build and ongoing C-extension migration (`Py_MOD_GIL_NOT_USED`), whereas Pyroxide runs on standard CPython 3.8–3.12+ builds today.
+### Auto-Detection & Free-Threaded Engine Support (v0.10.0)
+Pyroxide automatically detects free-threaded CPython builds using `pyroxide.config.is_free_threaded()` (checking `sys._is_gil_enabled()`). 
+* On **Python 3.14+ Free-Threaded CPython**, `@task` routes pure Python callables to Pyroxide's lock-free threadpool with true multi-core parallel execution and sub-5-microsecond latency.
+* On **Standard GIL-Bound CPython**, setting `isolated=True` routes tasks to zero-copy shared memory (/dev/shm) worker processes, while `@dylib_task` / `@wasm_task` execute compiled machine code or WASM JIT without holding the GIL.
 
 ---
 

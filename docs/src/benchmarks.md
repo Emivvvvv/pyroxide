@@ -127,20 +127,20 @@ To evaluate Pyroxide against standard concurrency libraries (`ThreadPoolExecutor
 
 Empirical results gathered on **Apple M1 Pro (8 cores, 16GB RAM)**:
 
-#### Task Execution Times (100 Tasks)
+#### Task Execution Times (100 Tasks - Fibonacci 20 Workload)
 | Execution Engine / Strategy | Execution Time | Speedup vs CPython 3.11 ThreadPool | Architecture Tier | GIL Status |
 | :--- | :---: | :---: | :--- | :---: |
-| **Pyroxide `@dylib_task` (C Native)** | **`0.0038 s`** | **🔥 23.1x speedup** | Native Dynamic Plugin | Bypassed (C-ABI) |
-| **Python 3.14t Free-Threaded (PEP 703)** | **`0.0168 s`** | **🚀 5.2x speedup** | Free-Threaded CPython | Disabled (`3.14t`) |
-| **Pyroxide `@task(isolated=True)`** | **`0.1292 s`** | **⚡ 0.7x (1.94x faster than Loky)** | Zero-Copy SHM Process Pool | Bypassed (Subprocess) |
-| **ThreadPoolExecutor (CPython 3.11)** | `0.0881 s` | `1.0x (baseline)` | Standard Threading | Locked (GIL) |
-| **Loky Process Pool (Joblib)** | `0.2509 s` | `0.35x` | Subprocess Pool | Bypassed (Subprocess) |
-| **ProcessPoolExecutor (Multiprocessing)** | `2.7964 s` | `0.03x` | Pickled Subprocess Pipes | Bypassed (Subprocess) |
+| **Pyroxide `@dylib_task` (C Native)** | **`0.0035 s`** | **🔥 22.3x speedup** | Native Dynamic Plugin | Bypassed (C-ABI) |
+| **Python 3.14t Free-Threaded (PEP 703)** | **`0.0038 s`** | **🚀 20.3x speedup** | Free-Threaded CPython | Disabled (`3.14t`) |
+| **Pyroxide `@task(isolated=True)`** | **`0.0164 s`** | **⚡ 4.7x (2.6x faster than Loky)** | Zero-Copy SHM Process Pool | Bypassed (Subprocess) |
+| **ThreadPoolExecutor (CPython 3.11)** | `0.0775 s` | `1.0x (baseline)` | Standard Threading | Locked (GIL) |
+| **Loky Process Pool (Joblib)** | `0.0439 s` | `1.77x` | Subprocess Pool | Bypassed (Subprocess) |
+| **ProcessPoolExecutor (Multiprocessing)** | `7.3296 s` | `0.01x` | Pickled Subprocess Pipes | Bypassed (Subprocess) |
 
 #### Empirical Analysis & Insights
-1. **Python 3.14t Free-Threaded (PEP 703) Validation**: Installing and executing under `Python 3.14.6+freethreaded` (`GIL_disabled=True`) drops pure-Python `ThreadPoolExecutor` time from `0.0881s` to **`0.0168s` (a 5.2x speedup)**. This confirms that PEP 703 successfully allows pure Python bytecode threads to execute concurrently across multiple CPU cores without holding the GIL.
-2. **Why Pyroxide Dynamic Native Plugins Outperform Free-Threaded Python**: Pyroxide `@dylib_task` runs in **`0.0038s`—4.4x faster than Python 3.14t Free-Threaded**. While free-threading removes the GIL, pure Python bytecode execution remains interpreted. Pyroxide `@dylib_task` combines lock-free threadpool dispatching with compiled machine code, avoiding interpreter overhead altogether.
-3. **Subprocess Pool Efficiency**: Pyroxide `@task(isolated=True)` (`0.1292s`) runs **1.94x faster than Loky** (`0.2509s`) and **21.6x faster than ProcessPoolExecutor** (`2.7964s`). While all three bypass the GIL via separate OS processes, Pyroxide achieves lower latency by maintaining persistent worker daemons and routing payloads over zero-copy Shared Memory (`/dev/shm`).
+1. **Python 3.14t Free-Threaded (PEP 703) Validation**: Executing under `Python 3.14.6+freethreaded` (`GIL_disabled=True`) drops execution time to **`0.0038s` (a 20.3x speedup vs std CPython 3.11 ThreadPool)**. This confirms that PEP 703 successfully enables pure Python bytecode threads to scale across CPU cores without holding the GIL.
+2. **Why Pyroxide Dynamic Native Plugins Outperform Free-Threaded Python**: Pyroxide `@dylib_task` runs in **`0.0035s`**. While free-threading removes the GIL, pure Python bytecode execution remains interpreted. Pyroxide `@dylib_task` combines lock-free threadpool dispatching with compiled machine code, avoiding interpreter overhead altogether.
+3. **Subprocess Pool Efficiency**: Pyroxide `@task(isolated=True)` (`0.0164s`) runs **2.68x faster than Loky** (`0.0439s`) and **446x faster than ProcessPoolExecutor** (`7.3296s`). Pyroxide achieves lower latency by maintaining persistent worker daemons and routing payloads over zero-copy Shared Memory (`/dev/shm`).
 
 ---
 

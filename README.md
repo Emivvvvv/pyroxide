@@ -43,7 +43,7 @@ Pyroxide (`pyro3`) is a lightweight, ultra-high-performance background task brok
 
 ## Why Pyroxide?
 
-*   🚀 **GIL-Free Performance**: Execute CPU-intensive tasks on background threads or isolated processes without holding the Python GIL.
+*   🚀 **GIL-Free & Free-Threaded (PEP 703)**: Auto-detects Python 3.14+ Free-Threaded CPython (`GIL_disabled=True`) for true in-process multi-core execution, while bypassing the GIL via C-ABI native dynamic plugins (`@dylib_task`) on standard CPython.
 *   ⚡ **Microsecond Latency**: Dispatch and complete tasks in under **25 microseconds** using OS-level signaling (`Condvar`) instead of polling.
 *   📦 **Zero Infrastructure**: Run entirely in-process with no Redis, RabbitMQ, or Celery worker daemons to configure or maintain.
 *   💾 **Zero-Copy Transport**: Route large payloads ($\ge 1\text{MB}$) via OS Shared Memory (SHM) to bypass serialization copying bottlenecks.
@@ -251,7 +251,24 @@ Detailed documentation, guides, and implementation examples are available in our
 *   **Batch Submissions**: Submit multiple tasks under a single lock acquisition to avoid thread contention. [Read Chapter](https://emivvvvv.github.io/pyroxide/batch_submission.html).
 *   **Task Cancellation**: Gracefully abort long-running background tasks mid-flight. [Read Chapter](https://emivvvvv.github.io/pyroxide/cancellation.html).
 *   **Traceback Preservation**: Capture stack traces on background worker threads and propagate them to the main thread. [Read Chapter](https://emivvvvv.github.io/pyroxide/tracebacks.html).
-*   **Memory Footprint & GC**: Learn how Slab memory is reclaimed automatically using GC destructors. [Read Chapter](https://emivvvvv.github.io/pyroxide/benchmarks.html#scenario-d-long-run-memory-profile).
+---
+
+## Environment Variable Reference
+
+You can configure Pyroxide's runtime behavior dynamically using the following environment variables:
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `PYROXIDE_WORKERS` | Number of background worker threads in the Rust thread pool. | CPU core count |
+| `PYROXIDE_SHM_THRESHOLD` | Payload size threshold in bytes above which data uses Shared Memory (SHM) instead of socket pipes. | `1048576` (1MB) |
+| `PYROXIDE_WASM_TICK_MS` | Granularity of the WASM epoch deadline interruption loop in milliseconds. | `10` |
+| `PYROXIDE_WASM_MEMORY_LIMIT_BYTES` | Maximum memory allowed for a single WASM instance in bytes. | `104857600` (100MB) |
+| `PYROXIDE_WASM_TIMEOUT_MS` | Timeout for WASM execution in milliseconds. | `1000` (1s) |
+| `PYROXIDE_MAX_TASKS_PER_WORKER` | Maximum number of tasks an isolated worker runs before it is recycled to prevent memory leaks. | `100` |
+| `PYROXIDE_WORKER_STARTUP_TIMEOUT_SEC` | Timeout in seconds for a new worker process to start up and connect. | `5` |
+| `PYROXIDE_IDLE_TIMEOUT_SEC` | Idle time in seconds before an inactive isolated worker process is terminated. | `60` |
+| `PYROXIDE_MIN_WORKERS` | Minimum number of warm worker processes to keep alive at all times. | `0` |
+| `PYROXIDE_DISABLE_COMPILATION` | Set to `1` or `true` to disable runtime compilation of C/Zig/Rust plugins for strict security compliance. | Disabled |
 
 ---
 

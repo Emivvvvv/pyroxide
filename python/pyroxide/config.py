@@ -1,3 +1,4 @@
+import sys
 import threading
 from contextlib import contextmanager
 from typing import Optional
@@ -9,6 +10,19 @@ from ._pyroxide import (
 
 # Thread-local storage for overrides
 _local = threading.local()
+
+
+def is_free_threaded() -> bool:
+    """
+    Returns True if running under a free-threaded CPython build (PEP 703, Python 3.13+)
+    with the Global Interpreter Lock (GIL) disabled.
+    """
+    if hasattr(sys, "_is_gil_enabled"):
+        try:
+            return not sys._is_gil_enabled()
+        except Exception:
+            return False
+    return False
 
 
 def set_wasm_limits(
