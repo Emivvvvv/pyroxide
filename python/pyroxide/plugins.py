@@ -7,6 +7,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, Optional
 
+from ._ffi_types import build_argument_format, build_return_format, validate_ffi_type
 from ._pyroxide import register_dylib, submit_dylib_batch, submit_dylib_task
 from .types import TaskHandle
 
@@ -471,22 +472,31 @@ class DylibProxy:
 
             # FFI custom signature call
             args_types = sig.get("args", [])
-            ret_type = sig.get("ret", "void")
+            if "ret" not in sig:
+                raise ValueError(f"FFI signature for '{symbol_name}' must declare 'ret'.")
+            ret_type = sig["ret"]
 
-            type_mapping = {
-                "i32": "i",
-                "i64": "q",
-                "f32": "f",
-                "f64": "d",
-            }
+            if len(args_types) > 8:
+                raise ValueError(
+                    f"FFI signatures support at most 8 arguments; received {len(args_types)}."
+                )
 
-            pack_format = "=" + "".join(type_mapping[t] for t in args_types)
-            unpack_format = "=" + type_mapping.get(ret_type, "")
+            try:
+                for t in args_types:
+                    validate_ffi_type(t)
+                validate_ffi_type(ret_type)
+            except ValueError as e:
+                raise ValueError(
+                    f"Unsupported FFI type for symbol '{symbol_name}': {e}"
+                ) from e
+
+            pack_format = build_argument_format(args_types)
+            unpack_format = build_return_format(ret_type)
+            expected_ret_len = struct.calcsize(unpack_format)
 
             def ffi_handle(task_id: int) -> TaskHandle:
                 handle = TaskHandle(task_id)
                 original_result = handle.result
-                original_result_async = handle.result_async
 
                 def ffi_result(
                     timeout_sec: Optional[float] = None, consume: bool = True
@@ -494,28 +504,30 @@ class DylibProxy:
                     res_bytes = original_result(
                         timeout_sec=timeout_sec, consume=consume
                     )
-                    if not unpack_format or unpack_format == "=":
-                        return None
-                    return struct.unpack(unpack_format, res_bytes)[0]
-
-                async def ffi_result_async(
-                    timeout_sec: Optional[float] = None, consume: bool = True
-                ) -> Any:
-                    res_bytes = await original_result_async(
-                        timeout_sec=timeout_sec, consume=consume
-                    )
-                    if not unpack_format or unpack_format == "=":
-                        return None
+                    if len(res_bytes) != expected_ret_len:
+                        raise RuntimeError(
+                            f"FFI symbol '{symbol_name}' returned {len(res_bytes)} bytes, but {ret_type} requires {expected_ret_len} bytes."
+                        )
                     return struct.unpack(unpack_format, res_bytes)[0]
 
                 setattr(handle, "result", ffi_result)
-                setattr(handle, "result_async", ffi_result_async)
                 return handle
 
             def ffi_method(*args) -> TaskHandle:
                 from .config import _local
 
-                packed_payload = struct.pack(pack_format, *args)
+                if len(args) != len(args_types):
+                    raise ValueError(
+                        f"FFI symbol '{symbol_name}' expects {len(args_types)} arguments, received {len(args)}."
+                    )
+
+                try:
+                    packed_payload = struct.pack(pack_format, *args)
+                except struct.error as e:
+                    raise ValueError(
+                        f"Argument range or type error for FFI symbol '{symbol_name}': {e}"
+                    ) from e
+
                 ffi_sig_arg = (args_types, ret_type)
 
                 queue_time = getattr(_local, "queue_timeout_ms", None)
@@ -534,8 +546,24 @@ class DylibProxy:
                 from .config import _local
 
                 def pack_payload(payload):
-                    args = payload if isinstance(payload, tuple) else (payload,)
-                    return struct.pack(pack_format, *args)
+                    args: tuple[Any, ...]
+                    if not args_types and (payload == () or payload == [] or payload is None):
+                        args = ()
+                    elif isinstance(payload, tuple):
+                        args = payload
+                    else:
+                        args = (payload,)
+
+                    if len(args) != len(args_types):
+                        raise ValueError(
+                            f"FFI symbol '{symbol_name}' expects {len(args_types)} arguments, received {len(args)}."
+                        )
+                    try:
+                        return struct.pack(pack_format, *args)
+                    except struct.error as e:
+                        raise ValueError(
+                            f"Argument range or type error for FFI symbol '{symbol_name}': {e}"
+                        ) from e
 
                 ffi_sig_arg = (args_types, ret_type)
                 queue_time = getattr(_local, "queue_timeout_ms", None)

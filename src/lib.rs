@@ -174,6 +174,7 @@ pub(crate) struct DylibPlugin {
     pub(crate) lib: libloading::Library,
     pub(crate) free_fn: Option<PluginFreeFn>,
     pub(crate) symbol_cache: RwLock<HashMap<SymbolKey, usize>>,
+    pub(crate) ffi_call_cache: RwLock<HashMap<String, HashMap<SignatureCode, PreparedFfiCall>>>,
 }
 
 static DYLIB_PLUGINS: OnceLock<RwLock<HashMap<String, Arc<DylibPlugin>>>> = OnceLock::new();
@@ -309,6 +310,7 @@ pub(crate) fn register_dylib_internal(
             lib,
             free_fn,
             symbol_cache: RwLock::new(HashMap::new()),
+            ffi_call_cache: RwLock::new(HashMap::new()),
         });
 
         let registry = DYLIB_PLUGINS.get_or_init(|| RwLock::new(HashMap::new()));
@@ -462,93 +464,892 @@ pub(crate) fn execute_dylib(
     }
 }
 
-fn read_i32(payload: &[u8], offset: &mut usize) -> Result<i32, String> {
-    if *offset + 4 > payload.len() {
-        return Err("Payload too short for i32 argument".to_string());
-    }
-    let val = i32::from_ne_bytes(payload[*offset..*offset + 4].try_into().unwrap());
-    *offset += 4;
-    Ok(val)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub(crate) enum FfiType {
+    I32 = 0,
+    U32 = 1,
+    I64 = 2,
+    U64 = 3,
+    Isize = 4,
+    Usize = 5,
+    F32 = 6,
+    F64 = 7,
 }
 
-fn read_i64(payload: &[u8], offset: &mut usize) -> Result<i64, String> {
-    if *offset + 8 > payload.len() {
-        return Err("Payload too short for i64 argument".to_string());
-    }
-    let val = i64::from_ne_bytes(payload[*offset..*offset + 8].try_into().unwrap());
-    *offset += 8;
-    Ok(val)
-}
-
-fn read_f32(payload: &[u8], offset: &mut usize) -> Result<f32, String> {
-    if *offset + 4 > payload.len() {
-        return Err("Payload too short for f32 argument".to_string());
-    }
-    let val = f32::from_ne_bytes(payload[*offset..*offset + 4].try_into().unwrap());
-    *offset += 4;
-    Ok(val)
-}
-
-fn read_f64(payload: &[u8], offset: &mut usize) -> Result<f64, String> {
-    if *offset + 8 > payload.len() {
-        return Err("Payload too short for f64 argument".to_string());
-    }
-    let val = f64::from_ne_bytes(payload[*offset..*offset + 8].try_into().unwrap());
-    *offset += 8;
-    Ok(val)
-}
-
-trait FfiRead {
-    fn ffi_read(payload: &[u8], offset: &mut usize) -> Result<Self, String>
-    where
-        Self: Sized;
-}
-
-impl FfiRead for i32 {
-    fn ffi_read(payload: &[u8], offset: &mut usize) -> Result<Self, String> {
-        read_i32(payload, offset)
-    }
-}
-impl FfiRead for i64 {
-    fn ffi_read(payload: &[u8], offset: &mut usize) -> Result<Self, String> {
-        read_i64(payload, offset)
-    }
-}
-impl FfiRead for f32 {
-    fn ffi_read(payload: &[u8], offset: &mut usize) -> Result<Self, String> {
-        read_f32(payload, offset)
-    }
-}
-impl FfiRead for f64 {
-    fn ffi_read(payload: &[u8], offset: &mut usize) -> Result<Self, String> {
-        read_f64(payload, offset)
-    }
-}
-
-macro_rules! match_ffi {
-    ($args_sig:expr, $ret_sig:expr, $run_ptr:expr, $payload:expr, $offset:expr, [
-        $( ([$($arg_ty:ident),*] -> $ret_ty:ident) ),* $(,)?
-    ]) => {
-        match ($args_sig, $ret_sig) {
-            $(
-                (args, ret) if args == &[ $(stringify!($arg_ty).to_string()),* ] && ret == stringify!($ret_ty) => {
-                    unsafe {
-                        let f: unsafe extern "C" fn($($arg_ty),*) -> $ret_ty = std::mem::transmute($run_ptr);
-                        let res = f(
-                            $(
-                                <$arg_ty as FfiRead>::ffi_read($payload, $offset)?
-                            ),*
-                        );
-                        Ok(res.to_ne_bytes().to_vec())
-                    }
-                }
-            )*
+impl FfiType {
+    pub(crate) fn parse(name: &str) -> Result<Self, String> {
+        match name {
+            "i32" => Ok(FfiType::I32),
+            "u32" => Ok(FfiType::U32),
+            "i64" => Ok(FfiType::I64),
+            "u64" => Ok(FfiType::U64),
+            "isize" => Ok(FfiType::Isize),
+            "usize" => Ok(FfiType::Usize),
+            "f32" => Ok(FfiType::F32),
+            "f64" => Ok(FfiType::F64),
             _ => Err(format!(
-                "Unsupported FFI signature mapping: {:?} -> {}",
-                $args_sig, $ret_sig
+                "Unsupported FFI type '{name}'. Supported types: i32, u32, i64, u64, isize, usize, f32, f64."
             )),
         }
     }
+
+    #[allow(dead_code)]
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            FfiType::I32 => "i32",
+            FfiType::U32 => "u32",
+            FfiType::I64 => "i64",
+            FfiType::U64 => "u64",
+            FfiType::Isize => "isize",
+            FfiType::Usize => "usize",
+            FfiType::F32 => "f32",
+            FfiType::F64 => "f64",
+        }
+    }
+
+    pub(crate) fn byte_width(self) -> usize {
+        match self {
+            FfiType::I32 | FfiType::U32 | FfiType::F32 => 4,
+            FfiType::I64 | FfiType::U64 | FfiType::F64 => 8,
+            FfiType::Isize | FfiType::Usize => std::mem::size_of::<usize>(),
+        }
+    }
+
+    pub(crate) fn code(self) -> u8 {
+        self as u8
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct SignatureCode(pub(crate) u32);
+
+impl SignatureCode {
+    pub(crate) fn new(args: &[FfiType], ret: FfiType) -> Result<Self, String> {
+        if args.len() > 8 {
+            return Err(format!(
+                "FFI signatures support at most 8 arguments; received {}.",
+                args.len()
+            ));
+        }
+        let mut code = (args.len() as u32) & 0x0F;
+        code |= ((ret.code() as u32) & 0x07) << 4;
+        for (i, &arg) in args.iter().enumerate() {
+            let shift = 7 + i * 3;
+            code |= ((arg.code() as u32) & 0x07) << shift;
+        }
+        Ok(SignatureCode(code))
+    }
+
+    pub(crate) fn from_str_sigs(args_sig: &[String], ret_sig: &str) -> Result<Self, String> {
+        if args_sig.len() > 8 {
+            return Err(format!(
+                "FFI signatures support at most 8 arguments; received {}.",
+                args_sig.len()
+            ));
+        }
+        let ret = FfiType::parse(ret_sig)?;
+        let mut code = (args_sig.len() as u32) & 0x0F;
+        code |= ((ret.code() as u32) & 0x07) << 4;
+        for (i, arg_str) in args_sig.iter().enumerate() {
+            let arg = FfiType::parse(arg_str)?;
+            let shift = 7 + i * 3;
+            code |= ((arg.code() as u32) & 0x07) << shift;
+        }
+        Ok(SignatureCode(code))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParsedFfiSignature {
+    pub(crate) args: Vec<FfiType>,
+    pub(crate) ret: FfiType,
+    pub(crate) encoded: SignatureCode,
+    pub(crate) expected_payload_len: usize,
+}
+
+impl ParsedFfiSignature {
+    pub(crate) fn parse(args_sig: &[String], ret_sig: &str) -> Result<Self, String> {
+        if args_sig.len() > 8 {
+            return Err(format!(
+                "FFI signatures support at most 8 arguments; received {}.",
+                args_sig.len()
+            ));
+        }
+        let mut args = Vec::with_capacity(args_sig.len());
+        let mut expected_payload_len = 0;
+        for arg_str in args_sig {
+            let t = FfiType::parse(arg_str)?;
+            expected_payload_len += t.byte_width();
+            args.push(t);
+        }
+        let ret = FfiType::parse(ret_sig)?;
+        let encoded = SignatureCode::new(&args, ret)?;
+        Ok(ParsedFfiSignature {
+            args,
+            ret,
+            encoded,
+            expected_payload_len,
+        })
+    }
+}
+
+pub(crate) trait FfiArg: Sized {
+    fn read(payload: &[u8], offset: &mut usize) -> Result<Self, String>;
+}
+
+impl FfiArg for i32 {
+    fn read(payload: &[u8], offset: &mut usize) -> Result<Self, String> {
+        if *offset + 4 > payload.len() {
+            return Err("Payload too short for i32".to_string());
+        }
+        let val = i32::from_ne_bytes(payload[*offset..*offset + 4].try_into().unwrap());
+        *offset += 4;
+        Ok(val)
+    }
+}
+
+impl FfiArg for u32 {
+    fn read(payload: &[u8], offset: &mut usize) -> Result<Self, String> {
+        if *offset + 4 > payload.len() {
+            return Err("Payload too short for u32".to_string());
+        }
+        let val = u32::from_ne_bytes(payload[*offset..*offset + 4].try_into().unwrap());
+        *offset += 4;
+        Ok(val)
+    }
+}
+
+impl FfiArg for i64 {
+    fn read(payload: &[u8], offset: &mut usize) -> Result<Self, String> {
+        if *offset + 8 > payload.len() {
+            return Err("Payload too short for i64".to_string());
+        }
+        let val = i64::from_ne_bytes(payload[*offset..*offset + 8].try_into().unwrap());
+        *offset += 8;
+        Ok(val)
+    }
+}
+
+impl FfiArg for u64 {
+    fn read(payload: &[u8], offset: &mut usize) -> Result<Self, String> {
+        if *offset + 8 > payload.len() {
+            return Err("Payload too short for u64".to_string());
+        }
+        let val = u64::from_ne_bytes(payload[*offset..*offset + 8].try_into().unwrap());
+        *offset += 8;
+        Ok(val)
+    }
+}
+
+impl FfiArg for isize {
+    fn read(payload: &[u8], offset: &mut usize) -> Result<Self, String> {
+        let size = std::mem::size_of::<isize>();
+        if *offset + size > payload.len() {
+            return Err("Payload too short for isize".to_string());
+        }
+        let val = isize::from_ne_bytes(payload[*offset..*offset + size].try_into().unwrap());
+        *offset += size;
+        Ok(val)
+    }
+}
+
+impl FfiArg for usize {
+    fn read(payload: &[u8], offset: &mut usize) -> Result<Self, String> {
+        let size = std::mem::size_of::<usize>();
+        if *offset + size > payload.len() {
+            return Err("Payload too short for usize".to_string());
+        }
+        let val = usize::from_ne_bytes(payload[*offset..*offset + size].try_into().unwrap());
+        *offset += size;
+        Ok(val)
+    }
+}
+
+impl FfiArg for f32 {
+    fn read(payload: &[u8], offset: &mut usize) -> Result<Self, String> {
+        if *offset + 4 > payload.len() {
+            return Err("Payload too short for f32".to_string());
+        }
+        let val = f32::from_ne_bytes(payload[*offset..*offset + 4].try_into().unwrap());
+        *offset += 4;
+        Ok(val)
+    }
+}
+
+impl FfiArg for f64 {
+    fn read(payload: &[u8], offset: &mut usize) -> Result<Self, String> {
+        if *offset + 8 > payload.len() {
+            return Err("Payload too short for f64".to_string());
+        }
+        let val = f64::from_ne_bytes(payload[*offset..*offset + 8].try_into().unwrap());
+        *offset += 8;
+        Ok(val)
+    }
+}
+
+pub(crate) trait FfiReturn: Sized {
+    fn into_ffi_bytes(self) -> Vec<u8>;
+}
+
+impl FfiReturn for i32 {
+    fn into_ffi_bytes(self) -> Vec<u8> {
+        self.to_ne_bytes().to_vec()
+    }
+}
+impl FfiReturn for u32 {
+    fn into_ffi_bytes(self) -> Vec<u8> {
+        self.to_ne_bytes().to_vec()
+    }
+}
+impl FfiReturn for i64 {
+    fn into_ffi_bytes(self) -> Vec<u8> {
+        self.to_ne_bytes().to_vec()
+    }
+}
+impl FfiReturn for u64 {
+    fn into_ffi_bytes(self) -> Vec<u8> {
+        self.to_ne_bytes().to_vec()
+    }
+}
+impl FfiReturn for isize {
+    fn into_ffi_bytes(self) -> Vec<u8> {
+        self.to_ne_bytes().to_vec()
+    }
+}
+impl FfiReturn for usize {
+    fn into_ffi_bytes(self) -> Vec<u8> {
+        self.to_ne_bytes().to_vec()
+    }
+}
+impl FfiReturn for f32 {
+    fn into_ffi_bytes(self) -> Vec<u8> {
+        self.to_ne_bytes().to_vec()
+    }
+}
+impl FfiReturn for f64 {
+    fn into_ffi_bytes(self) -> Vec<u8> {
+        self.to_ne_bytes().to_vec()
+    }
+}
+
+pub(crate) type FfiThunk =
+    unsafe fn(function_ptr: *const std::ffi::c_void, payload: &[u8]) -> Result<Vec<u8>, String>;
+
+pub(crate) unsafe fn invoke0<R: FfiReturn>(
+    function_ptr: *const std::ffi::c_void,
+    payload: &[u8],
+) -> Result<Vec<u8>, String> {
+    if !payload.is_empty() {
+        return Err(format!(
+            "Payload length mismatch for 0-arg call: expected 0, got {}",
+            payload.len()
+        ));
+    }
+    let res = unsafe {
+        let f: unsafe extern "C" fn() -> R = std::mem::transmute(function_ptr);
+        f()
+    };
+    Ok(res.into_ffi_bytes())
+}
+
+pub(crate) unsafe fn invoke1<A: FfiArg, R: FfiReturn>(
+    function_ptr: *const std::ffi::c_void,
+    payload: &[u8],
+) -> Result<Vec<u8>, String> {
+    let mut offset = 0;
+    let a = A::read(payload, &mut offset)?;
+    if offset != payload.len() {
+        return Err(format!(
+            "Payload length mismatch: consumed {offset} bytes, payload had {}",
+            payload.len()
+        ));
+    }
+    let res = unsafe {
+        let f: unsafe extern "C" fn(A) -> R = std::mem::transmute(function_ptr);
+        f(a)
+    };
+    Ok(res.into_ffi_bytes())
+}
+
+pub(crate) unsafe fn invoke2<A: FfiArg, B: FfiArg, R: FfiReturn>(
+    function_ptr: *const std::ffi::c_void,
+    payload: &[u8],
+) -> Result<Vec<u8>, String> {
+    let mut offset = 0;
+    let a = A::read(payload, &mut offset)?;
+    let b = B::read(payload, &mut offset)?;
+    if offset != payload.len() {
+        return Err(format!(
+            "Payload length mismatch: consumed {offset} bytes, payload had {}",
+            payload.len()
+        ));
+    }
+    let res = unsafe {
+        let f: unsafe extern "C" fn(A, B) -> R = std::mem::transmute(function_ptr);
+        f(a, b)
+    };
+    Ok(res.into_ffi_bytes())
+}
+
+pub(crate) unsafe fn invoke3<A: FfiArg, B: FfiArg, C: FfiArg, R: FfiReturn>(
+    function_ptr: *const std::ffi::c_void,
+    payload: &[u8],
+) -> Result<Vec<u8>, String> {
+    let mut offset = 0;
+    let a = A::read(payload, &mut offset)?;
+    let b = B::read(payload, &mut offset)?;
+    let c = C::read(payload, &mut offset)?;
+    if offset != payload.len() {
+        return Err(format!(
+            "Payload length mismatch: consumed {offset} bytes, payload had {}",
+            payload.len()
+        ));
+    }
+    let res = unsafe {
+        let f: unsafe extern "C" fn(A, B, C) -> R = std::mem::transmute(function_ptr);
+        f(a, b, c)
+    };
+    Ok(res.into_ffi_bytes())
+}
+
+pub(crate) unsafe fn invoke4<A: FfiArg, B: FfiArg, C: FfiArg, D: FfiArg, R: FfiReturn>(
+    function_ptr: *const std::ffi::c_void,
+    payload: &[u8],
+) -> Result<Vec<u8>, String> {
+    let mut offset = 0;
+    let a = A::read(payload, &mut offset)?;
+    let b = B::read(payload, &mut offset)?;
+    let c = C::read(payload, &mut offset)?;
+    let d = D::read(payload, &mut offset)?;
+    if offset != payload.len() {
+        return Err(format!(
+            "Payload length mismatch: consumed {offset} bytes, payload had {}",
+            payload.len()
+        ));
+    }
+    let res = unsafe {
+        let f: unsafe extern "C" fn(A, B, C, D) -> R = std::mem::transmute(function_ptr);
+        f(a, b, c, d)
+    };
+    Ok(res.into_ffi_bytes())
+}
+
+pub(crate) unsafe fn invoke5<
+    A: FfiArg,
+    B: FfiArg,
+    C: FfiArg,
+    D: FfiArg,
+    E: FfiArg,
+    R: FfiReturn,
+>(
+    function_ptr: *const std::ffi::c_void,
+    payload: &[u8],
+) -> Result<Vec<u8>, String> {
+    let mut offset = 0;
+    let a = A::read(payload, &mut offset)?;
+    let b = B::read(payload, &mut offset)?;
+    let c = C::read(payload, &mut offset)?;
+    let d = D::read(payload, &mut offset)?;
+    let e = E::read(payload, &mut offset)?;
+    if offset != payload.len() {
+        return Err(format!(
+            "Payload length mismatch: consumed {offset} bytes, payload had {}",
+            payload.len()
+        ));
+    }
+    let res = unsafe {
+        let f: unsafe extern "C" fn(A, B, C, D, E) -> R = std::mem::transmute(function_ptr);
+        f(a, b, c, d, e)
+    };
+    Ok(res.into_ffi_bytes())
+}
+
+pub(crate) unsafe fn invoke6<
+    A: FfiArg,
+    B: FfiArg,
+    C: FfiArg,
+    D: FfiArg,
+    E: FfiArg,
+    F: FfiArg,
+    R: FfiReturn,
+>(
+    function_ptr: *const std::ffi::c_void,
+    payload: &[u8],
+) -> Result<Vec<u8>, String> {
+    let mut offset = 0;
+    let a = A::read(payload, &mut offset)?;
+    let b = B::read(payload, &mut offset)?;
+    let c = C::read(payload, &mut offset)?;
+    let d = D::read(payload, &mut offset)?;
+    let e = E::read(payload, &mut offset)?;
+    let f_arg = F::read(payload, &mut offset)?;
+    if offset != payload.len() {
+        return Err(format!(
+            "Payload length mismatch: consumed {offset} bytes, payload had {}",
+            payload.len()
+        ));
+    }
+    let res = unsafe {
+        let func: unsafe extern "C" fn(A, B, C, D, E, F) -> R = std::mem::transmute(function_ptr);
+        func(a, b, c, d, e, f_arg)
+    };
+    Ok(res.into_ffi_bytes())
+}
+
+pub(crate) unsafe fn invoke7<
+    A: FfiArg,
+    B: FfiArg,
+    C: FfiArg,
+    D: FfiArg,
+    E: FfiArg,
+    F: FfiArg,
+    G: FfiArg,
+    R: FfiReturn,
+>(
+    function_ptr: *const std::ffi::c_void,
+    payload: &[u8],
+) -> Result<Vec<u8>, String> {
+    let mut offset = 0;
+    let a = A::read(payload, &mut offset)?;
+    let b = B::read(payload, &mut offset)?;
+    let c = C::read(payload, &mut offset)?;
+    let d = D::read(payload, &mut offset)?;
+    let e = E::read(payload, &mut offset)?;
+    let f_arg = F::read(payload, &mut offset)?;
+    let g = G::read(payload, &mut offset)?;
+    if offset != payload.len() {
+        return Err(format!(
+            "Payload length mismatch: consumed {offset} bytes, payload had {}",
+            payload.len()
+        ));
+    }
+    let res = unsafe {
+        let func: unsafe extern "C" fn(A, B, C, D, E, F, G) -> R =
+            std::mem::transmute(function_ptr);
+        func(a, b, c, d, e, f_arg, g)
+    };
+    Ok(res.into_ffi_bytes())
+}
+
+pub(crate) unsafe fn invoke8<
+    A: FfiArg,
+    B: FfiArg,
+    C: FfiArg,
+    D: FfiArg,
+    E: FfiArg,
+    F: FfiArg,
+    G: FfiArg,
+    H: FfiArg,
+    R: FfiReturn,
+>(
+    function_ptr: *const std::ffi::c_void,
+    payload: &[u8],
+) -> Result<Vec<u8>, String> {
+    let mut offset = 0;
+    let a = A::read(payload, &mut offset)?;
+    let b = B::read(payload, &mut offset)?;
+    let c = C::read(payload, &mut offset)?;
+    let d = D::read(payload, &mut offset)?;
+    let e = E::read(payload, &mut offset)?;
+    let f_arg = F::read(payload, &mut offset)?;
+    let g = G::read(payload, &mut offset)?;
+    let h = H::read(payload, &mut offset)?;
+    if offset != payload.len() {
+        return Err(format!(
+            "Payload length mismatch: consumed {offset} bytes, payload had {}",
+            payload.len()
+        ));
+    }
+    let res = unsafe {
+        let func: unsafe extern "C" fn(A, B, C, D, E, F, G, H) -> R =
+            std::mem::transmute(function_ptr);
+        func(a, b, c, d, e, f_arg, g, h)
+    };
+    Ok(res.into_ffi_bytes())
+}
+
+macro_rules! match_ret_0 {
+    ($ret:expr) => {
+        match $ret {
+            FfiType::I32 => Some(invoke0::<i32>),
+            FfiType::U32 => Some(invoke0::<u32>),
+            FfiType::I64 => Some(invoke0::<i64>),
+            FfiType::U64 => Some(invoke0::<u64>),
+            FfiType::Isize => Some(invoke0::<isize>),
+            FfiType::Usize => Some(invoke0::<usize>),
+            FfiType::F32 => Some(invoke0::<f32>),
+            FfiType::F64 => Some(invoke0::<f64>),
+        }
+    };
+}
+
+macro_rules! match_ret_1 {
+    ($A:ty, $ret:expr) => {
+        match $ret {
+            FfiType::I32 => Some(invoke1::<$A, i32>),
+            FfiType::U32 => Some(invoke1::<$A, u32>),
+            FfiType::I64 => Some(invoke1::<$A, i64>),
+            FfiType::U64 => Some(invoke1::<$A, u64>),
+            FfiType::Isize => Some(invoke1::<$A, isize>),
+            FfiType::Usize => Some(invoke1::<$A, usize>),
+            FfiType::F32 => Some(invoke1::<$A, f32>),
+            FfiType::F64 => Some(invoke1::<$A, f64>),
+        }
+    };
+}
+
+macro_rules! match_arg_1 {
+    ($arg0:expr, $ret:expr) => {
+        match $arg0 {
+            FfiType::I32 => match_ret_1!(i32, $ret),
+            FfiType::U32 => match_ret_1!(u32, $ret),
+            FfiType::I64 => match_ret_1!(i64, $ret),
+            FfiType::U64 => match_ret_1!(u64, $ret),
+            FfiType::Isize => match_ret_1!(isize, $ret),
+            FfiType::Usize => match_ret_1!(usize, $ret),
+            FfiType::F32 => match_ret_1!(f32, $ret),
+            FfiType::F64 => match_ret_1!(f64, $ret),
+        }
+    };
+}
+
+macro_rules! match_ret_2 {
+    ($A:ty, $B:ty, $ret:expr) => {
+        match $ret {
+            FfiType::I32 => Some(invoke2::<$A, $B, i32>),
+            FfiType::U32 => Some(invoke2::<$A, $B, u32>),
+            FfiType::I64 => Some(invoke2::<$A, $B, i64>),
+            FfiType::U64 => Some(invoke2::<$A, $B, u64>),
+            FfiType::Isize => Some(invoke2::<$A, $B, isize>),
+            FfiType::Usize => Some(invoke2::<$A, $B, usize>),
+            FfiType::F32 => Some(invoke2::<$A, $B, f32>),
+            FfiType::F64 => Some(invoke2::<$A, $B, f64>),
+        }
+    };
+}
+
+macro_rules! match_arg1_2 {
+    ($A:ty, $arg1:expr, $ret:expr) => {
+        match $arg1 {
+            FfiType::I32 => match_ret_2!($A, i32, $ret),
+            FfiType::U32 => match_ret_2!($A, u32, $ret),
+            FfiType::I64 => match_ret_2!($A, i64, $ret),
+            FfiType::U64 => match_ret_2!($A, u64, $ret),
+            FfiType::Isize => match_ret_2!($A, isize, $ret),
+            FfiType::Usize => match_ret_2!($A, usize, $ret),
+            FfiType::F32 => match_ret_2!($A, f32, $ret),
+            FfiType::F64 => match_ret_2!($A, f64, $ret),
+        }
+    };
+}
+
+macro_rules! match_arg0_2 {
+    ($arg0:expr, $arg1:expr, $ret:expr) => {
+        match $arg0 {
+            FfiType::I32 => match_arg1_2!(i32, $arg1, $ret),
+            FfiType::U32 => match_arg1_2!(u32, $arg1, $ret),
+            FfiType::I64 => match_arg1_2!(i64, $arg1, $ret),
+            FfiType::U64 => match_arg1_2!(u64, $arg1, $ret),
+            FfiType::Isize => match_arg1_2!(isize, $arg1, $ret),
+            FfiType::Usize => match_arg1_2!(usize, $arg1, $ret),
+            FfiType::F32 => match_arg1_2!(f32, $arg1, $ret),
+            FfiType::F64 => match_arg1_2!(f64, $arg1, $ret),
+        }
+    };
+}
+
+macro_rules! match_ret_3_homo {
+    ($A:ty, $ret:expr) => {
+        match $ret {
+            FfiType::I32 => Some(invoke3::<$A, $A, $A, i32>),
+            FfiType::U32 => Some(invoke3::<$A, $A, $A, u32>),
+            FfiType::I64 => Some(invoke3::<$A, $A, $A, i64>),
+            FfiType::U64 => Some(invoke3::<$A, $A, $A, u64>),
+            FfiType::Isize => Some(invoke3::<$A, $A, $A, isize>),
+            FfiType::Usize => Some(invoke3::<$A, $A, $A, usize>),
+            FfiType::F32 => Some(invoke3::<$A, $A, $A, f32>),
+            FfiType::F64 => Some(invoke3::<$A, $A, $A, f64>),
+        }
+    };
+}
+
+macro_rules! match_arg_3_homo {
+    ($arg0:expr, $ret:expr) => {
+        match $arg0 {
+            FfiType::I32 => match_ret_3_homo!(i32, $ret),
+            FfiType::U32 => match_ret_3_homo!(u32, $ret),
+            FfiType::I64 => match_ret_3_homo!(i64, $ret),
+            FfiType::U64 => match_ret_3_homo!(u64, $ret),
+            FfiType::Isize => match_ret_3_homo!(isize, $ret),
+            FfiType::Usize => match_ret_3_homo!(usize, $ret),
+            FfiType::F32 => match_ret_3_homo!(f32, $ret),
+            FfiType::F64 => match_ret_3_homo!(f64, $ret),
+        }
+    };
+}
+
+macro_rules! match_ret_3_mixed1 {
+    ($ret:expr) => {
+        match $ret {
+            FfiType::I32 => Some(invoke3::<i32, i32, f64, i32>),
+            FfiType::U32 => Some(invoke3::<i32, i32, f64, u32>),
+            FfiType::I64 => Some(invoke3::<i32, i32, f64, i64>),
+            FfiType::U64 => Some(invoke3::<i32, i32, f64, u64>),
+            FfiType::Isize => Some(invoke3::<i32, i32, f64, isize>),
+            FfiType::Usize => Some(invoke3::<i32, i32, f64, usize>),
+            FfiType::F32 => Some(invoke3::<i32, i32, f64, f32>),
+            FfiType::F64 => Some(invoke3::<i32, i32, f64, f64>),
+        }
+    };
+}
+
+macro_rules! match_ret_3_mixed2 {
+    ($ret:expr) => {
+        match $ret {
+            FfiType::I32 => Some(invoke3::<f64, f64, i32, i32>),
+            FfiType::U32 => Some(invoke3::<f64, f64, i32, u32>),
+            FfiType::I64 => Some(invoke3::<f64, f64, i32, i64>),
+            FfiType::U64 => Some(invoke3::<f64, f64, i32, u64>),
+            FfiType::Isize => Some(invoke3::<f64, f64, i32, isize>),
+            FfiType::Usize => Some(invoke3::<f64, f64, i32, usize>),
+            FfiType::F32 => Some(invoke3::<f64, f64, i32, f32>),
+            FfiType::F64 => Some(invoke3::<f64, f64, i32, f64>),
+        }
+    };
+}
+
+macro_rules! match_ret_4_homo {
+    ($A:ty, $ret:expr) => {
+        match $ret {
+            FfiType::I32 => Some(invoke4::<$A, $A, $A, $A, i32>),
+            FfiType::U32 => Some(invoke4::<$A, $A, $A, $A, u32>),
+            FfiType::I64 => Some(invoke4::<$A, $A, $A, $A, i64>),
+            FfiType::U64 => Some(invoke4::<$A, $A, $A, $A, u64>),
+            FfiType::Isize => Some(invoke4::<$A, $A, $A, $A, isize>),
+            FfiType::Usize => Some(invoke4::<$A, $A, $A, $A, usize>),
+            FfiType::F32 => Some(invoke4::<$A, $A, $A, $A, f32>),
+            FfiType::F64 => Some(invoke4::<$A, $A, $A, $A, f64>),
+        }
+    };
+}
+
+macro_rules! match_arg_4_homo {
+    ($arg0:expr, $ret:expr) => {
+        match $arg0 {
+            FfiType::I32 => match_ret_4_homo!(i32, $ret),
+            FfiType::U32 => match_ret_4_homo!(u32, $ret),
+            FfiType::I64 => match_ret_4_homo!(i64, $ret),
+            FfiType::U64 => match_ret_4_homo!(u64, $ret),
+            FfiType::Isize => match_ret_4_homo!(isize, $ret),
+            FfiType::Usize => match_ret_4_homo!(usize, $ret),
+            FfiType::F32 => match_ret_4_homo!(f32, $ret),
+            FfiType::F64 => match_ret_4_homo!(f64, $ret),
+        }
+    };
+}
+
+macro_rules! match_ret_4_mixed {
+    ($ret:expr) => {
+        match $ret {
+            FfiType::I32 => Some(invoke4::<i32, i32, f64, f64, i32>),
+            FfiType::U32 => Some(invoke4::<i32, i32, f64, f64, u32>),
+            FfiType::I64 => Some(invoke4::<i32, i32, f64, f64, i64>),
+            FfiType::U64 => Some(invoke4::<i32, i32, f64, f64, u64>),
+            FfiType::Isize => Some(invoke4::<i32, i32, f64, f64, isize>),
+            FfiType::Usize => Some(invoke4::<i32, i32, f64, f64, usize>),
+            FfiType::F32 => Some(invoke4::<i32, i32, f64, f64, f32>),
+            FfiType::F64 => Some(invoke4::<i32, i32, f64, f64, f64>),
+        }
+    };
+}
+
+macro_rules! match_ret_5_homo {
+    ($A:ty, $ret:expr) => {
+        match $ret {
+            FfiType::I32 => Some(invoke5::<$A, $A, $A, $A, $A, i32>),
+            FfiType::U32 => Some(invoke5::<$A, $A, $A, $A, $A, u32>),
+            FfiType::I64 => Some(invoke5::<$A, $A, $A, $A, $A, i64>),
+            FfiType::U64 => Some(invoke5::<$A, $A, $A, $A, $A, u64>),
+            FfiType::Isize => Some(invoke5::<$A, $A, $A, $A, $A, isize>),
+            FfiType::Usize => Some(invoke5::<$A, $A, $A, $A, $A, usize>),
+            FfiType::F32 => Some(invoke5::<$A, $A, $A, $A, $A, f32>),
+            FfiType::F64 => Some(invoke5::<$A, $A, $A, $A, $A, f64>),
+        }
+    };
+}
+
+macro_rules! match_arg_5_homo {
+    ($arg0:expr, $ret:expr) => {
+        match $arg0 {
+            FfiType::I32 => match_ret_5_homo!(i32, $ret),
+            FfiType::U32 => match_ret_5_homo!(u32, $ret),
+            FfiType::I64 => match_ret_5_homo!(i64, $ret),
+            FfiType::U64 => match_ret_5_homo!(u64, $ret),
+            FfiType::Isize => match_ret_5_homo!(isize, $ret),
+            FfiType::Usize => match_ret_5_homo!(usize, $ret),
+            FfiType::F32 => match_ret_5_homo!(f32, $ret),
+            FfiType::F64 => match_ret_5_homo!(f64, $ret),
+        }
+    };
+}
+
+macro_rules! match_ret_6_homo {
+    ($A:ty, $ret:expr) => {
+        match $ret {
+            FfiType::I32 => Some(invoke6::<$A, $A, $A, $A, $A, $A, i32>),
+            FfiType::U32 => Some(invoke6::<$A, $A, $A, $A, $A, $A, u32>),
+            FfiType::I64 => Some(invoke6::<$A, $A, $A, $A, $A, $A, i64>),
+            FfiType::U64 => Some(invoke6::<$A, $A, $A, $A, $A, $A, u64>),
+            FfiType::Isize => Some(invoke6::<$A, $A, $A, $A, $A, $A, isize>),
+            FfiType::Usize => Some(invoke6::<$A, $A, $A, $A, $A, $A, usize>),
+            FfiType::F32 => Some(invoke6::<$A, $A, $A, $A, $A, $A, f32>),
+            FfiType::F64 => Some(invoke6::<$A, $A, $A, $A, $A, $A, f64>),
+        }
+    };
+}
+
+macro_rules! match_arg_6_homo {
+    ($arg0:expr, $ret:expr) => {
+        match $arg0 {
+            FfiType::I32 => match_ret_6_homo!(i32, $ret),
+            FfiType::U32 => match_ret_6_homo!(u32, $ret),
+            FfiType::I64 => match_ret_6_homo!(i64, $ret),
+            FfiType::U64 => match_ret_6_homo!(u64, $ret),
+            FfiType::Isize => match_ret_6_homo!(isize, $ret),
+            FfiType::Usize => match_ret_6_homo!(usize, $ret),
+            FfiType::F32 => match_ret_6_homo!(f32, $ret),
+            FfiType::F64 => match_ret_6_homo!(f64, $ret),
+        }
+    };
+}
+
+macro_rules! match_ret_7_homo {
+    ($A:ty, $ret:expr) => {
+        match $ret {
+            FfiType::I32 => Some(invoke7::<$A, $A, $A, $A, $A, $A, $A, i32>),
+            FfiType::U32 => Some(invoke7::<$A, $A, $A, $A, $A, $A, $A, u32>),
+            FfiType::I64 => Some(invoke7::<$A, $A, $A, $A, $A, $A, $A, i64>),
+            FfiType::U64 => Some(invoke7::<$A, $A, $A, $A, $A, $A, $A, u64>),
+            FfiType::Isize => Some(invoke7::<$A, $A, $A, $A, $A, $A, $A, isize>),
+            FfiType::Usize => Some(invoke7::<$A, $A, $A, $A, $A, $A, $A, usize>),
+            FfiType::F32 => Some(invoke7::<$A, $A, $A, $A, $A, $A, $A, f32>),
+            FfiType::F64 => Some(invoke7::<$A, $A, $A, $A, $A, $A, $A, f64>),
+        }
+    };
+}
+
+macro_rules! match_arg_7_homo {
+    ($arg0:expr, $ret:expr) => {
+        match $arg0 {
+            FfiType::I32 => match_ret_7_homo!(i32, $ret),
+            FfiType::U32 => match_ret_7_homo!(u32, $ret),
+            FfiType::I64 => match_ret_7_homo!(i64, $ret),
+            FfiType::U64 => match_ret_7_homo!(u64, $ret),
+            FfiType::Isize => match_ret_7_homo!(isize, $ret),
+            FfiType::Usize => match_ret_7_homo!(usize, $ret),
+            FfiType::F32 => match_ret_7_homo!(f32, $ret),
+            FfiType::F64 => match_ret_7_homo!(f64, $ret),
+        }
+    };
+}
+
+macro_rules! match_ret_8_homo {
+    ($A:ty, $ret:expr) => {
+        match $ret {
+            FfiType::I32 => Some(invoke8::<$A, $A, $A, $A, $A, $A, $A, $A, i32>),
+            FfiType::U32 => Some(invoke8::<$A, $A, $A, $A, $A, $A, $A, $A, u32>),
+            FfiType::I64 => Some(invoke8::<$A, $A, $A, $A, $A, $A, $A, $A, i64>),
+            FfiType::U64 => Some(invoke8::<$A, $A, $A, $A, $A, $A, $A, $A, u64>),
+            FfiType::Isize => Some(invoke8::<$A, $A, $A, $A, $A, $A, $A, $A, isize>),
+            FfiType::Usize => Some(invoke8::<$A, $A, $A, $A, $A, $A, $A, $A, usize>),
+            FfiType::F32 => Some(invoke8::<$A, $A, $A, $A, $A, $A, $A, $A, f32>),
+            FfiType::F64 => Some(invoke8::<$A, $A, $A, $A, $A, $A, $A, $A, f64>),
+        }
+    };
+}
+
+macro_rules! match_arg_8_homo {
+    ($arg0:expr, $ret:expr) => {
+        match $arg0 {
+            FfiType::I32 => match_ret_8_homo!(i32, $ret),
+            FfiType::U32 => match_ret_8_homo!(u32, $ret),
+            FfiType::I64 => match_ret_8_homo!(i64, $ret),
+            FfiType::U64 => match_ret_8_homo!(u64, $ret),
+            FfiType::Isize => match_ret_8_homo!(isize, $ret),
+            FfiType::Usize => match_ret_8_homo!(usize, $ret),
+            FfiType::F32 => match_ret_8_homo!(f32, $ret),
+            FfiType::F64 => match_ret_8_homo!(f64, $ret),
+        }
+    };
+}
+
+pub(crate) fn resolve_ffi_thunk(signature: &ParsedFfiSignature) -> Option<FfiThunk> {
+    match signature.args.as_slice() {
+        [] => match_ret_0!(signature.ret),
+        [a0] => match_arg_1!(*a0, signature.ret),
+        [a0, a1] => match_arg0_2!(*a0, *a1, signature.ret),
+        [a0, a1, a2] => {
+            if a0 == a1 && a1 == a2 {
+                match_arg_3_homo!(*a0, signature.ret)
+            } else if *a0 == FfiType::I32 && *a1 == FfiType::I32 && *a2 == FfiType::F64 {
+                match_ret_3_mixed1!(signature.ret)
+            } else if *a0 == FfiType::F64 && *a1 == FfiType::F64 && *a2 == FfiType::I32 {
+                match_ret_3_mixed2!(signature.ret)
+            } else {
+                None
+            }
+        }
+        [a0, a1, a2, a3] => {
+            if a0 == a1 && a1 == a2 && a2 == a3 {
+                match_arg_4_homo!(*a0, signature.ret)
+            } else if *a0 == FfiType::I32
+                && *a1 == FfiType::I32
+                && *a2 == FfiType::F64
+                && *a3 == FfiType::F64
+            {
+                match_ret_4_mixed!(signature.ret)
+            } else {
+                None
+            }
+        }
+        [a0, a1, a2, a3, a4] => {
+            if a0 == a1 && a1 == a2 && a2 == a3 && a3 == a4 {
+                match_arg_5_homo!(*a0, signature.ret)
+            } else {
+                None
+            }
+        }
+        [a0, a1, a2, a3, a4, a5] => {
+            if a0 == a1 && a1 == a2 && a2 == a3 && a3 == a4 && a4 == a5 {
+                match_arg_6_homo!(*a0, signature.ret)
+            } else {
+                None
+            }
+        }
+        [a0, a1, a2, a3, a4, a5, a6] => {
+            if a0 == a1 && a1 == a2 && a2 == a3 && a3 == a4 && a4 == a5 && a5 == a6 {
+                match_arg_7_homo!(*a0, signature.ret)
+            } else {
+                None
+            }
+        }
+        [a0, a1, a2, a3, a4, a5, a6, a7] => {
+            if a0 == a1 && a1 == a2 && a2 == a3 && a3 == a4 && a4 == a5 && a5 == a6 && a6 == a7 {
+                match_arg_8_homo!(*a0, signature.ret)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PreparedFfiCall {
+    pub(crate) function_ptr: usize,
+    pub(crate) thunk: FfiThunk,
+    pub(crate) expected_payload_len: usize,
 }
 
 pub(crate) fn execute_dylib_ffi(
@@ -558,20 +1359,7 @@ pub(crate) fn execute_dylib_ffi(
     ret_sig: &str,
     payload: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let mut expected_len = 0;
-    for arg in args_sig {
-        match arg.as_str() {
-            "i32" | "f32" => expected_len += 4,
-            "i64" | "f64" => expected_len += 8,
-            _ => return Err(format!("Unsupported argument type: {arg}")),
-        }
-    }
-    if payload.len() != expected_len {
-        return Err(format!(
-            "Payload length mismatch for FFI call: expected {expected_len} bytes, got {}",
-            payload.len()
-        ));
-    }
+    let sig_code = SignatureCode::from_str_sigs(args_sig, ret_sig)?;
 
     let registry = DYLIB_PLUGINS
         .get()
@@ -585,7 +1373,38 @@ pub(crate) fn execute_dylib_ffi(
             .ok_or_else(|| format!("Dynamic library '{name}' not registered"))?
     };
 
-    // Validate signature against exported metadata if available
+    let cached_call = {
+        let cache_read = plugin
+            .ffi_call_cache
+            .read()
+            .map_err(|e| format!("FFI call cache read lock poisoned: {e}"))?;
+        cache_read
+            .get(symbol_name)
+            .and_then(|sym_map| sym_map.get(&sig_code).copied())
+    };
+
+    if let Some(prepared) = cached_call {
+        if payload.len() != prepared.expected_payload_len {
+            return Err(format!(
+                "Payload length mismatch for FFI call '{symbol_name}': expected {} bytes, received {}.",
+                prepared.expected_payload_len,
+                payload.len()
+            ));
+        }
+        return unsafe {
+            (prepared.thunk)(prepared.function_ptr as *const std::ffi::c_void, payload)
+        };
+    }
+
+    let parsed_sig = ParsedFfiSignature::parse(args_sig, ret_sig)?;
+    if payload.len() != parsed_sig.expected_payload_len {
+        return Err(format!(
+            "Payload length mismatch for FFI call '{symbol_name}': expected {} bytes, received {}.",
+            parsed_sig.expected_payload_len,
+            payload.len()
+        ));
+    }
+
     unsafe {
         let symbol: Result<
             libloading::Symbol<unsafe extern "C" fn() -> *const std::ffi::c_char>,
@@ -610,96 +1429,40 @@ pub(crate) fn execute_dylib_ffi(
         }
     }
 
-    let key = SymbolKey {
-        symbol_name: symbol_name.to_string(),
-        signature: Some((args_sig.to_vec(), ret_sig.to_string())),
+    let raw_ptr = unsafe {
+        let symbol: libloading::Symbol<*const std::ffi::c_void> = plugin
+            .lib
+            .get(symbol_name.as_bytes())
+            .map_err(|e| format!("Failed to find symbol '{symbol_name}': {e}"))?;
+        *symbol
     };
 
-    let cached_val = {
-        let cache = plugin
-            .symbol_cache
-            .read()
-            .map_err(|e| format!("Symbol cache read lock poisoned: {e}"))?;
-        cache.get(&key).cloned()
+    let thunk = resolve_ffi_thunk(&parsed_sig).ok_or_else(|| {
+        format!(
+            "Unsupported FFI signature mapping: ({}) -> {}",
+            args_sig.join(", "),
+            ret_sig
+        )
+    })?;
+
+    let prepared = PreparedFfiCall {
+        function_ptr: raw_ptr as usize,
+        thunk,
+        expected_payload_len: parsed_sig.expected_payload_len,
     };
 
-    let run_ptr_val = match cached_val {
-        Some(v) => v,
-        None => {
-            let mut cache = plugin
-                .symbol_cache
-                .write()
-                .map_err(|e| format!("Symbol cache write lock poisoned: {e}"))?;
+    {
+        let mut cache_write = plugin
+            .ffi_call_cache
+            .write()
+            .map_err(|e| format!("FFI call cache write lock poisoned: {e}"))?;
+        cache_write
+            .entry(symbol_name.to_string())
+            .or_default()
+            .insert(parsed_sig.encoded, prepared);
+    }
 
-            if let Some(&v) = cache.get(&key) {
-                v
-            } else {
-                unsafe {
-                    let symbol: libloading::Symbol<*const std::ffi::c_void> = plugin
-                        .lib
-                        .get(symbol_name.as_bytes())
-                        .map_err(|e| format!("Failed to find symbol '{symbol_name}': {e}"))?;
-                    let ptr = *symbol;
-                    let val = ptr as usize;
-                    cache.insert(key, val);
-                    val
-                }
-            }
-        }
-    };
-
-    let run_ptr = run_ptr_val as *const std::ffi::c_void;
-
-    let mut offset = 0;
-
-    match_ffi!(args_sig, ret_sig, run_ptr, payload, &mut offset, [
-        // 1 arg
-        ([i32] -> i32), ([i32] -> i64), ([i32] -> f32), ([i32] -> f64),
-        ([i64] -> i32), ([i64] -> i64), ([i64] -> f32), ([i64] -> f64),
-        ([f32] -> i32), ([f32] -> i64), ([f32] -> f32), ([f32] -> f64),
-        ([f64] -> i32), ([f64] -> i64), ([f64] -> f32), ([f64] -> f64),
-
-        // 2 args
-        ([i32, i32] -> i32), ([i32, i32] -> i64), ([i32, i32] -> f32), ([i32, i32] -> f64),
-        ([i32, f64] -> i32), ([i32, f64] -> i64), ([i32, f64] -> f32), ([i32, f64] -> f64),
-        ([f64, i32] -> i32), ([f64, i32] -> i64), ([f64, i32] -> f32), ([f64, i32] -> f64),
-        ([f64, f64] -> i32), ([f64, f64] -> i64), ([f64, f64] -> f32), ([f64, f64] -> f64),
-        ([i64, i64] -> i64), ([i64, i64] -> i32), ([i64, i64] -> f64),
-        ([f32, f32] -> f32), ([f32, f32] -> f64),
-
-        // 3 args
-        ([i32, i32, i32] -> i32), ([i32, i32, i32] -> i64), ([i32, i32, i32] -> f64),
-        ([f64, f64, f64] -> f64), ([f64, f64, f64] -> i32), ([f64, f64, f64] -> i64),
-        ([i32, i32, f64] -> i32), ([i32, i32, f64] -> f64),
-        ([f64, f64, i32] -> f64), ([f64, f64, i32] -> i32),
-        ([i64, i64, i64] -> i64),
-
-        // 4 args
-        ([i32, i32, i32, i32] -> i32), ([i32, i32, i32, i32] -> i64), ([i32, i32, i32, i32] -> f64),
-        ([f64, f64, f64, f64] -> f64), ([f64, f64, f64, f64] -> i32), ([f64, f64, f64, f64] -> i64),
-        ([i32, i32, f64, f64] -> i32), ([i32, i32, f64, f64] -> f64),
-        ([i64, i64, i64, i64] -> i64),
-
-        // 5 args
-        ([i32, i32, i32, i32, i32] -> i32), ([i32, i32, i32, i32, i32] -> i64), ([i32, i32, i32, i32, i32] -> f64),
-        ([f64, f64, f64, f64, f64] -> f64), ([f64, f64, f64, f64, f64] -> i32), ([f64, f64, f64, f64, f64] -> i64),
-        ([i64, i64, i64, i64, i64] -> i64),
-
-        // 6 args
-        ([i32, i32, i32, i32, i32, i32] -> i32), ([i32, i32, i32, i32, i32, i32] -> i64), ([i32, i32, i32, i32, i32, i32] -> f64),
-        ([f64, f64, f64, f64, f64, f64] -> f64), ([f64, f64, f64, f64, f64, f64] -> i32), ([f64, f64, f64, f64, f64, f64] -> i64),
-        ([i64, i64, i64, i64, i64, i64] -> i64),
-
-        // 7 args
-        ([i32, i32, i32, i32, i32, i32, i32] -> i32), ([i32, i32, i32, i32, i32, i32, i32] -> i64), ([i32, i32, i32, i32, i32, i32, i32] -> f64),
-        ([f64, f64, f64, f64, f64, f64, f64] -> f64), ([f64, f64, f64, f64, f64, f64, f64] -> i32), ([f64, f64, f64, f64, f64, f64, f64] -> i64),
-        ([i64, i64, i64, i64, i64, i64, i64] -> i64),
-
-        // 8 args
-        ([i32, i32, i32, i32, i32, i32, i32, i32] -> i32), ([i32, i32, i32, i32, i32, i32, i32, i32] -> i64), ([i32, i32, i32, i32, i32, i32, i32, i32] -> f64),
-        ([f64, f64, f64, f64, f64, f64, f64, f64] -> f64), ([f64, f64, f64, f64, f64, f64, f64, f64] -> i32), ([f64, f64, f64, f64, f64, f64, f64, f64] -> i64),
-        ([i64, i64, i64, i64, i64, i64, i64, i64] -> i64),
-    ])
+    unsafe { (thunk)(raw_ptr, payload) }
 }
 
 /// Submits a task to be executed by a registered dynamic shared library (dylib).
@@ -1256,10 +2019,7 @@ fn _pyroxide(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod boundary_tests {
-    use super::{
-        RegistryEntry, RegistrySync, checked_ipc_len, registry_sync, validate_native_output_len,
-        validate_wasm_input_len, validate_wasm_output_range,
-    };
+    use super::*;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1323,5 +2083,178 @@ mod boundary_tests {
             RegistrySync::Changed(_)
         ));
         assert_eq!(clones.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_ffi_type_parsing_and_properties() {
+        let types = ["i32", "u32", "i64", "u64", "isize", "usize", "f32", "f64"];
+        for t in &types {
+            let parsed = FfiType::parse(t).unwrap();
+            assert_eq!(parsed.name(), *t);
+        }
+        assert!(FfiType::parse("invalid").is_err());
+    }
+
+    #[test]
+    fn test_ffi_resolver_matrix_count_and_uniqueness() {
+        let all_types = [
+            FfiType::I32,
+            FfiType::U32,
+            FfiType::I64,
+            FfiType::U64,
+            FfiType::Isize,
+            FfiType::Usize,
+            FfiType::F32,
+            FfiType::F64,
+        ];
+
+        let mut unique_codes = std::collections::HashSet::new();
+        let mut count = 0;
+
+        // 0-arg
+        for &ret in &all_types {
+            let sig = ParsedFfiSignature {
+                args: vec![],
+                ret,
+                encoded: SignatureCode::new(&[], ret).unwrap(),
+                expected_payload_len: 0,
+            };
+            assert!(
+                resolve_ffi_thunk(&sig).is_some(),
+                "0-arg failed for {ret:?}"
+            );
+            assert!(unique_codes.insert(sig.encoded));
+            count += 1;
+        }
+
+        // 1-arg
+        for &a0 in &all_types {
+            for &ret in &all_types {
+                let sig = ParsedFfiSignature {
+                    args: vec![a0],
+                    ret,
+                    encoded: SignatureCode::new(&[a0], ret).unwrap(),
+                    expected_payload_len: a0.byte_width(),
+                };
+                assert!(
+                    resolve_ffi_thunk(&sig).is_some(),
+                    "1-arg failed for {a0:?} -> {ret:?}"
+                );
+                assert!(unique_codes.insert(sig.encoded));
+                count += 1;
+            }
+        }
+
+        // 2-arg
+        for &a0 in &all_types {
+            for &a1 in &all_types {
+                for &ret in &all_types {
+                    let sig = ParsedFfiSignature {
+                        args: vec![a0, a1],
+                        ret,
+                        encoded: SignatureCode::new(&[a0, a1], ret).unwrap(),
+                        expected_payload_len: a0.byte_width() + a1.byte_width(),
+                    };
+                    assert!(
+                        resolve_ffi_thunk(&sig).is_some(),
+                        "2-arg failed for {a0:?},{a1:?} -> {ret:?}"
+                    );
+                    assert!(unique_codes.insert(sig.encoded));
+                    count += 1;
+                }
+            }
+        }
+
+        // 3-arg (homogeneous + mixed)
+        for &t in &all_types {
+            for &ret in &all_types {
+                let sig = ParsedFfiSignature {
+                    args: vec![t, t, t],
+                    ret,
+                    encoded: SignatureCode::new(&[t, t, t], ret).unwrap(),
+                    expected_payload_len: t.byte_width() * 3,
+                };
+                assert!(resolve_ffi_thunk(&sig).is_some());
+                assert!(unique_codes.insert(sig.encoded));
+                count += 1;
+            }
+        }
+        for &ret in &all_types {
+            let sig1 = ParsedFfiSignature {
+                args: vec![FfiType::I32, FfiType::I32, FfiType::F64],
+                ret,
+                encoded: SignatureCode::new(&[FfiType::I32, FfiType::I32, FfiType::F64], ret)
+                    .unwrap(),
+                expected_payload_len: 16,
+            };
+            assert!(resolve_ffi_thunk(&sig1).is_some());
+            assert!(unique_codes.insert(sig1.encoded));
+            count += 1;
+
+            let sig2 = ParsedFfiSignature {
+                args: vec![FfiType::F64, FfiType::F64, FfiType::I32],
+                ret,
+                encoded: SignatureCode::new(&[FfiType::F64, FfiType::F64, FfiType::I32], ret)
+                    .unwrap(),
+                expected_payload_len: 20,
+            };
+            assert!(resolve_ffi_thunk(&sig2).is_some());
+            assert!(unique_codes.insert(sig2.encoded));
+            count += 1;
+        }
+
+        // 4-arg (homogeneous + mixed)
+        for &t in &all_types {
+            for &ret in &all_types {
+                let sig = ParsedFfiSignature {
+                    args: vec![t, t, t, t],
+                    ret,
+                    encoded: SignatureCode::new(&[t, t, t, t], ret).unwrap(),
+                    expected_payload_len: t.byte_width() * 4,
+                };
+                assert!(resolve_ffi_thunk(&sig).is_some());
+                assert!(unique_codes.insert(sig.encoded));
+                count += 1;
+            }
+        }
+        for &ret in &all_types {
+            let sig = ParsedFfiSignature {
+                args: vec![FfiType::I32, FfiType::I32, FfiType::F64, FfiType::F64],
+                ret,
+                encoded: SignatureCode::new(
+                    &[FfiType::I32, FfiType::I32, FfiType::F64, FfiType::F64],
+                    ret,
+                )
+                .unwrap(),
+                expected_payload_len: 24,
+            };
+            assert!(resolve_ffi_thunk(&sig).is_some());
+            assert!(unique_codes.insert(sig.encoded));
+            count += 1;
+        }
+
+        // 5-8 homo
+        for arity in 5..=8 {
+            for &t in &all_types {
+                for &ret in &all_types {
+                    let args = vec![t; arity];
+                    let sig = ParsedFfiSignature {
+                        args: args.clone(),
+                        ret,
+                        encoded: SignatureCode::new(&args, ret).unwrap(),
+                        expected_payload_len: t.byte_width() * arity,
+                    };
+                    assert!(
+                        resolve_ffi_thunk(&sig).is_some(),
+                        "{arity}-arg homo failed for {t:?}"
+                    );
+                    assert!(unique_codes.insert(sig.encoded));
+                    count += 1;
+                }
+            }
+        }
+
+        assert_eq!(count, 992);
+        assert_eq!(unique_codes.len(), 992);
     }
 }

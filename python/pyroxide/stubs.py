@@ -1,6 +1,8 @@
 import os
 from typing import Optional
 
+from ._ffi_types import FFI_PYTHON_TYPES
+
 __all__ = ["generate_stubs"]
 
 
@@ -86,12 +88,13 @@ def generate_stubs(name: str, library_type: str, out_path: Optional[str] = None)
             if symbol in sigs:
 
                 def _map_ffi(ffi_type: str) -> str:
-                    if ffi_type in ("i32", "i64", "u32", "u64", "isize", "usize"):
-                        return "int"
-                    if ffi_type in ("f32", "f64"):
-                        return "float"
-                    return "Any"
+                    if ffi_type in FFI_PYTHON_TYPES:
+                        return FFI_PYTHON_TYPES[ffi_type]
+                    raise ValueError(
+                        f"Unsupported FFI type '{ffi_type}' in metadata for symbol '{symbol}'."
+                    )
 
+                _map_ffi(sigs[symbol]["ret"])
                 arg_list = [
                     f"arg{i}: {_map_ffi(t)}" for i, t in enumerate(sigs[symbol]["args"])
                 ]
