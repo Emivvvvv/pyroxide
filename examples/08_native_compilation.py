@@ -1,4 +1,5 @@
 import shutil
+
 from pyroxide import compile_c, compile_rust, compile_zig, dylib_task
 
 # Check compiler availability
@@ -73,42 +74,45 @@ export fn pyroxide_plugin_free(ptr: [*]u8, len: usize) void {
 
 if __name__ == "__main__":
     print("--- 8. Dynamic Native Compilers Example ---")
-    
+    print("Only compile trusted source. Prefer precompiled artifacts in production.")
+
     # Compile and load C code
     if cc_available:
         print("Compiling C plugin on-the-fly...")
         compile_c("caesar_shift_c", C_SRC)
-        
+
         @dylib_task("caesar_shift_c")
         def apply_c(payload: bytes) -> bytes:
             pass
+
         print(f"C Output:   {apply_c(b'abc').result()}")
     else:
         print("C compiler (cc/gcc/clang) not found. Skipping C Caesar shift example.")
- 
+
     # Compile and load Rust code
     if rust_available:
         print("Compiling Rust plugin on-the-fly...")
         compile_rust("caesar_shift_rust", RUST_SRC)
-        
+
         @dylib_task("caesar_shift_rust")
         def apply_rust(payload: bytes) -> bytes:
             pass
+
         print(f"Rust Output: {apply_rust(b'abc').result()}")
     else:
         print("Rust compiler (rustc) not found. Skipping Rust Caesar shift example.")
- 
+
     # Compile and load Zig code
     if zig_available:
         print("Compiling Zig plugin on-the-fly...")
         compile_zig("caesar_shift_zig", ZIG_SRC)
-        
+
         @dylib_task("caesar_shift_zig")
         def apply_zig(payload: bytes) -> bytes:
             pass
+
         print(f"Zig Output:  {apply_zig(b'abc').result()}")
     else:
         print("Zig compiler (zig) not found. Skipping Zig Caesar shift example.")
-    
-    print("✔ Dynamic Native Compilers PASSED.")
 
+    print("✔ Dynamic Native Compilers PASSED.")

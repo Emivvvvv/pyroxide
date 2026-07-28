@@ -1,40 +1,36 @@
-# Concurrency & Asyncio
+# Concurrency and asyncio
 
-When waiting for task results from asynchronous runtimes (such as FastAPI, Sanic, or standard `asyncio` applications), using the blocking `.result()` method will block Python's main thread and freeze the event loop.
-
-To prevent this, Pyroxide provides the non-blocking asynchronous await API.
-
-## Non-Blocking event loop awaiting (`result_async`)
-
-By awaiting `result_async()`, you temporarily yield control back to Python's asyncio event loop, allowing it to process other concurrent requests while the Rust pool executes the task:
+Calling `handle.result()` inside an event-loop thread blocks that loop. Await
+`result_async()` instead.
 
 ```python
 import asyncio
 from pyroxide import task
 
 @task
-def cpu_bound_task(x: int) -> int:
-    return sum(i * i for i in range(x))
+def calculate(value: int) -> int:
+    return sum(i * i for i in range(value))
 
-async def request_handler():
-    handle = cpu_bound_task(10_000_000)
-    
-    # Non-blocking await
-    result = await handle.result_async()
-    print("Task result:", result)
-
-async def main():
-    # Runs the handler concurrently with other asyncio jobs
-    await asyncio.gather(
-        request_handler(),
-        asyncio.sleep(0.1) # Event loop remains responsive!
-    )
+async def main() -> None:
+    handle = calculate(1_000_000)
+    result = await handle.result_async(timeout_sec=5)
+    print(result)
 
 asyncio.run(main())
 ```
 
-### Under the Hood
+`result_async()` preserves the same result and exception behavior as `result()`.
+Timeout only stops waiting; it does not cancel the task.
 
-On Unix systems (Linux and macOS), the `result_async` method utilizes an extremely efficient native waker pipe. When a task completes, Rust writes to a registered wake-up file descriptor, which triggers a callback directly in Python's event loop via `loop.add_reader(fd, ...)`. This avoids polling or thread pool starvation.
+## Completion notification
 
-On Windows, `result_async` falls back to running Pyroxide's native condvar blocking check inside the asyncio event loop's default `ThreadPoolExecutor`.
+On Unix, Rust writes to a non-blocking completion pipe. A dedicated Python reader
+thread scans registered futures and schedules completion on each owning event loop
+with `call_soon_threadsafe`. It does not poll task status on a timer.
+
+On Windows, Pyroxide waits on its native condition variable through asyncio's
+default executor.
+
+Applications may await different handles from different event loops. A task may
+have only one active `result_async()` waiter; a second concurrent call raises
+`RuntimeError`. A consuming result releases the task record.

@@ -1,58 +1,52 @@
 # Introduction
 
-Pyroxide (`pyro3`) is a lightweight, ultra-high-performance background task broker for Python, implemented in Rust via PyO3. 
+Pyroxide is an embedded task engine for Python. It uses a bounded Rust broker to
+run Python callables, WebAssembly modules, and native C-ABI plugins without an
+external service.
 
-It solves the problem of Python's **Global Interpreter Lock (GIL)** blocking multi-core task concurrency, while seamlessly leveraging **Python 3.14+ Free-Threaded (PEP 703)** builds when available.
+It is suitable for background work owned by one application process. It is not a
+replacement for Celery, RQ, or another distributed queue when jobs must survive
+process or host failure.
 
----
-
-## High-Level Architecture
-
-Pyroxide coordinates task dispatch using a lock-free Rust engine with three optimized execution tiers:
+## Execution modes
 
 ```text
-                     [ Python Main Thread ]
-                               |
-                               | (submit task / batch)
-                               v
-                     +-------------------+
-                     |    Rust Broker    |
-                     |  - Slab Allocator |
-                     |  - Bounded Queue  |
-                     +-------------------+
-                               |
-       +-----------------------+-----------------------+
-       |                       |                       |
-       v                       v                       v
- [ Tier 1: In-Process ]  [ Tier 2: Sandbox ]    [ Tier 3: Subprocess ]
-  - Python 3.14+ Free-    - WASM JIT (wasmtime)  - Zero-Copy SHM (/dev/shm)
-    Threaded (PEP 703)    - Compiled C/Rust/Zig  - Process crash safety
-  - Lock-free Threads       Native Dynlibs       - Pre-warmed daemons
+Python application
+       |
+       v
+bounded broker and task registry
+       |
+       +-- in-process worker threads: Python, WASM, native plugins
+       |
+       +-- bounded coordinator threads: isolated worker processes
 ```
 
-### Core Architecture Components
+| Mode | Main property | Main limitation |
+| --- | --- | --- |
+| `@task` | Low-overhead background Python execution | Regular CPython still uses the GIL |
+| `@task(isolated=True)` | Separate interpreter and crash containment | Pickling, IPC, and process startup |
+| `@wasm_task` | Memory-bounded guest with execution timeout | Requires Pyroxide's guest ABI |
+| `@dylib_task` | Direct, GIL-free native execution | Trusted code only; can corrupt the host |
 
-1. **Python 3.14+ Free-Threaded Engine (Tier 1):**
-   Automatically detects `sys._is_gil_enabled()` (PEP 703). On free-threaded CPython builds, in-process Rust worker threads execute pure Python callables across all CPU cores simultaneously with sub-5-microsecond latency.
+Pyroxide detects free-threaded CPython through `sys._is_gil_enabled()`. On a
+free-threaded build, pure-Python in-process tasks may execute across CPU cores.
+Measure your own extensions too: an extension can re-enable the GIL at import.
 
-2. **Sandboxed & Native Engine (Tier 2):**
-   Tasks submitted via `@wasm_task` (WebAssembly sandbox) or `@dylib_task` (dynamic shared library) execute on background threads without acquiring the Python GIL, running compiled machine code or JIT bytecode at native speed.
+## Backpressure and lifecycle
 
-3. **Zero-Copy Subprocess Engine (Tier 3):**
-   When `isolated=True` is enabled, Pyroxide dispatches tasks to pre-warmed worker daemons. Payloads $\ge 1\text{MB}$ are routed through Shared Memory (`/dev/shm`) for zero-copy memory transport and process crash isolation.
+The queue is bounded. A submission waits up to the configured queue timeout, then
+raises `BufferError` if capacity remains unavailable. Batch admission is atomic:
+the whole batch is accepted or none of it is.
 
-4. **Thread-Safe Slab Allocator & Bounded Channel:**
-   Tasks are assigned atomic IDs in a lock-free `Slab` allocator. Worker dispatch is coordinated via `crossbeam_channel::bounded(10000)`, offering native backpressure without holding the GIL.
+Task results occupy registry slots until consumed or closed. Prefer `result()`
+with its default `consume=True`, a `with` block, or an explicit `close()`.
 
----
+Call `pyroxide.shutdown()` during application teardown. The engine cannot be
+restarted in the same process. See [Operations](operations.md) for deployment,
+fork, capacity, and shutdown guidance.
 
-## Alternative Solutions at a Glance
+## Release status
 
-| Feature / Metric | Pyroxide | Threading (std) | Multiprocessing | Celery / RQ | Raw PyO3 Extension |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **GIL Bypass / PEP 703** | **✅ Yes** (Auto 3.14t/WASM/dylib) | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
-| **IPC / Serialization** | **✅ None** (Shared Memory / In-Proc) | ✅ None | ❌ High (Pickling) | ❌ High (Network/Redis) | ⚠️ Medium (C-API boundary) |
-| **Infrastructure** | **✅ None** (Embedded) | ✅ None | ⚠️ Low (Spawns processes) | ❌ High (Redis/RabbitMQ) | ⚠️ Medium (Rebuild required) |
-| **Best For** | **🔥 High-perf in-process pipelines** | I/O-bound Python | CPU-heavy Python | Distributed tasks | Fixed static bindings |
-
-For a detailed analysis of when to use Pyroxide vs. other libraries, see the [Library Comparison](comparison.md) page.
+`1.0.0rc1` is a release candidate. The supported API and behavior are being
+stabilized for 1.0. Production evaluation should use canaries, representative
+load, and failure injection before broad rollout.

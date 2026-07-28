@@ -1,202 +1,115 @@
-# WebAssembly Execution Engine
+# WebAssembly execution
 
-Pyroxide includes a high-performance, sandboxed WebAssembly (WASM) execution engine powered by `wasmtime`. This engine allows you to run safe, compiled, low-latency code in background workers **without** having to rebuild or redeploy Pyroxide itself.
+Pyroxide runs registered WebAssembly modules with Wasmtime on background threads.
+The linker supplies no host imports, so a module cannot access files, sockets, or
+environment variables through Pyroxide. Memory and epoch deadlines bound each
+invocation.
 
-It provides a completely dynamic scripting alternative that runs at native execution speeds while remaining fully isolated from the host operating system.
+This is a useful application-level sandbox, but production users should still
+validate inputs, keep Wasmtime and Pyroxide updated, use least-privilege host
+processes, and test hostile modules against their own threat model.
 
----
+## Guest ABI
 
-## Architecture & Memory Protocol
+A callable module exports:
 
-Since WebAssembly runs in a strict sandbox, the guest module does not share memory addresses directly with Pyroxide. To pass data back and forth, Pyroxide implements a lightweight **Host-Guest Memory Protocol**:
-
-1. **Host Allocation**: The host calls the guest's exported `alloc(size)` function to allocate a buffer of `size` bytes inside the WASM linear memory.
-2. **Payload Transfer**: The host writes the input payload bytes (String or Bytes) directly into the guest memory at the returned offset pointer.
-3. **Execution**: The host calls the target function (e.g. `run(ptr, len)`) returning a packed `u64` containing the output pointer and length:
-   - `out_ptr` = high 32 bits
-   - `out_len` = low 32 bits
-4. **Result Retrieval**: The host reads the resulting bytes from the guest memory using the unpacked offset and length, then reconstructs the Python return type.
-5. **Host Deallocation**: The host calls the guest's exported `dealloc(ptr, size)` function on both the input and output buffers to prevent memory leaks in the guest runtime.
-
----
-
-## Writing a WASM Guest Module (Rust)
-
-Here is a template for compiling a Rust module to `wasm32-unknown-unknown` that processes input text:
-
-```rust
-#![no_std]
-#![no_main]
-
-use core::panic::PanicInfo;
-
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    loop {}
-}
-
-// 64KB static buffer to simplify memory management
-static mut BUFFER: [u8; 65536] = [0; 65536];
-
-#[no_mangle]
-pub extern "C" fn alloc(_size: u32) -> u32 {
-    unsafe { BUFFER.as_mut_ptr() as u32 }
-}
-
-#[no_mangle]
-pub extern "C" fn dealloc(_ptr: u32, _size: u32) {
-    // No-op for static buffer, or implement dynamic heap dealloc
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn run(ptr: u32, len: u32) -> u64 {
-    let slice = core::slice::from_raw_parts_mut(ptr as *mut u8, len as usize);
-    for c in slice.iter_mut() {
-        match *c {
-            b'a'..=b'm' | b'A'..=b'M' => *c += 13,
-            b'n'..=b'z' | b'N'..=b'Z' => *c -= 13,
-            _ => {}
-        }
-    }
-    // Return packed pointer (high 32 bits) and length (low 32 bits)
-    ((ptr as u64) << 32) | (len as u64)
-}
+```text
+memory
+alloc(size: i32) -> i32
+dealloc(ptr: i32, size: i32)
+run(ptr: i32, size: i32) -> i64
 ```
 
-Compile the file using `rustc` directly:
-```bash
-rustc --target wasm32-unknown-unknown -O --crate-type=cdylib module.rs -o module.wasm
-```
+The result packs the output pointer in the high 32 bits and output length in the
+low 32 bits. A custom function name may replace `run`.
 
----
+For each call, Pyroxide:
 
-## Python Usage
+1. validates the input size against the configured limit;
+2. allocates and writes the input in guest memory;
+3. invokes the export with an epoch deadline;
+4. validates that the returned pointer and length are non-negative, in bounds,
+   non-overflowing, and within the configured limit;
+5. copies the output to the host; and
+6. calls the guest deallocator.
 
-### 1. Registering the Module
+Inputs and outputs are copied across the sandbox boundary. Payloads are `bytes` or
+UTF-8 `str`; the result follows the input representation.
 
-Load the compiled `.wasm` bytecode in Python and register it in Pyroxide's global module registry:
+Pyroxide 1.0 supports core WebAssembly modules using this ABI. It does not expose
+WASI, the Component Model, custom host imports, shared-memory threads, or
+arbitrary typed function calls.
+
+## Trap diagnostics
+
+Trap messages include WebAssembly function names when the module provides them.
+To include source locations from guest DWARF data, set
+`WASMTIME_BACKTRACE_DETAILS=1` before the first WebAssembly module is registered.
+Parsing and retaining debug data adds module startup and memory overhead.
+
+## Register and execute
 
 ```python
-from pyroxide import register_wasm
+from pyroxide import register_wasm, wasm_task
 
-with open("module.wasm", "rb") as f:
-    wasm_bytes = f.read()
+with open("codec.wasm", "rb") as stream:
+    register_wasm("codec", stream.read())
 
-# Register under a unique name
-register_wasm("my_module", wasm_bytes)
-```
-
-### 2. Submitting WASM Tasks
-
-Decorate standard functions using `@wasm_task` to offload work:
-
-```python
-from pyroxide import wasm_task
-
-@wasm_task("my_module", "run")
-def rot13_cipher(payload: str) -> str:
-    """This function acts as a type stub. Execution is redirected to the WASM runner."""
+@wasm_task("codec", "run")
+def transform(payload: bytes) -> bytes:
     pass
 
-# Run in background asynchronously (GIL-free)
-handle = rot13_cipher("Hello World!")
-print("Status:", handle.status)
-
-# Await output
-result = handle.result()
-print("Decrypted:", result)  # "Uryyb Jbeyq!"
+print(transform(b"data").result())
 ```
 
-### 3. Object-Oriented WASM Proxies (v0.6.0)
-
-If a WebAssembly module exports multiple functions (e.g. `compress`, `decompress`, `validate`), you can load the module as an object-oriented proxy using `load_wasm()`. 
-
-This maps all exported WASM guest functions directly into Python methods:
+For multiple exports:
 
 ```python
-from pyroxide import register_wasm, load_wasm
+from pyroxide import load_wasm
 
-# Register the module bytes
-register_wasm("compression_mod", WASM_BYTES)
-
-# Load the Object-Oriented Proxy!
-compressor = load_wasm("compression_mod")
-
-# Call exported WASM functions directly!
-handle_zip = compressor.compress(b"raw data payload")
-handle_unzip = compressor.decompress(handle_zip.result())
-
-print("Final Output:", handle_unzip.result())
+codec = load_wasm("codec")
+result = codec.compress(b"data").result()
 ```
 
----
+`isolated=True` adds process crash containment, but usually adds overhead without
+strengthening Wasmtime's guest permissions.
 
-### 4. Dynamic On-The-Fly WASM Compilation (v0.9.0)
+## Limits
 
-Instead of manually building `.wasm` binaries ahead of time using `rustc` or `clang`, Pyroxide provides on-the-fly WASM compilation helpers (`compile_rust_wasm`, `compile_c_wasm`, `compile_zig_wasm`, and `compile_wasm`):
+Defaults apply at process startup:
 
-```python
-from pyroxide import compile_rust_wasm, compile_c_wasm, load_wasm
-
-# 1. Compile C source code directly to WebAssembly bytecode!
-C_WASM_SRC = """
-#include <stdint.h>
-
-uint64_t square(uint32_t x) {
-    return (uint64_t)x * (uint64_t)x;
-}
-"""
-compile_c_wasm("math_wasm", C_WASM_SRC)
-
-# 2. Load proxy and call functions in the WASM JIT Sandbox!
-math_proxy = load_wasm("math_wasm")
-print(math_proxy.square(12).result())  # 144
-```
-
----
-
-## Benefits of the WASM Engine
-
-- **Safety & Isolation**: Code runs within the `wasmtime` sandbox. A crash or panic in guest code cannot crash the host Python runtime or the Pyroxide broker.
-- **Dynamic Updates**: Register new modules and trigger task updates at runtime without restarting worker threads or redeploying code.
-- **GIL-Free Speed**: Native execution runs concurrently across the worker pool without ever locking Python's GIL.
-
----
-
-## WASM Resource Limits & Sandboxing
-
-To prevent infinite loops and host process Out-Of-Memory (OOM) crashes, Pyroxide enforces resource limits on the WASM execution engine:
-
-- **Epoch-Based Interruption (Timeout)**: Pyroxide runs a background ticking thread that advances the WASM engine epoch. Every WASM execution is assigned a deadline (default: 1000ms). If a guest module gets stuck in an infinite loop, it is interrupted and terminated with a trap error once the deadline is exceeded.
-- **Linear Memory Limits**: Every WASM Store is configured with strict linear memory growth limits to prevent host process OOM (default: 100MB).
-
-### Environment Configuration
-
-You can configure default limits at startup using the following environment variables:
-- `PYROXIDE_WASM_MEMORY_LIMIT_BYTES`: Sets the maximum linear memory allowed for a single WASM instance.
-- `PYROXIDE_WASM_TIMEOUT_MS`: Sets the maximum execution duration for a WASM instance.
-
-### Programmatic Configuration
-
-Instead of relying on environment variables, you can configure these limits dynamically and safely in Python using `pyroxide.config`:
+| Setting | Default |
+| --- | --- |
+| Memory per invocation | 100 MiB |
+| Execution deadline | 1000 ms |
+| Epoch tick | 10 ms |
 
 ```python
 import pyroxide
 
-# --- 1. Global Setup ---
-# Set global defaults (typically on application startup)
-pyroxide.config.set_wasm_limits(
-    memory_limit_bytes=50 * 1024 * 1024,  # 50 MB
-    timeout_ms=500                       # 500 ms timeout
-)
-pyroxide.config.set_queue_timeout(timeout_ms=200)
+pyroxide.set_wasm_limits(memory_limit_bytes=50 * 1024 * 1024, timeout_ms=500)
 
-# --- 2. Thread-Safe Scoped Overrides ---
-# Restrict untrusted tenant code using context managers
-with pyroxide.config.scoped(wasm_timeout_ms=100, wasm_memory_limit_bytes=10 * 1024 * 1024):
-    # Tasks submitted within this block inherit these strict overrides
-    handle = my_wasm_task(untrusted_input)
+with pyroxide.scoped(
+    wasm_memory_limit_bytes=10 * 1024 * 1024,
+    wasm_timeout_ms=100,
+):
+    handle = transform(b"tenant input")
 ```
 
-The scoped overrides are **thread-safe** (using `threading.local()`), ensuring multi-tenant web workers can safely submit tasks with custom limits without affecting other threads.
+Programmatic global settings take precedence over environment settings.
+Thread-local scoped values affect tasks submitted inside that scope. Memory must
+be between 1 byte and `2**31 - 1`; timeouts and tick intervals must be positive.
 
+An epoch deadline is not a real-time guarantee. A trap is observed on an engine
+epoch check, so scheduling and tick granularity add latency.
+
+## Runtime compilation
+
+`compile_wat_wasm`, `compile_c_wasm`, `compile_rust_wasm`, and
+`compile_zig_wasm` are development conveniences. C, Rust, and Zig helpers invoke
+local toolchains and execute their output through Wasmtime. Source compilation is
+not a sandbox: compiler plugins, build scripts, and toolchains run with host
+permissions.
+
+Prefer reviewed, precompiled `.wasm` artifacts in production. Set
+`PYROXIDE_DISABLE_COMPILATION=1` when runtime compilation is unnecessary.

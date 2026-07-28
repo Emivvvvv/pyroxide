@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 {
-    "name": "Pyroxide Background Task Broker Demo",
+    "name": "Pyroxide Request-Local Task Demo",
     "version": "1.0.0",
-    "summary": "Demo showing Odoo offloading CPU-bound tasks GIL-free to Pyroxide",
+    "summary": "Request-local Pyroxide task example; not a durable Odoo queue",
     "category": "Extra Tools",
     "author": "Pyroxide Team",
     "depends": ["base"],

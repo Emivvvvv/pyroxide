@@ -1,27 +1,16 @@
-# -*- coding: utf-8 -*-
 import os
-import gc
-from pyroxide import task
 
-@task
-def calculate_square(x: int) -> int:
-    return x * x
+# Engine settings must be chosen before Pyroxide initializes.
+os.environ.setdefault("PYROXIDE_SHM_THRESHOLD", "1048576")
+
+from example_tasks import isolated_echo
 
 if __name__ == "__main__":
-    print("--- 7. Shared Memory (SHM) Routing & Eviction Example ---")
-    
-    # For large payloads (>= 1MB), Pyroxide automatically routes data via Shared Memory
-    # and bypasses socket serialization bottlenecks.
-    # Users can customize this limit using PYROXIDE_SHM_THRESHOLD (value in bytes).
-    os.environ["PYROXIDE_SHM_THRESHOLD"] = "1048576" # 1 MB (default)
-    print(f"Configured PYROXIDE_SHM_THRESHOLD = {os.environ['PYROXIDE_SHM_THRESHOLD']} bytes.")
-    
-    # Verify memory eviction: Slot is immediately freed when reference falls out of scope
-    from pyroxide._pyroxide import get_slab_size
-    
-    h_temp = calculate_square(5)
-    print(f"Slab size after task submission: {get_slab_size()}")
-    
-    del h_temp
-    gc.collect()
-    print(f"Slab size after deleting reference: {get_slab_size()} (reclaimed!)")
+    print("--- 7. Large Isolated Payload Example ---")
+    payload = b"A" * (2 * 1024 * 1024)
+    result = isolated_echo(payload).result()
+    assert result == payload
+    print(f"Round-tripped {len(result)} bytes through an isolated worker.")
+    print(
+        "Large serialized frames may use shared-memory routing; serialization and copies remain."
+    )

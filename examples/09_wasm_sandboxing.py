@@ -1,20 +1,29 @@
-# -*- coding: utf-8 -*-
-from pyroxide import register_wasm, wasm_task
+from pyroxide import register_wasm_wat, wasm_task
+
+IDENTITY_WAT = """
+(module
+  (memory (export "memory") 1)
+  (func (export "alloc") (param i32) (result i32)
+    i32.const 0)
+  (func (export "dealloc") (param i32 i32))
+  (func (export "run") (param i32 i32) (result i64)
+    local.get 0
+    i64.extend_i32_u
+    i64.const 32
+    i64.shl
+    local.get 1
+    i64.extend_i32_u
+    i64.or))
+"""
+
 
 if __name__ == "__main__":
-    print("--- 9. WebAssembly Sandboxing Example ---")
-    
-    # Read the compiled .wasm file bytes (mock bytes here)
-    mock_wasm_bytes = b"\x00asm\x01\x00\x00\x00" # Minimal WASM header (will trigger parse error if not valid)
-    
-    print("Registering WebAssembly module bytes...")
-    try:
-        register_wasm("math_engine", mock_wasm_bytes)
-        
-        @wasm_task("math_engine", "add_two")
-        def run_wasm_calc(a: int, b: int) -> int:
-            pass
-        print("WASM Task registered successfully.")
-    except Exception as e:
-        # Will fail on parse validation due to invalid mock bytes, verifying the check works
-        print(f"WebAssembly registration API verified. Error (expected): {e}")
+    print("--- 9. WebAssembly Bounds and Timeout Example ---")
+    register_wasm_wat("identity", IDENTITY_WAT)
+
+    @wasm_task("identity", "run")
+    def identity(payload: bytes) -> bytes:
+        pass
+
+    assert identity(b"sandboxed data").result() == b"sandboxed data"
+    print("WASM identity module completed within configured memory and epoch limits.")

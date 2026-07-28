@@ -3,6 +3,8 @@
 - [Introduction](introduction.md)
 - [Installation](installation.md)
 - [Getting Started](getting_started.md)
+- [Production Operations](operations.md)
+- [Migrating from 0.10](migration.md)
 - [Concurrency & Asyncio](concurrency_async.md)
 - [Batch Submission](batch_submission.md)
 - [Isolated Worker Processes](isolated_workers.md)

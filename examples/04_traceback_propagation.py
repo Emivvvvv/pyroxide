@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 from pyroxide import task
 
+
 @task
 def divide_numbers(data: tuple) -> float:
     a, b = data
-    return a / b # Will raise ZeroDivisionError
+    return a / b  # Will raise ZeroDivisionError
+
 
 if __name__ == "__main__":
     print("--- 4. Traceback Propagation Example ---")
-    
+
     handle = divide_numbers((10, 0))
     try:
         handle.result()

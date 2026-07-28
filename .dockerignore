@@ -1,0 +1,17 @@
+*
+!Cargo.lock
+!Cargo.toml
+!LICENSE-APACHE
+!LICENSE-MIT
+!README.md
+!pyproject.toml
+!src
+!src/**
+!python
+!python/**
+python/**/*.dylib
+python/**/*.pyd
+python/**/*.so
+!examples
+!examples/odoo_benchmark
+!examples/odoo_benchmark/**

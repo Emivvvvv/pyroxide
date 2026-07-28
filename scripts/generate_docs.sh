@@ -1,23 +1,27 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Ensure we are in the repository root directory
 cd "$(dirname "$0")/.."
 
-echo "=== Building Pyroxide Extension Module ==="
-.venv/bin/maturin develop
+PYTHON_BIN="${PYTHON_BIN:-python}"
+MATURIN_BIN="${MATURIN_BIN:-maturin}"
 
-echo "=== Generating pdoc Python API Reference ==="
-.venv/bin/pip install -q pdoc
-.venv/bin/pdoc pyroxide -o docs/api --no-search
+command -v mdbook >/dev/null 2>&1 || {
+    echo "mdbook is required to build the documentation" >&2
+    exit 1
+}
+command -v "$MATURIN_BIN" >/dev/null 2>&1 || {
+    echo "maturin is required to build the extension" >&2
+    exit 1
+}
 
-echo "=== Generating mdBook Documentation ==="
-if command -v mdbook &> /dev/null; then
-    mdbook build docs
-    cp -r docs/api/. docs/book/api/
-    echo "mdBook built successfully in docs/book/"
-else
-    echo "WARNING: mdbook binary not found. Please install it with 'cargo install mdbook'."
-fi
+"$MATURIN_BIN" develop
+"$PYTHON_BIN" -m pdoc pyroxide -o docs/api --no-search
+test -s docs/api/pyroxide.html
 
-echo "=== Documentation generated successfully ==="
+mdbook build docs
+mkdir -p docs/book/api
+cp -R docs/api/. docs/book/api/
+test -s docs/book/api/pyroxide.html
+
+echo "Documentation built in docs/book"

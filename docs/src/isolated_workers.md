@@ -1,86 +1,76 @@
-# Isolated Worker Processes
+# Isolated worker processes
 
-By default, Pyroxide runs tasks in background OS threads. In v0.5.0, you can use `isolated=True` to run tasks in isolated OS processes with high-performance cross-platform IPC and Zero-Copy Shared Memory (SHM) routing.
-
-Why use isolated processes?
-
-1.  **Crash Safety:** If an unstable C extension or dynamic library triggers a Segmentation Fault (SIGSEGV), it only kills the worker process. The main Python app survives, and the task handle returns a `RuntimeError`.
-2.  **True Python GIL Bypass:** Pure Python `@task`s normally hold the GIL. With `isolated=True`, the task runs in a separate Python interpreter process, bypassing the GIL completely.
-
-## Usage
-
-Pass `isolated=True` to any Pyroxide decorator:
+Set `isolated=True` to execute a task in a separate Python interpreter process.
 
 ```python
-from pyroxide import task, wasm_task, dylib_task, load_wasm, load_dylib
+from pyroxide import task
 
-# 1. Pure Python (GIL bypass & crash safety)
 @task(isolated=True)
-def heavy_computation(data: list) -> list:
-    return [x * 2 for x in data]
+def calculate(value: int) -> int:
+    return sum(i * i for i in range(value))
 
-# 2. WASM (Decorators)
-@wasm_task("my_module", "process_data", isolated=True)
-def process_wasm(data: str) -> str:
-    pass
-
-# 3. Dynamic Library (Decorators)
-@dylib_task("unsafe_c_plugin", isolated=True)
-def process_unsafe_c(data: bytes) -> bytes:
-    pass
-
-# 4. OOP Proxies (New in v0.6.0)
-cipher = load_wasm("my_module", isolated=True)
-crypto = load_dylib("unsafe_c_plugin", isolated=True)
-
-# Same API as in-process tasks
-handle = heavy_computation([1, 2, 3])
-print(handle.result())
-
-# Call dynamic symbols on isolated workers
-handle_hash = crypto.hash_sha256(b"message")
-print(handle_hash.result())
+print(calculate(1_000_000).result())
 ```
 
-## Internals & Optimizations
+Use isolation for CPU-bound Python on regular CPython, or to contain crashes from
+trusted native plugins. Isolation adds serialization, IPC, and possible cold-start
+cost.
 
-1.  **Warm Worker Pool & Scale-to-Zero:** Pyroxide pre-spawns worker processes so there is no execution-time process startup latency. To minimize memory usage, an idle reaper thread automatically terminates idle worker processes. You can configure `PYROXIDE_MIN_WORKERS` (default: `0`) to keep a minimum number of warm workers alive and block-waiting on the socket to eliminate cold-start latency entirely, while any workers above this threshold are reaped when idle for longer than `PYROXIDE_IDLE_TIMEOUT_SEC` (default: `60` seconds).
-2.  **Cross-Platform Local Sockets:** IPC uses Unix Domain Sockets on Linux/macOS and Named Pipes on Windows (backed by the `interprocess` crate), avoiding slow TCP loopback overhead.
-3.  **Hybrid Zero-Copy Shared Memory (SHM):** For small payloads (< 1MB), data is sent directly over the local socket. For large payloads (>= 1MB), Pyroxide utilizes OS-level Shared Memory (`shared_memory` crate) for zero-copy transfers, avoiding serialization bottleneck.
-4.  **Lifecycle:** Workers are single-threaded. When a task completes, the worker is reused. If a worker crashes, Pyroxide drops it and spawns a replacement.
+## Importability contract
 
-## When to use `isolated=True`
+The callable and payload are serialized for a fresh interpreter. The callable
+must be defined at module scope in an importable module. Arguments and results
+must be pickleable.
 
-| Scenario | Recommendation |
-| :--- | :--- |
-| **I/O-Bound Python** | `isolated=False`. Threads are fine. |
-| **CPU-Bound Python** | `isolated=True`. Threads block the GIL, processes don't. |
-| **WASM** | `isolated=False`. WASM is already sandboxed and GIL-free. |
-| **Stable Native Code** | `isolated=False`. Threads are faster. |
-| **Unstable Native Code** | `isolated=True`. Isolates segfaults. |
-| **Massive Payloads (>=1MB)** | `isolated=True` with Hybrid SHM routing is fast, but `isolated=False` has no process transition overhead. |
+Avoid:
 
-## Limitations
+- lambdas and closures;
+- nested functions;
+- definitions available only while a script is `__main__`; and
+- process-local resources such as open sockets, locks, and database connections.
 
--   **Memory Copying:** Although SHM routing provides zero-copy across the process boundary, there is still serialization/deserialization overhead for complex Python objects.
--   **Resource Isolation:** Ensure your system supports shared memory mapping (standard on modern macOS, Linux, and Windows). If SHM creation fails, Pyroxide gracefully falls back to socket transmission.
+Create process-local resources inside the worker callable instead.
 
----
+## Pool behavior
 
-## SHM Leak Protection
+- Workers are created lazily when isolated work arrives.
+- At most `PYROXIDE_MAX_PROCESSES` coordinators and worker processes execute
+  isolated work concurrently.
+- An idle worker may be reaped after `PYROXIDE_IDLE_TIMEOUT_SEC`.
+- `PYROXIDE_MIN_WORKERS` protects that many already-created idle workers from
+  reaping; it does not pre-create them.
+- A worker is recycled after `PYROXIDE_MAX_TASKS_PER_WORKER`; `0` disables
+  task-count recycling.
 
-For large payloads, Pyroxide maps data to OS-level Shared Memory (SHM). If a worker process crashes, panics, or terminates mid-execution, standard OS-level SHM files can leak, causing the host to run out of descriptors or memory.
+Small frames travel over a private local socket or named pipe. Large serialized
+frames use shared memory when they meet `PYROXIDE_SHM_THRESHOLD`. This avoids
+copying a large frame through the socket, but it is not end-to-end zero-copy:
+Python objects are still serialized and copied into and out of shared memory.
 
-To prevent this, Pyroxide implements strict **SHM Leak Protection**:
-- **RAII Drop Guards**: Both the master and worker runtimes wrap shared memory segments in a custom Rust `ShmemGuard`.
-- **Automatic Unmapping & Unlinking**: When the task finishes or if either the worker/master process crashes or panics mid-execution, Rust's panic unwinding automatically drops the guard, unmapping and unlinking the shared memory segment from the OS filesystem (POSIX `shm_unlink` on macOS/Linux).
-- **Proactive Master Teardown Cleanup**: If an isolated task is explicitly cancelled, the master process terminates the worker via `SIGKILL` (which bypasses standard Rust RAII drop guards in the child). To prevent leaks, the master process automatically scans and unlinks the corresponding segment from `/dev/shm` on Unix.
+The Unix socket directory is private to the user and created with mode `0700`.
+IPC frame and metadata lengths are checked before allocation.
 
-## Orphan Process Mitigation
+## Cancellation and crashes
 
-If the master Python process crashes unexpectedly or is killed (e.g. `SIGKILL`), running isolated worker processes could potentially become orphaned "zombie" processes that leak CPU and memory indefinitely. 
+Cancelling a running isolated task terminates its worker and reports cancellation
+only after the child is no longer alive. A crashed worker surfaces an error for
+the task; later work can use another worker.
 
-Pyroxide guarantees immediate worker termination on master crashes across all major platforms:
-- **Linux**: Child processes are spawned with `libc::PR_SET_PDEATHSIG`, instructing the Linux kernel to instantly send `SIGKILL` to the child if the parent process dies.
-- **macOS/Unix**: A lightweight background thread is injected into every worker process. It polls the parent PID using `libc::getppid()` every 500ms; if the parent PID changes (indicating the parent died and the process was adopted by `init` or a session manager), the worker instantly terminates.
-- **Windows**: A lightweight background thread in the worker process polls the parent process state every 500ms using the `OpenProcess` and `GetExitCodeProcess` Windows APIs. If the parent process is no longer active, the worker instantly terminates.
+Isolation is crash containment, not a security sandbox. A worker normally has the
+same user identity, filesystem visibility, and network access as the parent.
+
+Pyroxide mitigates orphan workers when the parent disappears:
+
+- macOS uses a process-exit event through `kqueue`;
+- Linux and other Unix platforms poll the parent relationship;
+- Windows polls the parent process handle.
+
+Detection is best effort and may take roughly one polling interval on platforms
+without an event notification.
+
+## Fork safety
+
+Do not initialize Pyroxide before calling `fork()`. An inherited engine contains
+threads and synchronization state that cannot be used safely in the child.
+Pyroxide detects this and raises `ForkSafetyError`. Initialize Pyroxide separately
+after the fork, or use a spawn-based process model.

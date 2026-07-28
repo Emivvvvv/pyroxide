@@ -1,6 +1,7 @@
 import os
 import shutil
-from pyroxide import compile_c, load_dylib, generate_stubs
+
+from pyroxide import compile_c, generate_stubs, load_dylib
 
 C_SRC = """
 #include <stdint.h>
@@ -31,7 +32,7 @@ if __name__ == "__main__":
 
     if not cc_available:
         print("C compiler not found. Skipping example.")
-        exit(0)
+        raise SystemExit(0)
 
     # 1. Compile C code on-the-fly
     print("Compiling FFI plugin on-the-fly...")

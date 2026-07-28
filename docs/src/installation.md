@@ -1,34 +1,30 @@
 # Installation
 
-Pyroxide is distributed on PyPI as `pyro3`. It bundles pre-compiled binary wheels for Linux, macOS (Apple Silicon/Intel), and Windows.
-
-## 1. Installing from PyPI
-
-Install the pre-compiled library directly into your virtual environment:
+Pyroxide is published as `pyro3` and requires CPython 3.10 or newer.
 
 ```bash
-pip install pyro3
+python -m pip install pyro3
 ```
 
-## 2. Building from Source
+Release wheels target common Linux, macOS, and Windows platforms. If pip cannot
+find a compatible wheel, it may try to build from source.
 
-To compile Pyroxide locally, you will need a Rust compiler (minimum Rust 1.70+) and `maturin` (the PyO3 compilation backend).
+## Build from source
+
+Source builds require Rust 1.86 or newer and `maturin`.
 
 ```bash
-# 1. Install Rust (if not already installed)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# 2. Clone the repository
 git clone https://github.com/emivvvvv/pyroxide.git
 cd pyroxide
-
-# 3. Create and activate a Python virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
-
-# 4. Install compilation requirements
-pip install maturin pytest ruff
-
-# 5. Compile and install in development/editable mode
+python -m pip install -e '.[dev]'
 maturin develop
+pytest -q
 ```
+
+On Windows, activate the environment with `.venv\Scripts\activate`.
+
+Runtime native or WASM compilation has additional compiler requirements. It is
+optional; precompiled libraries and `.wasm` files do not need local compilers.
+See [Native plugins](native_plugins.md) and [WebAssembly](wasm_engine.md).

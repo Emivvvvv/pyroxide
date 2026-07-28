@@ -1,38 +1,26 @@
-# Traceback Preservation
+# Exceptions and tracebacks
 
-When offloading Python callables to a background OS thread pool, debugging crashes can be difficult if the stack trace is lost in the thread transition.
-
-Pyroxide captures and propagates the complete background traceback back to Python's main thread.
-
-## Background Exceptions
-
-If a decorated function raises an exception during execution:
+If background Python code raises, `result()` raises a `RuntimeError` containing
+the original exception text and formatted background traceback.
 
 ```python
 from pyroxide import task
 
 @task
-def failing_calculation(x: int) -> int:
-    raise ValueError("Zero division or bad payload!")
-
-handle = failing_calculation(10)
+def fail(_: object) -> None:
+    raise ValueError("invalid payload")
 
 try:
-    handle.result()
-except RuntimeError as e:
-    # Captures and logs the exact line where the background thread crashed
-    print(e)
+    fail(None).result()
+except RuntimeError as error:
+    print(error)
 ```
 
-### Traceback Output Example
+The original exception object is not re-raised across every execution boundary;
+do not depend on catching its original Python type. Treat the reported traceback
+as diagnostic text.
 
-The raised `RuntimeError` contains the original Python exception type and the traceback of the background execution:
-
-```text
-ValueError: Zero division or bad payload!
-
-Original Background Traceback:
-Traceback (most recent call last):
-  File "failing_calculation.py", line 4, in failing_calculation
-    raise ValueError("Zero division or bad payload!")
-```
+WASM traps, native loader errors, IPC failures, and isolated-worker crashes are
+also surfaced as runtime errors with backend-specific context. A native crash in
+the main process cannot be converted into a Python exception; use process
+isolation for crash containment.
