@@ -1,0 +1,27 @@
+{
+  "cells": {
+    "pyroxide-dylib-scheduled": {
+      "error_count": 0,
+      "incomplete": false,
+      "iqr_seconds": 9.080839999999985e-07,
+      "mad_seconds": 5.36834000000001e-07,
+      "median_ci_seconds": [
+        2.1536583e-05,
+        2.5585375e-05
+      ],
+      "median_seconds": 2.2559917e-05,
+      "median_throughput_tasks_per_second": 44326.40421505097,
+      "p95_seconds": 2.5585375e-05,
+      "peak_process_tree_rss_bytes": 53739520,
+      "sample_count": 5,
+      "workers": 1
+    }
+  },
+  "experiment": {
+    "environment": "CPython-3.14.6-Darwin-arm64-gil-enabled",
+    "id": "native-scheduled-boundary",
+    "semantics": "batched_mean_pyroxide_dylib_scheduled_call",
+    "workload": "shared-rust-frame-1k"
+  },
+  "pairs": []
+}

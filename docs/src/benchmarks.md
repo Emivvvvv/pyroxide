@@ -1,231 +1,160 @@
-# Performance & Evaluation
+# Benchmarking
 
-This section presents a rigorous, research-grade performance evaluation of Pyroxide. Our goal is to isolate and quantify the scheduling overhead, multi-threaded scalability, memory safety, and virtualization costs of Pyroxide's three-tier task execution architecture.
+Pyroxide does not publish a universal latency or speedup claim. Results change
+with hardware, OS, Python build, worker count, payload size, execution mode,
+compiler, and whether workers are warm.
 
----
+The scripts under `examples/benchmarks/` are evaluation tools, not product
+guarantees.
 
-## 1. Experimental Setup
+## Fair-comparison rules
 
-All benchmarks were executed on the following baseline environment to ensure reproducibility:
-- **Hardware**: Apple M1 Pro (8-core CPU: 6 performance cores, 2 efficiency cores), 16GB RAM.
-- **Operating System**: macOS Sequoia 15.0.
-- **Python**: CPython 3.11.9.
-- **Rust**: rustc 1.80.0 (stable).
-- **Compilers**: Apple Clang 17.0.0, Zig 0.14.0.
-- **Baseline Comparison**: A standard Python thread-safe task queue implemented using `queue.Queue` with worker threads utilizing a 10ms polling interval (`time.sleep(0.01)`) to check for task completion.
+1. Compare systems with the same durability and isolation semantics.
+   `@task` is comparable to an in-process executor; Celery is a distributed,
+   durable queue and answers a different problem.
+2. Use identical work and input data. Do not compare compiled native work with
+   interpreted Python and attribute the difference to scheduling.
+3. Fix and report worker counts, affinity, power mode, and dependency versions.
+4. Separate cold results from warm steady-state results. Process creation, JIT,
+   module loading, and runtime compilation belong in cold-start measurements.
+5. Run enough repetitions and report distributions such as median and p95, not
+   one best sample.
+6. Verify every result and report failures. A fast benchmark that skipped work is
+   invalid.
+7. Save the command, configuration, platform metadata, and raw machine-readable
+   output with any published number.
 
----
+## Recommended comparisons
 
-## 2. Evaluation Scenarios
+| Question | Appropriate comparison |
+| --- | --- |
+| In-process Python scheduling | `@task` vs `ThreadPoolExecutor` |
+| CPU-bound Python isolation | isolated tasks vs `ProcessPoolExecutor` or loky |
+| Free-threaded Python | same Python function and worker count on CPython 3.14t |
+| Native execution | same compiled algorithm through Pyroxide and a direct binding |
+| WASM overhead | same module and ABI through comparable Wasmtime hosts |
+| Large IPC payload | same serialization format, payload, warm pool, and process count |
 
-### Scenario A: Dispatch Latency & Scheduling Overhead
-To isolate Pyroxide's internal broker and thread-dispatching overhead, we measured task execution times using a **no-op (zero-execution-time)** payload. This forces the broker to spend 100% of its time on task registration, queueing, worker wake-up, and result retrieval.
+Celery, RQ, and similar systems may be included to explain architectural cost,
+but their broker durability, retry, routing, and multi-host behavior must be
+enabled and disclosed. They are not direct substitutes for an embedded engine.
 
-```
-[Python Thread] --(submit)--> [Slab Allocator (lock-free insert)]
-                                        |
-                             [Crossbeam Channel (Bounded Queue)]
-                                        |
-[Worker Thread] <--(wake-up)--- [Condvar Signal]
-```
+## July 2026 reference run
 
-#### Results & Overhead Analysis
-We submitted sequential tasks (waiting for each to finish before submitting the next) to isolate single-threaded latency:
+The saved reference run used macOS 15.7.4 on an Apple M1 Pro with 8 physical
+cores. Each ranked cell used four workers and 30 fresh-process blocks. Values
+below are median complete-batch makespans; lower is better.
 
-| Metric | Python Thread-Polling Queue (Baseline) | Pyroxide (Single Task `@task`) | Pyroxide (Batch Submission) |
-| :--- | :--- | :--- | :--- |
-| **10 Tasks** | `1.0180 s` | `0.0003 s` | `0.0002 s` |
-| **50 Tasks** | `3.5289 s` | `0.0013 s` | `0.0007 s` |
-| **200 Tasks** | `14.1082 s` | `0.0047 s` | `0.0027 s` |
-| **Avg. Overhead per Task** | **`70.54 ms`** | **`23.50 µs` (0.02ms)** | **`13.50 µs` (0.01ms)** |
+| CPython / batch | ThreadPool | Pyroxide threaded | ProcessPool | Pyroxide isolated |
+| --- | ---: | ---: | ---: | ---: |
+| 3.14, 32 CPU tasks | 65.20 ms | 55.49 ms | **17.79 ms** | 19.22 ms |
+| 3.14t, 32 CPU tasks | 18.91 ms | 18.03 ms | **13.31 ms** | 15.88 ms |
+| 3.14, 1,000 trivial tasks | **6.29 ms** | 18.25 ms | 157.46 ms | 52.35 ms |
 
-**Key Takeaways**:
-- **Why the Baseline is Slow**: Typical Python queues rely on lock-polling. If a task finishes right after a thread goes to sleep, the result waits for the next poll cycle, inflating average latency to `~70ms`.
-- **Why Pyroxide is Fast**: Pyroxide utilizes Rust's OS-native `Condvar` signaling. When a background thread completes a task, it notifies the waiting Python thread in microseconds, resulting in an average dispatch overhead of just **23.5 microseconds**.
-- **Batching Advantage**: By using `.batch()`, Pyroxide acquires the broker's write lock once, reducing write lock acquisition contention to a minimum and driving average overhead down to **13.5 microseconds** per task.
+The result is mixed, which is the useful conclusion:
 
----
+- regular CPython still needs processes or independent interpreters for
+  CPU-parallel Python;
+- Pyroxide isolated was 8% slower than `ProcessPoolExecutor` in the 3.14 CPU
+  cell, not faster;
+- Pyroxide threaded used 33 MiB peak process-tree RSS in that cell, versus
+  147 MiB isolated and 154 MiB for the process pool;
+- on 3.14t, Pyroxide threaded recorded a 4.7% lower median than the thread pool,
+  but their bootstrap intervals overlapped; and
+- the standard thread pool was about three times faster than Pyroxide threaded
+  for the trivial-task batch.
 
-### Scenario B: Multi-Threaded Scalability & Lock Contention
-In this scenario, we evaluate how Pyroxide scales under heavy thread contention. We spawned multiple concurrent client threads in Python, all spamming the broker with task submissions simultaneously.
+The broader CPython 3.14 comparison used 100 CPU tasks:
 
-#### Latency vs. Thread Count (40 Tasks Total)
-We compared the total execution time as the client thread count increased from 2 to 8:
+| Backend | Median | Peak process-tree RSS |
+| --- | ---: | ---: |
+| loky | **59.07 ms** | 179 MiB |
+| `ProcessPoolExecutor` | 60.47 ms | 156 MiB |
+| `InterpreterPoolExecutor` | 65.97 ms | 74 MiB |
+| joblib | 96.20 ms | 211 MiB |
+| Pyroxide threaded | 171.14 ms | 34 MiB |
+| `ThreadPoolExecutor` | 182.83 ms | 30 MiB |
 
-```
-Total Time (seconds)
-  12s +-------------------------------------------------------+
-      |  ■ Baseline (Queue polling)                           |
-  10s |  ■                                                    |
-      |  ■                                                    |
-   8s |  ■                                                    |
-      |                                                       |
-   6s |      ■                                                |
-      |      ■                                                |
-   4s |                                                       |
-   2s |          ■                                            |
-      |  ●   ●   ● Pyroxide (Lock-free)                       |
-   0s +--+---+---+--------------------------------------------+
-       2 Ths 4 Ths 8 Ths
-```
+Across CPython 3.10–3.14, Pyroxide threaded was 12–14% faster than the thread
+pool for that same CPU batch, but both remained much slower than the process
+pool. This is scheduler efficiency under the GIL, not CPU parallelism.
 
-*   **2 Client Threads**:
-    *   *Baseline*: `10.1848 s` (high lock contention and serialization overhead).
-    *   *Pyroxide*: **`0.0022 s`** (0% CPU wastage, lock contention resolved in microseconds).
-*   **8 Client Threads**:
-    *   *Baseline*: `2.5624 s` (mitigated slightly by parallel thread scheduling, but still throttled by GIL).
-    *   *Pyroxide*: **`0.0025 s`**.
+The native/WASM boundary track used the same 1 KiB Rust workload. Direct PyO3,
+nanobind, warmed CFFI, and ctypes calls measured 7.26, 7.38, 7.63, and 8.59 µs
+respectively. A scheduled Pyroxide dylib call measured 22.56 µs; it includes
+task submission and result handling, so it is not a direct-binding speed claim.
+Warm Pyroxide WASM measured 47.57 µs versus 80.24 µs for the tested direct
+`wasmtime-py` host. Cold Wasmtime compile, instantiate, and call measured
+41.12 ms and is reported separately.
 
-**Scaling Mechanics**:
-Pyroxide maintains flat, sub-millisecond latencies regardless of thread count because task slots are allocated using a sharded/concurrent Slab architecture. Tasks are distributed to background OS threads via lock-free Crossbeam channels, bypassing CPython's GIL-locked queue mechanics entirely.
+Distributed and durable systems were measured in separate tracks. In the
+single-node four-worker run, Ray processed 7,542 trivial tasks/s and 1,690 CPU
+tasks/s; Dask processed 685 and 658 tasks/s. Ray used about 963–978 MiB peak
+process-tree RSS versus 329–335 MiB for Dask. With Redis, late acknowledgement,
+JSON serialization, two workers, and result retrieval enabled, Celery processed
+564 payload tasks/s and 251 CPU tasks/s; Dramatiq processed 248 and 93 tasks/s.
+These numbers compare each track's operational cost and must not be ranked
+against the embedded executors.
 
----
+The Odoo track produced one valid environment: pinned Odoo 19 on Python 3.13.
+For eight ledger payloads, two workers, and 30 matched blocks, steady-state
+median compute-only batch time was 60.37 ms inline, 31.77 ms with
+`ProcessPoolExecutor`, and 30.85 ms with Pyroxide isolated. Their p95 values
+were 61.59, 32.96, and 31.64 ms; Pyroxide's maximum was 33.41 ms.
 
-### Scenario C: Execution Engine Overhead (Rust vs. C vs. Zig vs. WASM)
-We evaluated the virtualization and ABI boundary costs of our different execution backends using identical compute payloads (calculating Fibonacci numbers).
+A separate run retained Pyroxide's default 100-task worker lifetime. Its median
+was 31.02 ms, but synchronous worker replacement produced one 303.52 ms batch.
+Two earlier runs were invalidated because they claimed recycling was disabled
+while using that default. The controlled runs show stable steady-state
+performance and a predictable recycling latency cost; they do not show random
+Pyroxide stalls. This test excludes ORM extraction, writes, HTTP, and Odoo
+worker-process overhead.
 
-| Engine Type | Compile Method | Execution Sandbox | Memory Safety | Avg. Latency (Fibonacci 20) |
-| :--- | :--- | :--- | :--- | :--- |
-| **CPython `@task`** | Interpreter | None (GIL held during call) | Python-managed | `~85.20 µs` |
-| **Rust `@dylib_task`** | `compile_rust` | Native OS (Direct pointer) | Rust-compiler-guaranteed | **`1.10 µs`** |
-| **C `@dylib_task`** | `compile_c` | Native OS (Direct pointer) | Manual memory management | **`0.98 µs`** |
-| **Zig `@dylib_task`** | `compile_zig` | Native OS (Direct pointer) | Safety checks enabled | **`1.02 µs`** |
-| **WASM `@wasm_task`** | Pre-compiled | `wasmtime` JIT VM | Hard virtual sandbox | `14.80 µs` |
+Odoo 19 and pinned Odoo master (“Odoo 20 preview”) could not install their
+official `libsass==0.22.0` requirement on Python 3.14. No 3.14 Odoo timing was
+published and no unpinned dependency was substituted.
 
-#### Architectural Analysis
-1.  **Native Dynamic Libraries (Rust/C/Zig)**:
-    Provide the highest performance (under **1.1 microseconds**). Since the compiled library is loaded directly into the host process address space, the calling overhead is just a C function pointer invocation (`libloading`). 
-2.  **WebAssembly Sandbox (`wasmtime`)**:
-    Incurs a virtualization cost of `~14.8 microseconds` (about 14x native overhead). This overhead is due to the boundary transition between the host machine and the `wasmtime` virtual machine sandbox (validating memory boundaries, copying buffers into the isolated VM memory space). However, it remains **6x faster** than raw Python execution and provides complete process-level safety.
+Canonical summaries, sample counts, environment metadata, native/WASM
+boundaries, distributed tracks, and Odoo results are versioned in
+`benchmark_results/`. Raw observations, logs, and invalid runs are generated
+locally by the reproducible harness but are not committed. The measurements are
+evidence for this machine and workload, not capacity-planning constants.
 
----
+## Running the local scripts
 
-### Scenario D: Long-Run Memory Profile
-To confirm that Pyroxide is ready for long-running, continuous production services, we ran a memory stress test submitting **1,000,000 sequential tasks** and measured the Resident Set Size (RSS) memory of the Python process.
-
-```
-Process RSS Memory (MB)
-  120MB +------------------------------------------------------+
-        |                                                      |
-  100MB |                                                      |
-        |                                                      |
-   80MB |------------------------------------------------------| <-- Flat 80MB line
-        |                                                      | (Zero memory leaks)
-   60MB |                                                      |
-        +--+------+------+------+------+------+------+------+--+
-          100k   200k   300k   400k   500k   600k   700k   800k (Tasks Completed)
-```
-
-- **Garbage Collection Eviction**: By monitoring `get_slab_size()`, we validated that when `TaskHandle` references fall out of scope in Python, the corresponding Rust memory slot in the broker's Slab is immediately evicted.
-- **Result**: The RSS memory remained perfectly flat at **80MB** throughout the 1,000,000 task cycles, proving zero memory leaks or slab footprint accumulation.
-
----
-
-### Scenario E: Comprehensive Concurrency Evaluation (CPython 3.11 vs. Python 3.14t Free-Threaded vs. Loky vs. Pyroxide)
-
-To evaluate Pyroxide against standard concurrency libraries (`ThreadPoolExecutor`, `ProcessPoolExecutor`, `loky`) and experimental free-threaded CPython (`Python 3.14t --disable-gil`), we measured execution times for scaling task loads using identical compute payloads (Fibonacci 20 workload).
-
-Empirical results gathered on **Apple M1 Pro (8 cores, 16GB RAM)**:
-
-#### Task Execution Times (100 Tasks - Fibonacci 20 Workload)
-| Execution Engine / Strategy | Execution Time | Speedup vs CPython 3.11 ThreadPool | Architecture Tier | GIL Status |
-| :--- | :---: | :---: | :--- | :---: |
-| **Pyroxide `@dylib_task` (C Native)** | **`0.0035 s`** | **🔥 22.3x speedup** | Native Dynamic Plugin | Bypassed (C-ABI) |
-| **Python 3.14t Free-Threaded (PEP 703)** | **`0.0038 s`** | **🚀 20.3x speedup** | Free-Threaded CPython | Disabled (`3.14t`) |
-| **Pyroxide `@task(isolated=True)`** | **`0.0164 s`** | **⚡ 4.7x (2.6x faster than Loky)** | Zero-Copy SHM Process Pool | Bypassed (Subprocess) |
-| **ThreadPoolExecutor (CPython 3.11)** | `0.0775 s` | `1.0x (baseline)` | Standard Threading | Locked (GIL) |
-| **Loky Process Pool (Joblib)** | `0.0439 s` | `1.77x` | Subprocess Pool | Bypassed (Subprocess) |
-| **ProcessPoolExecutor (Multiprocessing)** | `7.3296 s` | `0.01x` | Pickled Subprocess Pipes | Bypassed (Subprocess) |
-
-#### Empirical Analysis & Insights
-1. **Python 3.14t Free-Threaded (PEP 703) Validation**: Executing under `Python 3.14.6+freethreaded` (`GIL_disabled=True`) drops execution time to **`0.0038s` (a 20.3x speedup vs std CPython 3.11 ThreadPool)**. This confirms that PEP 703 successfully enables pure Python bytecode threads to scale across CPU cores without holding the GIL.
-2. **Why Pyroxide Dynamic Native Plugins Outperform Free-Threaded Python**: Pyroxide `@dylib_task` runs in **`0.0035s`**. While free-threading removes the GIL, pure Python bytecode execution remains interpreted. Pyroxide `@dylib_task` combines lock-free threadpool dispatching with compiled machine code, avoiding interpreter overhead altogether.
-3. **Subprocess Pool Efficiency**: Pyroxide `@task(isolated=True)` (`0.0164s`) runs **2.68x faster than Loky** (`0.0439s`) and **446x faster than ProcessPoolExecutor** (`7.3296s`). Pyroxide achieves lower latency by maintaining persistent worker daemons and routing payloads over zero-copy Shared Memory (`/dev/shm`).
-
----
-
-### Scenario F: Pyroxide vs. Celery / RQ (Distributed Task Queues)
-We compared Pyroxide's in-process task dispatching against Celery (using a local Redis broker). 
-- **The Task**: A no-op task to measure overhead.
-- **Average Latency per Task**:
-  - **Celery + Redis**: **`4.8 ms` to `12.5 ms`** (Even on localhost, Celery suffers from socket round-trips, broker storage, serialization/deserialization, and client pooling delay).
-  - **Pyroxide**: **`0.025 ms`** (25 microseconds; runs entirely in-process using OS-level futex signaling).
-- **Verdict**: Pyroxide is **200x to 500x faster** than Celery for in-process background offloading.
-
----
-
-### Scenario G: Pyroxide vs. Raw PyO3 C-Extension
-We isolated the function call overhead of Pyroxide's dynamic plugin loader against a custom, statically compiled PyO3 binary wrapper.
-- **Average Call Overhead**:
-  - **Raw PyO3 call**: **`0.2 µs - 0.8 µs`** (Direct C-API function pointer dispatch).
-  - **Pyroxide `@dylib_task`**: **`1.0 µs`** (Direct dynamic library function pointer dispatch via `libloading`).
-- **Verdict**: Pyroxide matches raw PyO3 speeds with **zero runtime penalty**, while completely eliminating the need to write static boilerplate or compile/deploy wheels for every native change.
-
-### Scenario H: Large Payload IPC (Shared Memory vs. Pickled Pipes)
-To evaluate the performance of Pyroxide v0.5.0's Hybrid Shared Memory (SHM) routing under large data transfers, we compared it against Python's `ProcessPoolExecutor` using a **1.5 MB payload** (representing a typical image frame, numpy array, or large JSON/text blob).
-
-- **ProcessPoolExecutor**: Serializes the 1.5 MB string via `pickle` and writes the bytes over standard OS pipes.
-- **Pyroxide `isolated=True` (SHM)**: Detects that the payload is `>= 1MB`, creates a shared memory segment, copies the data once, and routes only the segment name via the local socket.
-
-#### Results (Total Latency)
-| Task Count | ProcessPoolExecutor (Pickled Pipes) | Pyroxide isolated=True (Zero-Copy SHM) | Speedup |
-| :--- | :--- | :--- | :--- |
-| **10 Tasks** | `0.0904 s` | `0.0692 s` | **~1.3x** |
-| **50 Tasks** | `0.1470 s` | `0.0585 s` | **~2.5x** |
-
-**Key Takeaways**:
-- As task counts scale, the CPU overhead of serializing (pickling) and deserializing large objects in `ProcessPoolExecutor` becomes a massive bottleneck.
-- Pyroxide's zero-copy SHM routing keeps task dispatch latency flat because data is mapped directly into the worker's address space, bypassing the serialization pipeline.
-
----
-
-### Scenario I: Odoo Enterprise Arrow Ledger Audit (Large-Scale IPC)
-In this scenario, we evaluate Pyroxide's performance under a realistic enterprise workload: processing a **9.62 MB Apache Arrow serialized transaction ledger** (200,000 records) across 10 concurrent requests comparing different concurrency models.
-
-This test simulates how Odoo processes database records by serializing them to Arrow IPC format, transferring them to high-performance workers, and processing them.
-
-- **CPython ThreadPoolExecutor (GIL-Locked)**: Standard Python threads executing the audit in Python.
-- **Pyroxide Threaded `@task` (GIL-Locked)**: Executes the audit via Pyroxide's background thread pool, highlighting lightweight scheduler overhead.
-- **ProcessPoolExecutor (CPython, Pickled Pipes)**: standard Python multiprocessing serializing the Arrow table and sending it via OS pipes.
-- **Pyroxide SHM Isolated `@task` (Zero-Copy SHM)**: Runs the Python audit inside the isolated worker pool via OS Shared Memory.
-- **Pyroxide `@dylib_task` (C-compiled, GIL-Free)**: Compiles the audit logic into a native dynamic library and runs it completely GIL-free.
-
-#### Results (10 Concurrent Tasks)
-- **CPython ThreadPoolExecutor (GIL-Locked)**: `0.3453 s`
-- **Pyroxide Threaded `@task`**: `0.3239 s`
-- **ProcessPoolExecutor (Pickled Pipes)**: `0.2625 s`
-- **Pyroxide SHM Isolated `@task`**: `0.3241 s`
-- **Pyroxide `@dylib_task` (C-compiled, GIL-Free)**: **`0.0095 s`**
-
-**Key Takeaways**:
-- **GIL Bypass Performance**: By moving the Odoo audit logic into a dynamically compiled native C library, Pyroxide runs the workload in just **9.5 milliseconds**, compared to **345 milliseconds** using CPython's standard `ThreadPoolExecutor`—a **36.3x speedup**.
-- **Low Scheduler Overhead**: Pyroxide's threaded `@task` performs identically to CPython's ThreadPoolExecutor, proving that Pyroxide's lock-free thread dispatch scheduling introduces near-zero overhead.
-
-To run the Odoo simulation suite locally:
-```bash
-PYTHONPATH=python:. python3 examples/odoo_poc/odoo_complex_simulation.py
-```
-
----
-
-## 3. Conclusion & Key Takeaways
-
-The empirical evaluation of Pyroxide across these scenarios yields three main conclusions:
-
-1.  **In-Process vs. Out-of-Process**: Running background tasks inside the same process using Rust-native OS thread pools completely eliminates IPC/serialization (`pickle`) and network round-trip overhead. Pyroxide performs task dispatch and completion in **25 microseconds**—about **200x to 500x faster than Celery** and **65x faster than Python Multiprocessing** under scaling loads.
-2.  **No-Penalty Dynamic Compilation**: By loading dynamically compiled C-ABI shared libraries (`.so`/`.dylib`), Pyroxide achieves near-zero runtime dispatch penalty (**1.0 µs**) compared to raw PyO3 statically compiled bindings. This allows developers to build native dynamic plugins (in Rust, C, or Zig) with rapid feedback loops and zero distribution overhead.
-3.  **Virtualization vs. Security Trade-off**: The WebAssembly backend (`wasmtime`) introduces a modest boundary crossing overhead (~14.8 µs). While slower than direct C-ABI pointers, it is still **6x faster than Python** and provides absolute memory isolation (sandboxing) for executing untrusted algorithms safely.
-
----
-
-## 4. How to Run the Benchmark Suite
-
-You can execute the performance suite and the alternative comparison suite locally on your machine:
+Build Pyroxide in the active environment first:
 
 ```bash
-# 1. Run basic latency and asyncio benchmarks
-PYTHONPATH=python python3 examples/benchmarks/benchmark.py
-
-# 2. Run detailed comparative benchmarks against Python standard libraries
-PYTHONPATH=python:examples/benchmarks python3 examples/benchmarks/benchmark_vs_alternatives.py
+maturin develop
+python examples/benchmarks/benchmark.py
+python examples/benchmarks/benchmark_large_payload.py
+PYROXIDE_WORKERS=8 PYROXIDE_MAX_PROCESSES=8 \
+  python examples/benchmarks/benchmark_vs_alternatives.py --workers 8
 ```
+
+The comparison script exits instead of publishing mismatched results unless
+both Pyroxide pool sizes equal `--workers`.
+
+Optional comparisons require their own dependencies and interpreters. Record
+those exact versions in results. Do not copy numbers from this book into capacity
+plans; benchmark the deployed platform with representative task sizes and queue
+pressure.
+
+The generic runner refuses the reliability manifest. A one-task throughput cell
+is not a 30-minute or four-hour soak, so reliability evidence must come from a
+dedicated duration-aware harness.
+
+## Production evaluation
+
+Performance is only one release criterion. A useful soak test also records:
+
+- accepted and rejected submissions under bounded capacity;
+- queued and running tasks;
+- completion, failure, cancellation, and timeout behavior;
+- RSS and file-descriptor growth;
+- isolated worker churn and orphan cleanup;
+- shutdown drain time; and
+- p50, p95, and p99 end-to-end latency.
+
+Use `pyroxide.stats()` for engine counters and your application telemetry for
+request-level latency and correctness.

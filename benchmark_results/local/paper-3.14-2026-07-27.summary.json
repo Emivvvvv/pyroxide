@@ -1,0 +1,192 @@
+{
+  "summaries": [
+    {
+      "cells": {
+        "process-pool": {
+          "error_count": 0,
+          "incomplete": false,
+          "iqr_seconds": 0.0009146250013145618,
+          "mad_seconds": 0.000474603499242221,
+          "median_ci_seconds": [
+            0.017414916999769048,
+            0.01807810450100078
+          ],
+          "median_seconds": 0.017786124499252765,
+          "median_throughput_tasks_per_second": 1799.1687151956387,
+          "p95_seconds": 0.024860125000486732,
+          "peak_process_tree_rss_bytes": 161677312,
+          "sample_count": 30,
+          "workers": 4
+        },
+        "pyroxide-isolated": {
+          "error_count": 0,
+          "incomplete": false,
+          "iqr_seconds": 0.0012069999993400415,
+          "mad_seconds": 0.0005041455005994067,
+          "median_ci_seconds": [
+            0.019033291499908955,
+            0.019556500000362576
+          ],
+          "median_seconds": 0.019222625000111293,
+          "median_throughput_tasks_per_second": 1664.7067156543021,
+          "p95_seconds": 0.025856707999992068,
+          "peak_process_tree_rss_bytes": 153944064,
+          "sample_count": 30,
+          "workers": 4
+        },
+        "pyroxide-threaded": {
+          "error_count": 0,
+          "incomplete": false,
+          "iqr_seconds": 0.004694000999734271,
+          "mad_seconds": 0.0005624579989671474,
+          "median_ci_seconds": [
+            0.05524049949963228,
+            0.05626049999955285
+          ],
+          "median_seconds": 0.05548581249968265,
+          "median_throughput_tasks_per_second": 576.7241770274574,
+          "p95_seconds": 0.06620545799887623,
+          "peak_process_tree_rss_bytes": 34865152,
+          "sample_count": 30,
+          "workers": 4
+        },
+        "thread-pool": {
+          "error_count": 0,
+          "incomplete": false,
+          "iqr_seconds": 0.006132667000201764,
+          "mad_seconds": 0.003650000000561704,
+          "median_ci_seconds": [
+            0.060830437500044354,
+            0.0661322915011624
+          ],
+          "median_seconds": 0.06520083350096684,
+          "median_throughput_tasks_per_second": 490.7960725000494,
+          "p95_seconds": 0.07222641599946655,
+          "peak_process_tree_rss_bytes": 30851072,
+          "sample_count": 30,
+          "workers": 4
+        }
+      },
+      "experiment": {
+        "environment": "paper:3.14|cpython-3.14.6-abi-default-gil-on-darwin-arm64",
+        "id": "paper:3.14:python-cpu-w4",
+        "semantics": "steady_state_batch_makespan",
+        "workload": "python_cpu"
+      },
+      "pairs": [
+        {
+          "baseline": "process-pool",
+          "candidate": "pyroxide-isolated",
+          "complete_pairs": 30,
+          "median_ratio": 1.085758492539459
+        },
+        {
+          "baseline": "process-pool",
+          "candidate": "pyroxide-threaded",
+          "complete_pairs": 30,
+          "median_ratio": 3.134443680752427
+        },
+        {
+          "baseline": "process-pool",
+          "candidate": "thread-pool",
+          "complete_pairs": 30,
+          "median_ratio": 3.572440741122634
+        }
+      ]
+    },
+    {
+      "cells": {
+        "process-pool": {
+          "error_count": 0,
+          "incomplete": false,
+          "iqr_seconds": 0.005207541000345373,
+          "mad_seconds": 0.002486021000549954,
+          "median_ci_seconds": [
+            0.156690895999418,
+            0.15838310400067712
+          ],
+          "median_seconds": 0.15746172900071542,
+          "median_throughput_tasks_per_second": 6350.754941784415,
+          "p95_seconds": 0.166685125001095,
+          "peak_process_tree_rss_bytes": 166182912,
+          "sample_count": 30,
+          "workers": 4
+        },
+        "pyroxide-isolated": {
+          "error_count": 0,
+          "incomplete": false,
+          "iqr_seconds": 0.002829624998412328,
+          "mad_seconds": 0.0012804795005649794,
+          "median_ci_seconds": [
+            0.05168104149925057,
+            0.05277816700072435
+          ],
+          "median_seconds": 0.05234943749928789,
+          "median_throughput_tasks_per_second": 19102.4064740807,
+          "p95_seconds": 0.054923499999858905,
+          "peak_process_tree_rss_bytes": 155975680,
+          "sample_count": 30,
+          "workers": 4
+        },
+        "pyroxide-threaded": {
+          "error_count": 0,
+          "incomplete": false,
+          "iqr_seconds": 0.0013252919998194557,
+          "mad_seconds": 0.0006116880003901315,
+          "median_ci_seconds": [
+            0.0179446869997264,
+            0.0186191044995212
+          ],
+          "median_seconds": 0.018248250000397093,
+          "median_throughput_tasks_per_second": 54801.813677348255,
+          "p95_seconds": 0.020275875000152155,
+          "peak_process_tree_rss_bytes": 36814848,
+          "sample_count": 30,
+          "workers": 4
+        },
+        "thread-pool": {
+          "error_count": 0,
+          "incomplete": false,
+          "iqr_seconds": 0.0002749580016825348,
+          "mad_seconds": 0.00013454200052365195,
+          "median_ci_seconds": [
+            0.006251436999264115,
+            0.00641266650018224
+          ],
+          "median_seconds": 0.006292854000093939,
+          "median_throughput_tasks_per_second": 158910.45828356073,
+          "p95_seconds": 0.006798458000048413,
+          "peak_process_tree_rss_bytes": 32636928,
+          "sample_count": 30,
+          "workers": 4
+        }
+      },
+      "experiment": {
+        "environment": "paper:3.14|cpython-3.14.6-abi-default-gil-on-darwin-arm64",
+        "id": "paper:3.14:scheduler-w4",
+        "semantics": "steady_state_batch_makespan",
+        "workload": "trivial"
+      },
+      "pairs": [
+        {
+          "baseline": "process-pool",
+          "candidate": "pyroxide-isolated",
+          "complete_pairs": 30,
+          "median_ratio": 0.331642221443319
+        },
+        {
+          "baseline": "process-pool",
+          "candidate": "pyroxide-threaded",
+          "complete_pairs": 30,
+          "median_ratio": 0.1154176241902291
+        },
+        {
+          "baseline": "process-pool",
+          "candidate": "thread-pool",
+          "complete_pairs": 30,
+          "median_ratio": 0.04003366385857531
+        }
+      ]
+    }
+  ]
+}

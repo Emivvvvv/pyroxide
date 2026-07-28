@@ -1,0 +1,27 @@
+{
+  "cells": {
+    "wasmtime-cold": {
+      "error_count": 0,
+      "incomplete": false,
+      "iqr_seconds": 0.0010449169999999994,
+      "mad_seconds": 0.0005901659999999961,
+      "median_ci_seconds": [
+        0.039803125,
+        0.04201475
+      ],
+      "median_seconds": 0.041124166,
+      "median_throughput_tasks_per_second": 24.316602554322927,
+      "p95_seconds": 0.04201475,
+      "peak_process_tree_rss_bytes": 124731392,
+      "sample_count": 5,
+      "workers": 1
+    }
+  },
+  "experiment": {
+    "environment": "CPython-3.14.6-Darwin-arm64-gil-enabled",
+    "id": "wasm-cold-boundary",
+    "semantics": "batched_mean_wasmtime_compile_instantiate_and_call",
+    "workload": "shared-rust-frame-1k"
+  },
+  "pairs": []
+}

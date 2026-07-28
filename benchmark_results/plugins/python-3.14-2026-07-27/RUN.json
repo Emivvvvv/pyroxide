@@ -1,0 +1,14 @@
+{
+  "artifacts": {
+    "manifest_sha256": "336a95fe58d6f5bafcf82996c2a1c4813747712cc737ea00028f6db13748459a",
+    "native_library_sha256": "36a6ae29446e84516a35137424f3f42623e3c26b0ea3e8ca462cd969f625444f",
+    "wasm_guest_sha256": "72189ad6ef03b89956ff2b43b1d9b1c4877dc328ca5217aae73778a0abb59ae3"
+  },
+  "command": ".benchmark-envs/py314/bin/python -m examples.benchmarks.plugin_runner --profile examples/benchmarks/manifests/plugin-boundaries.toml --native-library examples/benchmarks/native_core/target/release/libbenchmark_core.dylib --wasm-module examples/benchmarks/wasm_core/target/wasm32-unknown-unknown/release/benchmark_wasm_core.wasm --output-directory benchmark_results/plugins/python-3.14-2026-07-27",
+  "completed_utc": "2026-07-27T11:45:36Z",
+  "environment": "CPython-3.14.6-Darwin-arm64-gil-enabled",
+  "error_rows": 0,
+  "raw_rows": 40,
+  "replaces": "An earlier CFFI setup-invalid run excluded from the repository.",
+  "status": "valid"
+}

@@ -1,0 +1,73 @@
+{
+  "commands": {
+    "broker_services_start": [
+      "docker",
+      "compose",
+      "-f",
+      "examples/benchmarks/compose.brokers.yml",
+      "--profile",
+      "execution",
+      "up",
+      "-d",
+      "--wait"
+    ],
+    "broker_services_stop": [
+      "docker",
+      "compose",
+      "-f",
+      "examples/benchmarks/compose.brokers.yml",
+      "--profile",
+      "execution",
+      "down"
+    ],
+    "celery_smoke": [
+      ".benchmark-envs/distributed/bin/python",
+      "-m",
+      "examples.benchmarks.brokers.benchmark",
+      "--backend",
+      "celery",
+      "--tasks",
+      "10",
+      "--output",
+      "benchmark_results/distributed/celery-smoke.json"
+    ],
+    "create_host_environment": [
+      "uv",
+      "venv",
+      "--python",
+      "3.14",
+      ".benchmark-envs/distributed"
+    ],
+    "dramatiq_smoke": [
+      ".benchmark-envs/distributed/bin/python",
+      "-m",
+      "examples.benchmarks.brokers.benchmark",
+      "--backend",
+      "dramatiq",
+      "--tasks",
+      "10",
+      "--output",
+      "benchmark_results/distributed/dramatiq-smoke.json"
+    ],
+    "install_host_dependencies": [
+      "uv",
+      "pip",
+      "install",
+      "--python",
+      ".benchmark-envs/distributed/bin/python",
+      "-r",
+      "examples/benchmarks/requirements-distributed.txt"
+    ],
+    "local_distributed": [
+      ".benchmark-envs/distributed/bin/python",
+      "-m",
+      "examples.benchmarks.runner",
+      "--manifest",
+      "examples/benchmarks/manifests/distributed.toml",
+      "--output",
+      "benchmark_results/distributed/raw.jsonl"
+    ]
+  },
+  "comparison_scope": "separate_from_local_executor_tables",
+  "schema_version": 1
+}

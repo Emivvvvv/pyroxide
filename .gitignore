@@ -25,8 +25,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 .venv/
+.benchmark-envs/
 venv/
 env/
+.worktrees/
 
 # OS & Editor ignores
 .DS_Store
@@ -56,3 +58,11 @@ docs/api/
 *_proxy.pyi
 *_proxy.py
 
+# Benchmark output telemetry
+benchmark_results/**/*.jsonl
+benchmark_results/**/*.log
+benchmark_results/**/*.report.md
+benchmark_results/**/smoke/
+benchmark_results/failed/
+benchmark_results/superseded/
+benchmark_results/local/exploratory-*

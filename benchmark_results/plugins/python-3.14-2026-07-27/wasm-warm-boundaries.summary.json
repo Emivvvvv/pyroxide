@@ -1,0 +1,50 @@
+{
+  "cells": {
+    "pyroxide-wasm-scheduled": {
+      "error_count": 0,
+      "incomplete": false,
+      "iqr_seconds": 1.0422499999999984e-06,
+      "mad_seconds": 3.696670000000006e-07,
+      "median_ci_seconds": [
+        4.6276708e-05,
+        4.7940875e-05
+      ],
+      "median_seconds": 4.7571208e-05,
+      "median_throughput_tasks_per_second": 21021.11848830915,
+      "p95_seconds": 4.7940875e-05,
+      "peak_process_tree_rss_bytes": 130957312,
+      "sample_count": 5,
+      "workers": 1
+    },
+    "wasmtime-warm": {
+      "error_count": 0,
+      "incomplete": false,
+      "iqr_seconds": 5.038760000000014e-07,
+      "mad_seconds": 3.26679999999895e-08,
+      "median_ci_seconds": [
+        7.9576709e-05,
+        8.0272834e-05
+      ],
+      "median_seconds": 8.0240166e-05,
+      "median_throughput_tasks_per_second": 12462.586380990288,
+      "p95_seconds": 8.0272834e-05,
+      "peak_process_tree_rss_bytes": 130957312,
+      "sample_count": 5,
+      "workers": 1
+    }
+  },
+  "experiment": {
+    "environment": "CPython-3.14.6-Darwin-arm64-gil-enabled",
+    "id": "wasm-warm-boundaries",
+    "semantics": "batched_mean_pre_registered_guest_call",
+    "workload": "shared-rust-frame-1k"
+  },
+  "pairs": [
+    {
+      "baseline": "pyroxide-wasm-scheduled",
+      "candidate": "wasmtime-warm",
+      "complete_pairs": 5,
+      "median_ratio": 1.687424754906371
+    }
+  ]
+}

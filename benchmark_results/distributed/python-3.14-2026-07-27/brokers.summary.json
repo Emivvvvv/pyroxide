@@ -1,0 +1,77 @@
+{
+  "comparison_scope": "broker_operational_separate",
+  "groups": [
+    {
+      "backend": "celery_redis",
+      "blocks": 30,
+      "median_batch_makespan_seconds": 1.7725009164999999,
+      "median_throughput_tasks_per_second": 564.1746030251825,
+      "p05_throughput_tasks_per_second": 520.4429750021878,
+      "p95_throughput_tasks_per_second": 628.4370387363892,
+      "payload_bytes": 1024,
+      "tasks_per_observation": 1000,
+      "workload": "payload_echo"
+    },
+    {
+      "backend": "dramatiq_redis",
+      "blocks": 30,
+      "median_batch_makespan_seconds": 4.036244416500001,
+      "median_throughput_tasks_per_second": 247.75839573018914,
+      "p05_throughput_tasks_per_second": 213.96640303565258,
+      "p95_throughput_tasks_per_second": 254.67887709737238,
+      "payload_bytes": 1024,
+      "tasks_per_observation": 1000,
+      "workload": "payload_echo"
+    },
+    {
+      "backend": "celery_redis",
+      "blocks": 30,
+      "median_batch_makespan_seconds": 0.3985695,
+      "median_throughput_tasks_per_second": 250.8972804393838,
+      "p05_throughput_tasks_per_second": 227.58860769237506,
+      "p95_throughput_tasks_per_second": 269.7024515687779,
+      "payload_bytes": 1024,
+      "tasks_per_observation": 100,
+      "workload": "python_cpu"
+    },
+    {
+      "backend": "dramatiq_redis",
+      "blocks": 30,
+      "median_batch_makespan_seconds": 1.0703451875,
+      "median_throughput_tasks_per_second": 93.42868759964665,
+      "p05_throughput_tasks_per_second": 72.3134040151092,
+      "p95_throughput_tasks_per_second": 120.71505936383377,
+      "payload_bytes": 1024,
+      "tasks_per_observation": 100,
+      "workload": "python_cpu"
+    }
+  ],
+  "observations": 120,
+  "paired_comparisons": [
+    {
+      "blocks": 30,
+      "denominator": "dramatiq_redis",
+      "median_throughput_ratio": 2.3556556897490846,
+      "numerator": "celery_redis",
+      "workload": "payload_echo"
+    },
+    {
+      "blocks": 30,
+      "denominator": "dramatiq_redis",
+      "median_throughput_ratio": 2.6242050043604985,
+      "numerator": "celery_redis",
+      "workload": "python_cpu"
+    }
+  ],
+  "schema_version": 1,
+  "sources": [
+    {
+      "path": "benchmark_results/distributed/python-3.14-2026-07-27/brokers-payload-echo.jsonl",
+      "sha256": "24779c9f045adafb395e1b1bef056b8f4bc12e31901a4e41923538e750b53865"
+    },
+    {
+      "path": "benchmark_results/distributed/python-3.14-2026-07-27/brokers-python-cpu.jsonl",
+      "sha256": "a10fd7bc0659e6f3e6658aac5a6184e6a8defa1343a833f8203fb111dd56bc7c"
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "backends": {
+    "cffi-direct": {
+      "artifact_hash": "895b9b1316256a37f44a4270f3c32521abf0a8c96ee711a2865314e2d1de1f8d",
+      "available": true,
+      "reason": null
+    },
+    "ctypes-direct": {
+      "artifact_hash": "8026e027985ea0e10faf95269726f33e2a6565be3ab9342ec4a7785d8eb481cb",
+      "available": true,
+      "reason": null
+    },
+    "nanobind-direct": {
+      "artifact_hash": "8e1234ac065b50cabdb933c7b99785b5e5fd6663493fa0c6ca9b2ee3c4f6243c",
+      "available": true,
+      "reason": null
+    },
+    "pyo3-direct": {
+      "artifact_hash": "12fbc4e46736f25645c47339c7afcaa6990deee72e5839bba779b84ba53da22c",
+      "available": true,
+      "reason": null
+    },
+    "pyroxide-dylib-scheduled": {
+      "artifact_hash": "95970bc6560de3c7dffb58defc9739dab89d118bc9d566da05fff2479c08fc3e",
+      "available": true,
+      "reason": null
+    },
+    "pyroxide-wasm-scheduled": {
+      "artifact_hash": "81ca436f8896b77279fd33e4c4c632e299d01585e0dc0bf2ef0cfd5ee35efae8",
+      "available": true,
+      "reason": null
+    },
+    "wasmtime-cold": {
+      "artifact_hash": "e6a6fc609dbfffb242efc275e6724b91c9148712738e101f6f076afaed101ce5",
+      "available": true,
+      "reason": null
+    },
+    "wasmtime-warm": {
+      "artifact_hash": "e6a6fc609dbfffb242efc275e6724b91c9148712738e101f6f076afaed101ce5",
+      "available": true,
+      "reason": null
+    }
+  },
+  "environment": "CPython-3.14.6-Darwin-arm64-gil-enabled",
+  "schema_version": 1
+}

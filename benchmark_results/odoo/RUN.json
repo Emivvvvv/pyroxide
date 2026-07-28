@@ -1,0 +1,77 @@
+{
+  "artifacts": {
+    "odoo19_py313_recycling_result_sha256": "c0c0a5627db497f169a836e37bc0910760fb060b5eedf7b740ff13416c450856",
+    "odoo19_py313_steady_result_sha256": "75c344dd2ce629789ff5db34d7be7d7b173dded4217070d745dfa97bd59909f5"
+  },
+  "commands": {
+    "odoo19_py313_correctness": "uv run python examples/odoo_benchmark/runner.py --profile odoo19-py313 --execute --project-name pyroxide-odoo19-py313-correctness",
+    "odoo19_py313_recycling": "uv run python examples/odoo_benchmark/runner.py --profile odoo19-py313 --benchmark-recycling --project-name pyroxide-odoo19-py313-recycling --output-directory benchmark_results/odoo",
+    "odoo19_py313_steady": "uv run python examples/odoo_benchmark/runner.py --profile odoo19-py313 --benchmark --project-name pyroxide-odoo19-py313-steady --output-directory benchmark_results/odoo",
+    "odoo19_py314_correctness": "uv run python examples/odoo_benchmark/runner.py --profile odoo19-py314 --execute --project-name pyroxide-odoo19-py314-correctness",
+    "odoo_master_py314_correctness": "uv run python examples/odoo_benchmark/runner.py --profile odoo-master-py314 --execute --project-name pyroxide-odoo-master-py314-correctness"
+  },
+  "completed_utc": "2026-07-27T13:12:32Z",
+  "invalidated_evidence": "Excluded from the repository; reasons are recorded in timing_caveats.",
+  "matrix": {
+    "odoo19_py313": {
+      "correctness": "pass",
+      "recycling_performance": "valid",
+      "steady_performance": "valid"
+    },
+    "odoo19_py314": {
+      "correctness": "blocked_before_tests",
+      "reason": "Official pinned Odoo requirements select libsass==0.22.0, whose build backend is incompatible with CPython 3.14."
+    },
+    "odoo_master_py314": {
+      "correctness": "blocked_before_tests",
+      "reason": "Official pinned Odoo requirements select libsass==0.22.0, whose build backend is incompatible with CPython 3.14."
+    }
+  },
+  "performance": {
+    "executed_boundary": "compute_only",
+    "payloads_per_batch": 8,
+    "repetitions": 30,
+    "recycling_100_tasks": {
+      "inline_python": {
+        "maximum_seconds": 0.061264667,
+        "median_seconds": 0.0604607495,
+        "p95_seconds": 0.061243208
+      },
+      "process_pool_spawn_2_workers": {
+        "maximum_seconds": 0.032593458,
+        "median_seconds": 0.0315381875,
+        "p95_seconds": 0.032512333
+      },
+      "pyroxide_isolated_2_workers": {
+        "maximum_seconds": 0.303523167,
+        "median_seconds": 0.031024917,
+        "p95_seconds": 0.032392958
+      }
+    },
+    "steady_recycling_disabled": {
+      "inline_python": {
+        "maximum_seconds": 0.061646042,
+        "median_seconds": 0.0603677085,
+        "p95_seconds": 0.061588667
+      },
+      "process_pool_spawn_2_workers": {
+        "maximum_seconds": 0.033018375,
+        "median_seconds": 0.031768375,
+        "p95_seconds": 0.032964417
+      },
+      "pyroxide_isolated_2_workers": {
+        "maximum_seconds": 0.033407167,
+        "median_seconds": 0.0308524585,
+        "p95_seconds": 0.03164075
+      }
+    },
+    "warmups": 3
+  },
+  "status": "partial_matrix_valid",
+  "timing_caveats": [
+    "Only the compute boundary was executed; ORM extraction, ORM writes, shell, HTTP, end-to-end, and multiprocess Odoo-server performance were not measured.",
+    "The steady-state run explicitly set PYROXIDE_MAX_TASKS_PER_WORKER=0. Its Pyroxide maximum was 0.033407167 seconds.",
+    "The recycling run explicitly set PYROXIDE_MAX_TASKS_PER_WORKER=100. Synchronous worker replacement produced one 0.303523167-second Pyroxide batch.",
+    "Two earlier runs that claimed recycling was disabled actually used the default of 100. They are excluded from the repository and from steady-state conclusions."
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "comparison_scope": "result-returning durable queue track",
+  "evaluated_on": "2026-07-27",
+  "fluxqueue": {
+    "decision": "excluded",
+    "reason": "FluxQueue 0.3.2's official decorated task API is fire-and-forget and returns no job/result handle. Adding an external completion side effect would change the matched checksum-verifying completion semantics.",
+    "sources": [
+      "https://pypi.org/project/fluxqueue/0.3.2/",
+      "https://fluxqueue.ccxlv.dev/api/fluxqueue/"
+    ],
+    "version": "0.3.2"
+  },
+  "schema_version": 1,
+  "taskito": {
+    "decision": "excluded_from_this_established_run",
+    "reason": "Taskito 0.21.0 has a usable JobResult API, but it is a Beta SQLite-backed queue with materially different storage semantics. Adding and validating a new methodology now would expand this established Redis broker track.",
+    "sources": [
+      "https://pypi.org/project/taskito/0.21.0/",
+      "https://docs.byteveda.org/taskito/"
+    ],
+    "version": "0.21.0"
+  }
+}

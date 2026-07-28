@@ -1,0 +1,19 @@
+{
+  "inspected_on": "2026-07-27",
+  "inspection_command": "docker buildx imagetools inspect",
+  "images": {
+    "python_worker": {
+      "index_digest": "sha256:0aecac02dc3d4c5dbb024b753af084cafe41f5416e02193f1ce345d671ec966e",
+      "platform": "linux/arm64/v8",
+      "platform_digest": "sha256:d4c6c639f80b11b7fb0f682bdd93c054f58e748aba354d7fbe92689e04dff2d0",
+      "reference": "python:3.14.0-slim"
+    },
+    "redis": {
+      "index_digest": "sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952",
+      "platform": "linux/arm64/v8",
+      "platform_digest": "sha256:90cac51530a49aaa42eaf65712e84005677a0c44191e721e2de756927031fb9d",
+      "reference": "redis:7.4.2-alpine"
+    }
+  },
+  "schema_version": 1
+}

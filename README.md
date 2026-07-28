@@ -171,9 +171,10 @@ and 31.64 ms p95 versus 31.77 and 32.96 ms for `ProcessPoolExecutor`. With
 Pyroxide's 100-task recycling enabled, one batch paid process startup and
 reached 303.52 ms; latency-sensitive deployments should evaluate that tradeoff.
 
-The [saved study](benchmark_results/README.md) includes raw JSONL, confidence
-intervals, p95, memory, Python 3.10–3.14, 3.14t, native/WASM boundaries,
-distributed systems, and Odoo integration results.
+The [saved study](benchmark_results/README.md) includes canonical summaries,
+sample counts, confidence intervals, p95, memory, environment metadata,
+Python 3.10–3.14, 3.14t, native/WASM boundaries, distributed systems, and Odoo
+integration results.
 
 ## Development
 

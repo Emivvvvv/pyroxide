@@ -1,0 +1,36 @@
+{
+  "comparison_scope": "separate_from_local_executor_tables",
+  "components": {
+    "celery": {
+      "available": true,
+      "version": "5.6.3"
+    },
+    "dask_single_node": {
+      "available": true,
+      "version": "2026.7.1"
+    },
+    "dramatiq": {
+      "available": true,
+      "version": "2.2.0"
+    },
+    "ray_single_node": {
+      "available": true,
+      "version": "2.56.1"
+    },
+    "redis_client": {
+      "available": true,
+      "version": "6.4.0"
+    }
+  },
+  "container_runtime": {
+    "available": true,
+    "executable": "/opt/homebrew/bin/docker",
+    "reason": null
+  },
+  "runnable_tracks": {
+    "brokers": true,
+    "dask_single_node": true,
+    "ray_single_node": true
+  },
+  "schema_version": 1
+}

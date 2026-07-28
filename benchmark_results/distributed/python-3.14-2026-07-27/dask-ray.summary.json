@@ -1,0 +1,104 @@
+{
+  "summaries": [
+    {
+      "cells": {
+        "dask": {
+          "error_count": 0,
+          "incomplete": false,
+          "iqr_seconds": 0.009332749998065992,
+          "mad_seconds": 0.004666374999032996,
+          "median_ci_seconds": [
+            0.1482921670003634,
+            0.15459504200134688
+          ],
+          "median_seconds": 0.15208354200058238,
+          "median_throughput_tasks_per_second": 657.5359286222599,
+          "p95_seconds": 0.18851633300073445,
+          "peak_process_tree_rss_bytes": 329072640,
+          "sample_count": 30,
+          "workers": 4
+        },
+        "ray": {
+          "error_count": 0,
+          "incomplete": false,
+          "iqr_seconds": 0.003524375999404583,
+          "mad_seconds": 0.0013329995008461992,
+          "median_ci_seconds": [
+            0.05829875049948896,
+            0.060327584000333445
+          ],
+          "median_seconds": 0.05917052050062921,
+          "median_throughput_tasks_per_second": 1690.0363536962222,
+          "p95_seconds": 0.06543683400013833,
+          "peak_process_tree_rss_bytes": 962887680,
+          "sample_count": 30,
+          "workers": 4
+        }
+      },
+      "experiment": {
+        "environment": "distributed:3.14|cpython-3.14.6-abi-default-gil-on-darwin-arm64",
+        "id": "distributed:3.14:python-cpu-w4",
+        "semantics": "steady_state_batch_makespan",
+        "workload": "python_cpu"
+      },
+      "pairs": [
+        {
+          "baseline": "dask",
+          "candidate": "ray",
+          "complete_pairs": 30,
+          "median_ratio": 0.39623046279136587
+        }
+      ]
+    },
+    {
+      "cells": {
+        "dask": {
+          "error_count": 0,
+          "incomplete": false,
+          "iqr_seconds": 0.04945962599958875,
+          "mad_seconds": 0.022135104499284353,
+          "median_ci_seconds": [
+            1.441226228999767,
+            1.4691554584996993
+          ],
+          "median_seconds": 1.4593558124997799,
+          "median_throughput_tasks_per_second": 685.2352169605911,
+          "p95_seconds": 1.5848372500004189,
+          "peak_process_tree_rss_bytes": 334905344,
+          "sample_count": 30,
+          "workers": 4
+        },
+        "ray": {
+          "error_count": 0,
+          "incomplete": false,
+          "iqr_seconds": 0.0025625829985074233,
+          "mad_seconds": 0.0016019369995774468,
+          "median_ci_seconds": [
+            0.1311628750008822,
+            0.13302570850009943
+          ],
+          "median_seconds": 0.13259256200035452,
+          "median_throughput_tasks_per_second": 7541.901406320901,
+          "p95_seconds": 0.15967858399926627,
+          "peak_process_tree_rss_bytes": 977813504,
+          "sample_count": 30,
+          "workers": 4
+        }
+      },
+      "experiment": {
+        "environment": "distributed:3.14|cpython-3.14.6-abi-default-gil-on-darwin-arm64",
+        "id": "distributed:3.14:trivial-w4",
+        "semantics": "steady_state_batch_makespan",
+        "workload": "trivial"
+      },
+      "pairs": [
+        {
+          "baseline": "dask",
+          "candidate": "ray",
+          "complete_pairs": 30,
+          "median_ratio": 0.09096666794517327
+        }
+      ]
+    }
+  ]
+}
