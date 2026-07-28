@@ -44,8 +44,63 @@ pub(crate) struct QueueAdmission {
 
 #[cfg(test)]
 struct QueueAdmissionWaitHook {
-    reached: std::sync::Barrier,
-    resume: std::sync::Barrier,
+    state: Mutex<QueueAdmissionWaitState>,
+    changed: Condvar,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct QueueAdmissionWaitState {
+    reached: bool,
+    resumed: bool,
+}
+
+#[cfg(test)]
+impl QueueAdmissionWaitHook {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(QueueAdmissionWaitState::default()),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn wait(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.reached = true;
+        self.changed.notify_all();
+        while !state.resumed {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+    }
+
+    fn wait_until_reached(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        while !state.reached {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (next_state, wait) = self
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|error| error.into_inner());
+            state = next_state;
+            if wait.timed_out() && !state.reached {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn resume(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.resumed = true;
+        self.changed.notify_all();
+    }
 }
 
 impl QueueAdmission {
@@ -77,15 +132,22 @@ impl QueueAdmission {
             return true;
         }
 
-        let deadline = Instant::now() + timeout;
+        let deadline = Instant::now().checked_add(timeout);
+        const UNBOUNDED_WAIT_CHUNK: Duration = Duration::from_secs(24 * 60 * 60);
         while *available < count {
             if self.closed.load(Ordering::Acquire) {
                 return false;
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return false;
-            }
+            let remaining = match deadline {
+                Some(deadline) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return false;
+                    }
+                    remaining
+                }
+                None => UNBOUNDED_WAIT_CHUNK,
+            };
             #[cfg(test)]
             if let Some(hook) = self
                 .before_wait
@@ -93,15 +155,14 @@ impl QueueAdmission {
                 .unwrap_or_else(|error| error.into_inner())
                 .clone()
             {
-                hook.reached.wait();
-                hook.resume.wait();
+                hook.wait();
             }
             let (guard, wait) = self
                 .changed
                 .wait_timeout(available, remaining)
                 .unwrap_or_else(|e| e.into_inner());
             available = guard;
-            if wait.timed_out() && *available < count {
+            if deadline.is_some() && wait.timed_out() && *available < count {
                 return false;
             }
         }
@@ -1013,7 +1074,7 @@ pub(crate) fn get_engine_stats(py: Python<'_>) -> PyResult<Py<PyAny>> {
 mod tests {
     use super::{QueueAdmission, QueueAdmissionWaitHook, reserve_batch_and_build};
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Barrier, mpsc};
+    use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
     #[test]
@@ -1021,10 +1082,7 @@ mod tests {
         let admission = Arc::new(QueueAdmission::new(1));
         assert!(admission.reserve(1, Duration::ZERO));
 
-        let hook = Arc::new(QueueAdmissionWaitHook {
-            reached: Barrier::new(2),
-            resume: Barrier::new(2),
-        });
+        let hook = Arc::new(QueueAdmissionWaitHook::new());
         admission.install_before_wait_hook(Arc::clone(&hook));
 
         let (result_tx, result_rx) = mpsc::channel();
@@ -1034,7 +1092,12 @@ mod tests {
             result_tx.send(reserved).unwrap();
         });
 
-        hook.reached.wait();
+        if !hook.wait_until_reached(Duration::from_secs(1)) {
+            hook.resume();
+            admission.close();
+            let _ = waiter.join();
+            panic!("capacity waiter did not reach the wait boundary");
+        }
 
         let (close_started_tx, close_started_rx) = mpsc::channel();
         let (close_done_tx, close_done_rx) = mpsc::channel();
@@ -1053,7 +1116,7 @@ mod tests {
         // Once close() locks the predicate mutex, it instead completes after the
         // hook releases reserve() into wait_timeout().
         let _ = close_done_rx.recv_timeout(Duration::from_millis(250));
-        hook.resume.wait();
+        hook.resume();
 
         let prompt_result = result_rx.recv_timeout(Duration::from_millis(250)).ok();
         if prompt_result.is_none() {
@@ -1067,6 +1130,58 @@ mod tests {
             prompt_result,
             Some(false),
             "close() did not promptly wake the capacity-blocked reservation"
+        );
+    }
+
+    #[test]
+    fn huge_timeout_does_not_overflow_and_close_wakes_waiter() {
+        let admission = Arc::new(QueueAdmission::new(1));
+        assert!(admission.reserve(1, Duration::ZERO));
+
+        let hook = Arc::new(QueueAdmissionWaitHook::new());
+        admission.install_before_wait_hook(Arc::clone(&hook));
+
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiting_admission = Arc::clone(&admission);
+        let waiter = std::thread::spawn(move || {
+            let reserved = waiting_admission.reserve(1, Duration::MAX);
+            result_tx.send(reserved).unwrap();
+        });
+
+        if !hook.wait_until_reached(Duration::from_secs(1)) {
+            hook.resume();
+            admission.close();
+            let _ = waiter.join();
+            panic!("extreme-timeout reservation did not reach the wait boundary");
+        }
+
+        let (close_started_tx, close_started_rx) = mpsc::channel();
+        let (close_done_tx, close_done_rx) = mpsc::channel();
+        let closing_admission = Arc::clone(&admission);
+        let closer = std::thread::spawn(move || {
+            close_started_tx.send(()).unwrap();
+            closing_admission.close();
+            close_done_tx.send(()).unwrap();
+        });
+        close_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+
+        let _ = close_done_rx.recv_timeout(Duration::from_millis(250));
+        hook.resume();
+
+        let prompt_result = result_rx.recv_timeout(Duration::from_millis(250)).ok();
+        if prompt_result.is_none() {
+            admission.release(1);
+            let _ = result_rx.recv_timeout(Duration::from_secs(1));
+        }
+
+        closer.join().unwrap();
+        waiter.join().unwrap();
+        assert_eq!(
+            prompt_result,
+            Some(false),
+            "close() did not promptly wake the extreme-timeout reservation"
         );
     }
 
