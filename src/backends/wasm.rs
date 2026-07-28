@@ -57,3 +57,101 @@ pub(crate) fn register_wasm_module_internal(
     map.insert(module_name, module);
     Ok(())
 }
+
+pub(crate) fn execute_wasm_guest(
+    module_name: &str,
+    func_name: &str,
+    input_bytes: &[u8],
+    limit_bytes: usize,
+    timeout_ms: u64,
+    cancel_check: Option<&dyn Fn() -> bool>,
+) -> Result<Vec<u8>, String> {
+    let module = get_wasm_module(module_name)
+        .ok_or_else(|| format!("WASM module '{module_name}' not registered"))?;
+
+    let engine = get_wasm_engine();
+    let state = WasmState {
+        limits: wasmtime::StoreLimitsBuilder::new()
+            .memory_size(limit_bytes)
+            .build(),
+    };
+    let mut store = wasmtime::Store::new(engine, state);
+    store.limiter(|s| &mut s.limits);
+
+    let tick_ms = get_wasm_tick_ms();
+    let ticks = (timeout_ms / tick_ms).max(1);
+    store.set_epoch_deadline(ticks);
+
+    let linker = wasmtime::Linker::new(engine);
+    let instance = linker
+        .instantiate(&mut store, &module)
+        .map_err(|e| format!("Failed to instantiate WASM: {e}"))?;
+
+    let alloc_fn = instance
+        .get_typed_func::<i32, i32>(&mut store, "alloc")
+        .map_err(|e| format!("WASM missing export 'alloc': {e}"))?;
+    let dealloc_fn = instance
+        .get_typed_func::<(i32, i32), ()>(&mut store, "dealloc")
+        .map_err(|e| format!("WASM missing export 'dealloc': {e}"))?;
+    let run_fn = instance
+        .get_typed_func::<(i32, i32), i64>(&mut store, func_name)
+        .map_err(|e| format!("WASM missing export '{func_name}': {e}"))?;
+
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .ok_or_else(|| "WASM missing export 'memory'".to_string())?;
+
+    let input_len = crate::config::validate_wasm_input_len(input_bytes.len(), limit_bytes)?;
+
+    if let Some(check) = cancel_check {
+        if check() {
+            return Err("Task cancelled".to_string());
+        }
+    }
+
+    let guest_ptr = alloc_fn
+        .call(&mut store, input_len)
+        .map_err(|e| format!("WASM alloc failed: {e}"))?;
+
+    memory
+        .write(&mut store, guest_ptr as usize, input_bytes)
+        .map_err(|e| format!("Failed to write to WASM memory: {e}"))?;
+
+    if let Some(check) = cancel_check {
+        if check() {
+            let _ = dealloc_fn.call(&mut store, (guest_ptr, input_len));
+            return Err("Task cancelled".to_string());
+        }
+    }
+
+    let packed_result = run_fn
+        .call(&mut store, (guest_ptr, input_len))
+        .map_err(|e| format!("WASM execution failed: {e}"))?;
+
+    let out_ptr = (packed_result >> 32) as i32;
+    let out_len = (packed_result & 0xFFFFFFFF) as i32;
+    let (out_start, out_size) = crate::config::validate_wasm_output_range(
+        out_ptr,
+        out_len,
+        limit_bytes,
+        memory.data_size(&store),
+    )?;
+
+    if let Some(check) = cancel_check {
+        if check() {
+            let _ = dealloc_fn.call(&mut store, (guest_ptr, input_len));
+            let _ = dealloc_fn.call(&mut store, (out_ptr, out_len));
+            return Err("Task cancelled".to_string());
+        }
+    }
+
+    let mut output_bytes = vec![0u8; out_size];
+    memory
+        .read(&store, out_start, &mut output_bytes)
+        .map_err(|e| format!("Failed to read from WASM memory: {e}"))?;
+
+    let _ = dealloc_fn.call(&mut store, (guest_ptr, input_len));
+    let _ = dealloc_fn.call(&mut store, (out_ptr, out_len));
+
+    Ok(output_bytes)
+}
