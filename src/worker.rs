@@ -1,4 +1,5 @@
-use crate::broker::{Broker, QueueAdmission, Task, TaskStatus};
+use crate::broker::{Broker, QueueAdmission};
+use crate::task::{Task, TaskStatus};
 use pyo3::prelude::*;
 use std::cell::Cell;
 use std::sync::atomic::Ordering;
@@ -40,7 +41,7 @@ fn record_shutdown_cancellation(broker: &Broker, task_id: usize, task: &Arc<Task
         .unwrap_or_else(|error| error.into_inner()) = true;
     task.completed_cvar.notify_all();
     #[cfg(unix)]
-    crate::notify_waker(task_id);
+    crate::async_waker::notify_waker(task_id);
 
     if task.autofree.load(Ordering::Acquire) {
         crate::broker::free_task(task_id);
@@ -357,15 +358,15 @@ fn worker_loop(
                             NativePayload::Bytes(b) => b.as_slice(),
                         };
 
-                        let module = crate::get_wasm_module(module_name)
+                        let module = crate::backends::wasm::get_wasm_module(module_name)
                             .ok_or_else(|| format!("WASM module '{module_name}' not registered"))?;
 
-                        let engine = crate::get_wasm_engine();
+                        let engine = crate::backends::wasm::get_wasm_engine();
                         let limit_bytes = task_clone
                             .wasm_memory_limit_bytes
-                            .unwrap_or_else(crate::get_wasm_memory_limit_bytes);
+                            .unwrap_or_else(crate::config::get_wasm_memory_limit_bytes);
 
-                        let state = crate::WasmState {
+                        let state = crate::backends::wasm::WasmState {
                             limits: wasmtime::StoreLimitsBuilder::new()
                                 .memory_size(limit_bytes)
                                 .build(),
@@ -375,8 +376,8 @@ fn worker_loop(
 
                         let timeout_ms = task_clone
                             .wasm_timeout_ms
-                            .unwrap_or_else(crate::get_wasm_timeout_ms);
-                        let tick_ms = crate::get_wasm_tick_ms();
+                            .unwrap_or_else(crate::config::get_wasm_timeout_ms);
+                        let tick_ms = crate::config::get_wasm_tick_ms();
                         let ticks = (timeout_ms / tick_ms).max(1);
                         store.set_epoch_deadline(ticks);
 
@@ -400,7 +401,7 @@ fn worker_loop(
                             .ok_or_else(|| "WASM missing export 'memory'".to_string())?;
 
                         let input_len =
-                            crate::validate_wasm_input_len(input_bytes.len(), limit_bytes)?;
+                            crate::config::validate_wasm_input_len(input_bytes.len(), limit_bytes)?;
 
                         if task_clone.cancelled.load(Ordering::Acquire) {
                             return Err("Task cancelled".to_string());
@@ -429,7 +430,7 @@ fn worker_loop(
                         // Unpack pointer and length
                         let out_ptr = (packed_result >> 32) as i32;
                         let out_len = (packed_result & 0xFFFFFFFF) as i32;
-                        let (out_start, out_size) = crate::validate_wasm_output_range(
+                        let (out_start, out_size) = crate::config::validate_wasm_output_range(
                             out_ptr,
                             out_len,
                             limit_bytes,
@@ -505,7 +506,7 @@ fn worker_loop(
                         }
 
                         let output_bytes = if let Some(ref sig) = task_clone.ffi_sig {
-                            crate::execute_dylib_ffi(
+                            crate::backends::dylib::execute_dylib_ffi(
                                 plugin_name,
                                 symbol_name,
                                 &sig.0,
@@ -513,7 +514,7 @@ fn worker_loop(
                                 input_bytes,
                             )?
                         } else {
-                            crate::execute_dylib(plugin_name, symbol_name, input_bytes)?
+                            crate::backends::dylib::execute_dylib(plugin_name, symbol_name, input_bytes)?
                         };
 
                         match payload {
@@ -598,9 +599,9 @@ fn worker_loop(
             }
             task.completed_cvar.notify_all();
             #[cfg(unix)]
-            crate::notify_waker(task_id);
+            crate::async_waker::notify_waker(task_id);
 
-            // 7. Auto-free task if requested by TaskHandle.__del__
+            // Auto-free task if requested by TaskHandle.__del__
             if task.autofree.load(Ordering::Acquire) {
                 crate::broker::free_task(task_id);
             }
@@ -751,7 +752,7 @@ fn execute_isolated_task(task_id: usize, task: &Arc<Task>) {
     }
     task.completed_cvar.notify_all();
     #[cfg(unix)]
-    crate::notify_waker(task_id);
+    crate::async_waker::notify_waker(task_id);
 
     // Auto-free task if requested by TaskHandle.__del__
     if task.autofree.load(Ordering::Acquire) {
@@ -763,12 +764,12 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
     use std::io::{Read, Write};
 
     if let Some(ref wasm_module) = task.wasm_module
-        && !crate::has_wasm_registration(wasm_module)
+        && !crate::registry::has_wasm_registration(wasm_module)
     {
         return Err(format!("WASM module '{wasm_module}' not found in registry"));
     }
     if let Some(ref plugin_name) = task.dylib
-        && !crate::has_dylib_registration(plugin_name)
+        && !crate::registry::has_dylib_registration(plugin_name)
     {
         return Err(format!("Dylib '{plugin_name}' not found in registry"));
     }
@@ -807,10 +808,10 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
                 let func_name = task.wasm_func.clone().unwrap_or_else(|| "run".to_string());
                 let limit_bytes = task
                     .wasm_memory_limit_bytes
-                    .unwrap_or_else(crate::get_wasm_memory_limit_bytes);
+                    .unwrap_or_else(crate::config::get_wasm_memory_limit_bytes);
                 let timeout_ms = task
                     .wasm_timeout_ms
-                    .unwrap_or_else(crate::get_wasm_timeout_ms);
+                    .unwrap_or_else(crate::config::get_wasm_timeout_ms);
                 let metadata = format!("{module_name}:{func_name}:{limit_bytes}:{timeout_ms}");
                 let bound_payload = task.payload.bind(py);
                 let bytes = if let Ok(s) = bound_payload.extract::<String>() {
@@ -856,16 +857,16 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
 
     // Lazy sync registries to worker if missing
     if let Some(ref wasm_module) = task.wasm_module {
-        match crate::get_wasm_registration_sync(
+        match crate::registry::get_wasm_registration_sync(
             wasm_module,
             worker.registered_wasms.get(wasm_module).copied(),
         ) {
-            crate::RegistrySync::Missing => {
+            crate::registry::RegistrySync::Missing => {
                 pool.release_worker(worker);
                 return Err(format!("WASM module '{wasm_module}' not found in registry"));
             }
-            crate::RegistrySync::Current => {}
-            crate::RegistrySync::Changed(registration) => {
+            crate::registry::RegistrySync::Current => {}
+            crate::registry::RegistrySync::Changed(registration) => {
                 crate::process_pool::send_registration_task(
                     &mut worker.stream,
                     10,
@@ -879,16 +880,16 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
             }
         }
     } else if let Some(ref plugin_name) = task.dylib {
-        match crate::get_dylib_registration_sync(
+        match crate::registry::get_dylib_registration_sync(
             plugin_name,
             worker.registered_dylibs.get(plugin_name).copied(),
         ) {
-            crate::RegistrySync::Missing => {
+            crate::registry::RegistrySync::Missing => {
                 pool.release_worker(worker);
                 return Err(format!("Dylib '{plugin_name}' not found in registry"));
             }
-            crate::RegistrySync::Current => {}
-            crate::RegistrySync::Changed(registration) => {
+            crate::registry::RegistrySync::Current => {}
+            crate::registry::RegistrySync::Changed(registration) => {
                 if worker.registered_dylibs.remove(plugin_name).is_some() {
                     crate::process_pool::send_registration_task(
                         &mut worker.stream,
@@ -914,12 +915,12 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
     }
 
     // 3. Write request frame: [Type: 1 byte] [Flags: 1 byte] [Extra Len: 4 bytes] [Payload Len: 8 bytes] [Metadata] [Payload]
-    crate::checked_ipc_len(
+    crate::config::checked_ipc_len(
         payload_bytes.len() as u64,
-        crate::get_max_ipc_frame_bytes(),
+        crate::config::get_max_ipc_frame_bytes(),
         "payload",
     )?;
-    let use_shm = payload_bytes.len() >= crate::get_shm_threshold();
+    let use_shm = payload_bytes.len() >= crate::config::get_shm_threshold();
     let mut flags = 0u8;
     let mut actual_payload = payload_bytes.clone();
     let mut _created_shm: Option<ShmemGuard> = None;
@@ -954,14 +955,14 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
         }
     }
 
-    let metadata_len = crate::checked_ipc_len(
+    let metadata_len = crate::config::checked_ipc_len(
         metadata.len() as u64,
-        crate::MAX_IPC_METADATA_BYTES,
+        crate::config::MAX_IPC_METADATA_BYTES,
         "metadata",
     )?;
-    let payload_len = crate::checked_ipc_len(
+    let payload_len = crate::config::checked_ipc_len(
         actual_payload.len() as u64,
-        crate::get_max_ipc_frame_bytes(),
+        crate::config::get_max_ipc_frame_bytes(),
         "payload",
     )?;
     let mut header = vec![task_type, flags];
@@ -1025,9 +1026,9 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
 
     let success = resp_header[0] == 1;
     let res_flags = resp_header[1];
-    let data_len = crate::checked_ipc_len(
+    let data_len = crate::config::checked_ipc_len(
         u64::from_be_bytes(resp_header[2..10].try_into().unwrap_or([0u8; 8])),
-        crate::get_max_ipc_frame_bytes(),
+        crate::config::get_max_ipc_frame_bytes(),
         "response",
     )?;
 
@@ -1114,9 +1115,9 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
                     }
                 }
                 let ptr = shmem.as_ptr();
-                let size = crate::checked_ipc_len(
+                let size = crate::config::checked_ipc_len(
                     shmem.len() as u64,
-                    crate::get_max_ipc_frame_bytes(),
+                    crate::config::get_max_ipc_frame_bytes(),
                     "shared-memory response",
                 )?;
                 let slice = unsafe { std::slice::from_raw_parts(ptr, size) };
@@ -1152,7 +1153,7 @@ mod tests {
     use super::{
         StartClaimHook, StartClaimResult, install_start_claim_hook, transition_pending_to_running,
     };
-    use crate::broker::TaskStatus;
+    use crate::task::TaskStatus;
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::sync::{Arc, Barrier, mpsc};
     use std::time::Duration;

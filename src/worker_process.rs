@@ -154,9 +154,9 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
         stream
             .read_exact(&mut extra_len_buf)
             .map_err(|e| format!("Failed to read extra_len: {e}"))?;
-        let extra_len = crate::checked_ipc_len(
+        let extra_len = crate::config::checked_ipc_len(
             u32::from_be_bytes(extra_len_buf) as u64,
-            crate::MAX_IPC_METADATA_BYTES,
+            crate::config::MAX_IPC_METADATA_BYTES,
             "metadata",
         )?;
 
@@ -165,9 +165,9 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
         stream
             .read_exact(&mut payload_len_buf)
             .map_err(|e| format!("Failed to read payload_len: {e}"))?;
-        let payload_len = crate::checked_ipc_len(
+        let payload_len = crate::config::checked_ipc_len(
             u64::from_be_bytes(payload_len_buf),
-            crate::get_max_ipc_frame_bytes(),
+            crate::config::get_max_ipc_frame_bytes(),
             "payload",
         )?;
 
@@ -204,9 +204,9 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
             }
 
             let ptr = shmem.as_ptr();
-            let size = crate::checked_ipc_len(
+            let size = crate::config::checked_ipc_len(
                 shmem.len() as u64,
-                crate::get_max_ipc_frame_bytes(),
+                crate::config::get_max_ipc_frame_bytes(),
                 "shared-memory payload",
             )?;
             // Store guard locally to keep mapped until the end of this task execution
@@ -222,16 +222,16 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
         let (mut success, mut response_bytes) =
             execute_worker_task(task_type, &metadata, actual_payload_slice);
 
-        if let Err(error) = crate::checked_ipc_len(
+        if let Err(error) = crate::config::checked_ipc_len(
             response_bytes.len() as u64,
-            crate::get_max_ipc_frame_bytes(),
+            crate::config::get_max_ipc_frame_bytes(),
             "response",
         ) {
             success = false;
             response_bytes = error.into_bytes();
         }
 
-        let use_shm = success && response_bytes.len() >= crate::get_shm_threshold();
+        let use_shm = success && response_bytes.len() >= crate::config::get_shm_threshold();
         let mut res_flags = 0u8;
         let mut actual_response = response_bytes.clone();
         let mut shm_to_keep: Option<ShmemGuard> = None;
@@ -348,10 +348,10 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, 
 
             // Setup WASM Engine & run sandboxed VM inside child process
             let processed = (|| -> Result<Vec<u8>, String> {
-                let module = crate::get_wasm_module(module_name)
+                let module = crate::backends::wasm::get_wasm_module(module_name)
                     .ok_or_else(|| format!("WASM module '{module_name}' not registered"))?;
 
-                let engine = crate::get_wasm_engine();
+                let engine = crate::backends::wasm::get_wasm_engine();
                 let limit_bytes = if parts.len() >= 3 {
                     parts[2].parse::<usize>().unwrap_or(100 * 1024 * 1024)
                 } else {
@@ -361,7 +361,7 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, 
                         .unwrap_or(100 * 1024 * 1024)
                 };
 
-                let state = crate::WasmState {
+                let state = crate::backends::wasm::WasmState {
                     limits: wasmtime::StoreLimitsBuilder::new()
                         .memory_size(limit_bytes)
                         .build(),
@@ -377,7 +377,7 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, 
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(1000)
                 };
-                let tick_ms = crate::get_wasm_tick_ms();
+                let tick_ms = crate::config::get_wasm_tick_ms();
                 let ticks = (timeout_ms / tick_ms).max(1);
                 store.set_epoch_deadline(ticks);
 
@@ -400,7 +400,7 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, 
                     .get_memory(&mut store, "memory")
                     .ok_or_else(|| "WASM missing export 'memory'".to_string())?;
 
-                let input_len = crate::validate_wasm_input_len(payload.len(), limit_bytes)?;
+                let input_len = crate::config::validate_wasm_input_len(payload.len(), limit_bytes)?;
 
                 // Allocate guest memory
                 let guest_ptr = alloc_fn
@@ -420,7 +420,7 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, 
                 // Unpack pointer and length
                 let out_ptr = (packed_result >> 32) as i32;
                 let out_len = (packed_result & 0xFFFFFFFF) as i32;
-                let (out_start, out_size) = crate::validate_wasm_output_range(
+                let (out_start, out_size) = crate::config::validate_wasm_output_range(
                     out_ptr,
                     out_len,
                     limit_bytes,
@@ -475,10 +475,10 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, 
                         .filter(|s| !s.is_empty())
                         .collect();
                     let ret = sig_parts[1];
-                    crate::execute_dylib_ffi(plugin_name, symbol_name, &args, ret, payload)
+                    crate::backends::dylib::execute_dylib_ffi(plugin_name, symbol_name, &args, ret, payload)
                 }
             } else {
-                crate::execute_dylib(plugin_name, symbol_name, payload)
+                crate::backends::dylib::execute_dylib(plugin_name, symbol_name, payload)
             };
 
             match processed {
@@ -489,7 +489,7 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, 
         10 => {
             // Register WASM module in worker
             let module_name = metadata.to_string();
-            match crate::register_wasm_module_internal(module_name, payload.to_vec()) {
+            match crate::backends::wasm::register_wasm_module_internal(module_name, payload.to_vec()) {
                 Ok(_) => (true, Vec::new()),
                 Err(e) => (false, e.into_bytes()),
             }
@@ -505,14 +505,14 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, 
             } else {
                 None
             };
-            match crate::register_dylib_internal(plugin_name, library_path, free_fn_name) {
+            match crate::backends::dylib::register_dylib_internal(plugin_name, library_path, free_fn_name) {
                 Ok(_) => (true, Vec::new()),
                 Err(e) => (false, e.into_bytes()),
             }
         }
         12 => {
             // Unregister a stale Dylib before replacing it in a warm worker.
-            match crate::unregister_dylib_internal(metadata) {
+            match crate::backends::dylib::unregister_dylib_internal(metadata) {
                 Ok(_) => (true, Vec::new()),
                 Err(e) => (false, e.into_bytes()),
             }

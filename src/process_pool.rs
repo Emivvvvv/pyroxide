@@ -327,7 +327,7 @@ pub(crate) fn shutdown_process_pool() {
 }
 
 fn sync_registries(worker: &mut IpcWorker) -> Result<(), String> {
-    for (name, registration) in crate::get_wasm_registrations() {
+    for (name, registration) in crate::registry::get_wasm_registrations() {
         send_registration_task(&mut worker.stream, 10, &name, &registration.value)
             .map_err(|e| format!("Failed to sync WASM module {name} to worker: {e}"))?;
         worker
@@ -335,7 +335,7 @@ fn sync_registries(worker: &mut IpcWorker) -> Result<(), String> {
             .insert(name, registration.generation);
     }
 
-    for (name, registration) in crate::get_dylib_registrations() {
+    for (name, registration) in crate::registry::get_dylib_registrations() {
         send_registration_task(&mut worker.stream, 11, &name, registration.value.as_bytes())
             .map_err(|e| format!("Failed to sync dylib {name} to worker: {e}"))?;
         worker
@@ -352,14 +352,14 @@ pub(crate) fn send_registration_task(
     metadata: &str,
     payload: &[u8],
 ) -> Result<(), String> {
-    let metadata_len = crate::checked_ipc_len(
+    let metadata_len = crate::config::checked_ipc_len(
         metadata.len() as u64,
-        crate::MAX_IPC_METADATA_BYTES,
+        crate::config::MAX_IPC_METADATA_BYTES,
         "metadata",
     )?;
-    let payload_len = crate::checked_ipc_len(
+    let payload_len = crate::config::checked_ipc_len(
         payload.len() as u64,
-        crate::get_max_ipc_frame_bytes(),
+        crate::config::get_max_ipc_frame_bytes(),
         "payload",
     )?;
     let mut header = vec![task_type, 0u8];
@@ -379,9 +379,9 @@ pub(crate) fn send_registration_task(
         .map_err(|e| format!("Failed to read registration response header: {e}"))?;
     let success = res_header[0] == 1;
     let _res_flags = res_header[1];
-    let data_len = crate::checked_ipc_len(
+    let data_len = crate::config::checked_ipc_len(
         u64::from_be_bytes(res_header[2..10].try_into().unwrap_or([0u8; 8])),
-        crate::get_max_ipc_frame_bytes(),
+        crate::config::get_max_ipc_frame_bytes(),
         "registration response",
     )?;
 

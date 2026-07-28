@@ -8,30 +8,9 @@ use crate::worker::{spawn_isolated_workers, spawn_workers};
 use pyo3::prelude::*;
 use sharded_slab::Slab;
 
+use crate::task::{Task, TaskStatus};
+
 pub(crate) const STOP_TASK_ID: usize = usize::MAX;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(u8)]
-pub(crate) enum TaskStatus {
-    Pending = 0,
-    Running = 1,
-    Completed = 2,
-    Failed = 3,
-    Cancelled = 4,
-}
-
-impl TaskStatus {
-    pub fn to_status_string(val: u8) -> String {
-        match val {
-            0 => "Pending".to_string(),
-            1 => "Running".to_string(),
-            2 => "Completed".to_string(),
-            3 => "Failed".to_string(),
-            4 => "Cancelled".to_string(),
-            _ => "Unknown".to_string(),
-        }
-    }
-}
 
 pub(crate) struct QueueAdmission {
     capacity: usize,
@@ -209,25 +188,6 @@ impl QueueAdmission {
     }
 }
 
-pub(crate) struct Task {
-    pub(crate) status: AtomicU8,
-    pub(crate) callable: Option<Py<PyAny>>,
-    pub(crate) payload: Py<PyAny>,
-    pub(crate) result: Mutex<Option<Result<Py<PyAny>, String>>>,
-    pub(crate) completed_cvar: Condvar,
-    pub(crate) completed_mutex: Mutex<bool>,
-    pub(crate) cancelled: AtomicBool,
-    pub(crate) autofree: AtomicBool,
-    pub(crate) wasm_module: Option<String>,
-    pub(crate) wasm_func: Option<String>,
-    pub(crate) dylib: Option<String>,
-    pub(crate) dylib_symbol: Option<String>,
-    pub(crate) ffi_sig: Option<(Vec<String>, String)>,
-    pub(crate) isolated: bool,
-    pub(crate) wasm_memory_limit_bytes: Option<usize>,
-    pub(crate) wasm_timeout_ms: Option<u64>,
-}
-
 pub(crate) struct Broker {
     pub(crate) tasks: Slab<Arc<Task>>,
     pub(crate) task_count: AtomicUsize,
@@ -324,7 +284,7 @@ pub(crate) fn check_engine_process() -> PyResult<()> {
     let current_pid = std::process::id();
     let creator_pid = *RUNTIME_PID.get_or_init(|| current_pid);
     if creator_pid != current_pid {
-        return Err(crate::ForkSafetyError::new_err(
+        return Err(crate::py_api::ForkSafetyError::new_err(
             "Pyroxide was initialized before fork; initialize it in the child process instead",
         ));
     }
@@ -388,7 +348,7 @@ pub(crate) fn shutdown_engine(wait: bool, cancel_pending: bool) -> PyResult<()> 
                 let _ = worker.join();
             }
             crate::process_pool::shutdown_process_pool();
-            crate::stop_wasm_ticker();
+            crate::backends::wasm::stop_wasm_ticker();
             let (lock, changed) = &*completion;
             let mut complete = lock.lock().unwrap_or_else(|error| error.into_inner());
             *complete = true;
@@ -449,7 +409,7 @@ fn get_max_processes() -> usize {
 }
 
 fn resolve_queue_timeout_ms(queue_timeout_ms: Option<u64>) -> u64 {
-    queue_timeout_ms.unwrap_or_else(crate::get_queue_timeout_ms)
+    queue_timeout_ms.unwrap_or_else(crate::config::get_queue_timeout_ms)
 }
 
 fn queue_full_error(timeout_ms: u64) -> PyErr {
@@ -920,7 +880,7 @@ pub(crate) fn cancel_task(task_id: usize) -> bool {
                         }
                         task.completed_cvar.notify_all();
                         #[cfg(unix)]
-                        crate::notify_waker(task_id);
+                        crate::async_waker::notify_waker(task_id);
                     }
                     return true;
                 }
