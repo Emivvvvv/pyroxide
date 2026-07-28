@@ -25,21 +25,89 @@ impl TaskStatus {
     }
 }
 
+pub(crate) enum TaskKind {
+    PythonCall {
+        callable: Py<PyAny>,
+    },
+    Wasm {
+        module: String,
+        function: String,
+        memory_limit_bytes: Option<usize>,
+        timeout_ms: Option<u64>,
+    },
+    Dylib {
+        plugin: String,
+        symbol: String,
+        ffi_sig: Option<(Vec<String>, String)>,
+    },
+}
+
 pub(crate) struct Task {
     pub(crate) status: AtomicU8,
-    pub(crate) callable: Option<Py<PyAny>>,
+    pub(crate) kind: TaskKind,
     pub(crate) payload: Py<PyAny>,
     pub(crate) result: Mutex<Option<Result<Py<PyAny>, String>>>,
     pub(crate) completed_cvar: Condvar,
     pub(crate) completed_mutex: Mutex<bool>,
     pub(crate) cancelled: AtomicBool,
     pub(crate) autofree: AtomicBool,
-    pub(crate) wasm_module: Option<String>,
-    pub(crate) wasm_func: Option<String>,
-    pub(crate) dylib: Option<String>,
-    pub(crate) dylib_symbol: Option<String>,
-    pub(crate) ffi_sig: Option<(Vec<String>, String)>,
     pub(crate) isolated: bool,
-    pub(crate) wasm_memory_limit_bytes: Option<usize>,
-    pub(crate) wasm_timeout_ms: Option<u64>,
+}
+
+impl Task {
+    pub(crate) fn new(kind: TaskKind, payload: Py<PyAny>, isolated: bool) -> Self {
+        Self {
+            status: AtomicU8::new(TaskStatus::Pending as u8),
+            kind,
+            payload,
+            result: Mutex::new(None),
+            completed_cvar: Condvar::new(),
+            completed_mutex: Mutex::new(false),
+            cancelled: AtomicBool::new(false),
+            autofree: AtomicBool::new(false),
+            isolated,
+        }
+    }
+
+    pub(crate) fn python(callable: Py<PyAny>, payload: Py<PyAny>, isolated: bool) -> Self {
+        Self::new(TaskKind::PythonCall { callable }, payload, isolated)
+    }
+
+    pub(crate) fn wasm(
+        module: String,
+        function: String,
+        payload: Py<PyAny>,
+        memory_limit_bytes: Option<usize>,
+        timeout_ms: Option<u64>,
+        isolated: bool,
+    ) -> Self {
+        Self::new(
+            TaskKind::Wasm {
+                module,
+                function,
+                memory_limit_bytes,
+                timeout_ms,
+            },
+            payload,
+            isolated,
+        )
+    }
+
+    pub(crate) fn dylib(
+        plugin: String,
+        symbol: String,
+        payload: Py<PyAny>,
+        ffi_sig: Option<(Vec<String>, String)>,
+        isolated: bool,
+    ) -> Self {
+        Self::new(
+            TaskKind::Dylib {
+                plugin,
+                symbol,
+                ffi_sig,
+            },
+            payload,
+            isolated,
+        )
+    }
 }

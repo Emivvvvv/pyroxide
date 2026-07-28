@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 use std::thread;
 use std::thread::JoinHandle;
@@ -496,24 +496,10 @@ pub(crate) fn submit_task(
     isolated: bool,
     queue_timeout_ms: Option<u64>,
 ) -> PyResult<usize> {
-    let task = Arc::new(Task {
-        status: AtomicU8::new(TaskStatus::Pending as u8),
-        callable,
-        payload,
-        result: Mutex::new(None),
-        completed_cvar: Condvar::new(),
-        completed_mutex: Mutex::new(false),
-        cancelled: AtomicBool::new(false),
-        autofree: AtomicBool::new(false),
-        wasm_module: None,
-        wasm_func: None,
-        dylib: None,
-        dylib_symbol: None,
-        ffi_sig: None,
-        isolated,
-        wasm_memory_limit_bytes: None,
-        wasm_timeout_ms: None,
-    });
+    let cb = callable.ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err("No callable provided for Python task")
+    })?;
+    let task = Arc::new(Task::python(cb, payload, isolated));
 
     enqueue_task(task, queue_timeout_ms)
 }
@@ -658,30 +644,20 @@ pub(crate) fn submit_batch(
     isolated: bool,
     queue_timeout_ms: Option<u64>,
 ) -> PyResult<Vec<usize>> {
+    let cb = callable.ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err("No callable provided for Python task")
+    })?;
     enqueue_batch(batch_len, isolated, queue_timeout_ms, move || {
         Python::attach(|py| {
             payloads
                 .bind(py)
                 .iter()
                 .map(|payload| {
-                    Ok(Arc::new(Task {
-                        status: AtomicU8::new(TaskStatus::Pending as u8),
-                        callable: callable.as_ref().map(|value| value.clone_ref(py)),
-                        payload: payload.unbind(),
-                        result: Mutex::new(None),
-                        completed_cvar: Condvar::new(),
-                        completed_mutex: Mutex::new(false),
-                        cancelled: AtomicBool::new(false),
-                        autofree: AtomicBool::new(false),
-                        wasm_module: None,
-                        wasm_func: None,
-                        dylib: None,
-                        dylib_symbol: None,
-                        ffi_sig: None,
+                    Ok(Arc::new(Task::python(
+                        cb.clone_ref(py),
+                        payload.unbind(),
                         isolated,
-                        wasm_memory_limit_bytes: None,
-                        wasm_timeout_ms: None,
-                    }))
+                    )))
                 })
                 .collect()
         })
@@ -697,24 +673,14 @@ pub(crate) fn submit_wasm_task(
     wasm_timeout_ms: Option<u64>,
     queue_timeout_ms: Option<u64>,
 ) -> PyResult<usize> {
-    let task = Arc::new(Task {
-        status: AtomicU8::new(TaskStatus::Pending as u8),
-        callable: None,
+    let task = Arc::new(Task::wasm(
+        module_name,
+        func_name,
         payload,
-        result: Mutex::new(None),
-        completed_cvar: Condvar::new(),
-        completed_mutex: Mutex::new(false),
-        cancelled: AtomicBool::new(false),
-        autofree: AtomicBool::new(false),
-        wasm_module: Some(module_name),
-        wasm_func: Some(func_name),
-        dylib: None,
-        dylib_symbol: None,
-        ffi_sig: None,
-        isolated,
         wasm_memory_limit_bytes,
         wasm_timeout_ms,
-    });
+        isolated,
+    ));
 
     enqueue_task(task, queue_timeout_ms)
 }
@@ -736,24 +702,14 @@ pub(crate) fn submit_wasm_batch(
                 .bind(py)
                 .iter()
                 .map(|payload| {
-                    Ok(Arc::new(Task {
-                        status: AtomicU8::new(TaskStatus::Pending as u8),
-                        callable: None,
-                        payload: payload.unbind(),
-                        result: Mutex::new(None),
-                        completed_cvar: Condvar::new(),
-                        completed_mutex: Mutex::new(false),
-                        cancelled: AtomicBool::new(false),
-                        autofree: AtomicBool::new(false),
-                        wasm_module: Some(module_name.clone()),
-                        wasm_func: Some(func_name.clone()),
-                        dylib: None,
-                        dylib_symbol: None,
-                        ffi_sig: None,
-                        isolated,
+                    Ok(Arc::new(Task::wasm(
+                        module_name.clone(),
+                        func_name.clone(),
+                        payload.unbind(),
                         wasm_memory_limit_bytes,
                         wasm_timeout_ms,
-                    }))
+                        isolated,
+                    )))
                 })
                 .collect()
         })
@@ -768,24 +724,13 @@ pub(crate) fn submit_dylib_task(
     isolated: bool,
     queue_timeout_ms: Option<u64>,
 ) -> PyResult<usize> {
-    let task = Arc::new(Task {
-        status: AtomicU8::new(TaskStatus::Pending as u8),
-        callable: None,
+    let task = Arc::new(Task::dylib(
+        plugin_name,
+        symbol_name,
         payload,
-        result: Mutex::new(None),
-        completed_cvar: Condvar::new(),
-        completed_mutex: Mutex::new(false),
-        cancelled: AtomicBool::new(false),
-        autofree: AtomicBool::new(false),
-        wasm_module: None,
-        wasm_func: None,
-        dylib: Some(plugin_name),
-        dylib_symbol: Some(symbol_name),
         ffi_sig,
         isolated,
-        wasm_memory_limit_bytes: None,
-        wasm_timeout_ms: None,
-    });
+    ));
 
     enqueue_task(task, queue_timeout_ms)
 }
@@ -812,24 +757,13 @@ pub(crate) fn submit_dylib_batch(
                     } else {
                         payload.unbind()
                     };
-                    Ok(Arc::new(Task {
-                        status: AtomicU8::new(TaskStatus::Pending as u8),
-                        callable: None,
+                    Ok(Arc::new(Task::dylib(
+                        plugin_name.clone(),
+                        symbol_name.clone(),
                         payload,
-                        result: Mutex::new(None),
-                        completed_cvar: Condvar::new(),
-                        completed_mutex: Mutex::new(false),
-                        cancelled: AtomicBool::new(false),
-                        autofree: AtomicBool::new(false),
-                        wasm_module: None,
-                        wasm_func: None,
-                        dylib: Some(plugin_name.clone()),
-                        dylib_symbol: Some(symbol_name.clone()),
-                        ffi_sig: ffi_sig.clone(),
+                        ffi_sig.clone(),
                         isolated,
-                        wasm_memory_limit_bytes: None,
-                        wasm_timeout_ms: None,
-                    }))
+                    )))
                 })
                 .collect()
         })
