@@ -1,0 +1,23 @@
+[odoo_sources.odoo19]
+git_sha = "f7d322a7c3d27467f997e63fcb1d9b952373ff2b"
+requirements_sha256 = "f788198a2368e4f38e6a2bdaee2f35af096bcc23943b6c753a9f0192a2dda9f8"
+
+[odoo_sources.odoo_master]
+git_sha = "67a22320708887af48b5e7ff78f4c05f05f2e871"
+requirements_sha256 = "c92a7bff31773dfa4e518018f4b284208552cdb896786e0ff34d84b29b2c4856"
+
+[images.python313]
+reference = "python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91"
+
+[images.python314]
+reference = "python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6"
+
+[images.postgres16]
+reference = "postgres:16@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20"
+
+[images.rust186]
+reference = "rust:1.86.0-slim-bookworm@sha256:57d415bbd61ce11e2d5f73de068103c7bd9f3188dc132c97cef4a8f62989e944"
+
+[addon]
+expected_path = "examples/odoo_benchmark/addons/pyroxide_benchmark"
+addon_tree_sha256 = "ba31dc32936f4934762d8aacb76cb6aa1cd8128cc5716cc169bb14e31865a8df"

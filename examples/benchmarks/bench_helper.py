@@ -1,22 +1,17 @@
 from pyroxide import task
-
-
-def fib_py(n):
-    if n <= 1:
-        return n
-    return fib_py(n - 1) + fib_py(n - 2)
-
-
-def python_compute_payload(payload):
-    fib_py(20)
-    return payload
+from workloads import run_workload
 
 
 @task(isolated=True)
-def isolated_compute_task(payload):
-    return python_compute_payload(payload)
+def isolated_compute_task(payload: bytes) -> bytes:
+    return run_workload("python_cpu", payload)
 
 
 @task
-def threaded_compute_task(payload):
-    return python_compute_payload(payload)
+def threaded_compute_task(payload: bytes) -> bytes:
+    return run_workload("python_cpu", payload)
+
+
+@task(isolated=True)
+def isolated_echo_task(payload: bytes) -> bytes:
+    return run_workload("payload_echo", payload)

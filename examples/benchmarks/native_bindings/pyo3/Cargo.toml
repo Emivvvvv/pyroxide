@@ -1,0 +1,13 @@
+[package]
+name = "benchmark_pyo3"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.86"
+
+[lib]
+name = "benchmark_pyo3"
+crate-type = ["cdylib"]
+
+[dependencies]
+benchmark_core = { path = "../../native_core" }
+pyo3 = { version = "0.29.0", features = ["extension-module"] }

@@ -1,0 +1,19 @@
+schema_version = 1
+
+[[workloads]]
+id = "echo"
+kind = "echo"
+tasks_per_sample = 1
+payload_bytes = 16
+
+[[backends]]
+id = "pyroxide"
+kind = "pyroxide"
+workers = 1
+
+[[experiments]]
+id = "echo-smoke"
+workload = "echo"
+backend = "pyroxide"
+profile = "correctness_only"
+random_seed = 1729

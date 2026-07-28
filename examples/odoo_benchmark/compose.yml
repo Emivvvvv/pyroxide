@@ -1,0 +1,92 @@
+services:
+  postgres:
+    image: postgres:16@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20
+    profiles:
+      - execution
+    environment:
+      POSTGRES_DB: odoo_benchmark
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo
+      POSTGRES_INITDB_ARGS: --locale=C.UTF-8
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --dbname=odoo_benchmark --username=odoo"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - odoo-benchmark-postgres:/var/lib/postgresql/data
+
+  odoo19-py313:
+    build:
+      context: ../..
+      dockerfile: examples/odoo_benchmark/Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYROXIDE_ODOO_PYTHON_IMAGE:?set by runner.py}
+        RUST_IMAGE: ${PYROXIDE_ODOO_RUST_IMAGE:?set by runner.py}
+        ODOO_GIT_SHA: ${PYROXIDE_ODOO_GIT_SHA:?set by runner.py}
+        ODOO_REQUIREMENTS_SHA256: ${PYROXIDE_ODOO_REQUIREMENTS_SHA256:?set by runner.py}
+    profiles:
+      - execution
+    environment:
+      PYROXIDE_MAX_TASKS_PER_WORKER: ${PYROXIDE_MAX_TASKS_PER_WORKER:?set by runner.py}
+      PYROXIDE_ODOO_GIT_SHA: ${PYROXIDE_ODOO_GIT_SHA:?set by runner.py}
+      PYROXIDE_ODOO_MODE: ${PYROXIDE_ODOO_MODE:?set by runner.py}
+      PYROXIDE_ODOO_OUTPUT: ${PYROXIDE_ODOO_OUTPUT:?set by runner.py}
+      PYROXIDE_ODOO_RELEASE_LABEL: ${PYROXIDE_ODOO_RELEASE_LABEL:?set by runner.py}
+    volumes:
+      - ./addons:/workspace/addons:ro
+      - ${PYROXIDE_ODOO_RESULTS_DIR:-./results}:/workspace/results
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  odoo19-py314:
+    build:
+      context: ../..
+      dockerfile: examples/odoo_benchmark/Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYROXIDE_ODOO_PYTHON_IMAGE:?set by runner.py}
+        RUST_IMAGE: ${PYROXIDE_ODOO_RUST_IMAGE:?set by runner.py}
+        ODOO_GIT_SHA: ${PYROXIDE_ODOO_GIT_SHA:?set by runner.py}
+        ODOO_REQUIREMENTS_SHA256: ${PYROXIDE_ODOO_REQUIREMENTS_SHA256:?set by runner.py}
+    profiles:
+      - execution
+    environment:
+      PYROXIDE_MAX_TASKS_PER_WORKER: ${PYROXIDE_MAX_TASKS_PER_WORKER:?set by runner.py}
+      PYROXIDE_ODOO_GIT_SHA: ${PYROXIDE_ODOO_GIT_SHA:?set by runner.py}
+      PYROXIDE_ODOO_MODE: ${PYROXIDE_ODOO_MODE:?set by runner.py}
+      PYROXIDE_ODOO_OUTPUT: ${PYROXIDE_ODOO_OUTPUT:?set by runner.py}
+      PYROXIDE_ODOO_RELEASE_LABEL: ${PYROXIDE_ODOO_RELEASE_LABEL:?set by runner.py}
+    volumes:
+      - ./addons:/workspace/addons:ro
+      - ${PYROXIDE_ODOO_RESULTS_DIR:-./results}:/workspace/results
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  odoo20-preview-py314:
+    build:
+      context: ../..
+      dockerfile: examples/odoo_benchmark/Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYROXIDE_ODOO_PYTHON_IMAGE:?set by runner.py}
+        RUST_IMAGE: ${PYROXIDE_ODOO_RUST_IMAGE:?set by runner.py}
+        ODOO_GIT_SHA: ${PYROXIDE_ODOO_GIT_SHA:?set by runner.py}
+        ODOO_REQUIREMENTS_SHA256: ${PYROXIDE_ODOO_REQUIREMENTS_SHA256:?set by runner.py}
+    profiles:
+      - execution
+    environment:
+      PYROXIDE_MAX_TASKS_PER_WORKER: ${PYROXIDE_MAX_TASKS_PER_WORKER:?set by runner.py}
+      PYROXIDE_ODOO_GIT_SHA: ${PYROXIDE_ODOO_GIT_SHA:?set by runner.py}
+      PYROXIDE_ODOO_MODE: ${PYROXIDE_ODOO_MODE:?set by runner.py}
+      PYROXIDE_ODOO_OUTPUT: ${PYROXIDE_ODOO_OUTPUT:?set by runner.py}
+      PYROXIDE_ODOO_RELEASE_LABEL: ${PYROXIDE_ODOO_RELEASE_LABEL:?set by runner.py}
+    volumes:
+      - ./addons:/workspace/addons:ro
+      - ${PYROXIDE_ODOO_RESULTS_DIR:-./results}:/workspace/results
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  odoo-benchmark-postgres:

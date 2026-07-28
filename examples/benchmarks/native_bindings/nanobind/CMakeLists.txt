@@ -1,0 +1,16 @@
+cmake_minimum_required(VERSION 3.18)
+project(benchmark_nanobind LANGUAGES CXX)
+
+if(NOT DEFINED ENV{NANOBIND_ROOT})
+    message(FATAL_ERROR "Set NANOBIND_ROOT to nanobind's CMake package directory")
+endif()
+if(NOT DEFINED ENV{BENCHMARK_CORE_LIBRARY})
+    message(FATAL_ERROR "Set BENCHMARK_CORE_LIBRARY to libbenchmark_core before configuring")
+endif()
+
+find_package(Python 3.10 COMPONENTS Interpreter Development.Module REQUIRED)
+list(APPEND CMAKE_PREFIX_PATH "$ENV{NANOBIND_ROOT}")
+find_package(nanobind CONFIG REQUIRED)
+nanobind_add_module(benchmark_nanobind module.cpp)
+target_include_directories(benchmark_nanobind PRIVATE ../../native_core/include)
+target_link_libraries(benchmark_nanobind PRIVATE $ENV{BENCHMARK_CORE_LIBRARY})

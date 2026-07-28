@@ -1,0 +1,11 @@
+[package]
+name = "benchmark_core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.86"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sha2 = "0.10.9"

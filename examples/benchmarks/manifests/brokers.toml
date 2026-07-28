@@ -1,0 +1,49 @@
+[operational_track]
+kind = "broker_backed"
+comparison_scope = "not_ranked_with_local_executors"
+execution = "explicit_commands_only"
+
+[versions]
+redis_image = "redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952"
+celery = "5.6.3"
+dramatiq = "2.2.0"
+redis_client = "6.4.0"
+worker_image = "python:3.14.0-slim@sha256:0aecac02dc3d4c5dbb024b753af084cafe41f5416e02193f1ce345d671ec966e"
+
+[images]
+resolved_platform = "linux/arm64/v8"
+redis_platform_digest = "sha256:90cac51530a49aaa42eaf65712e84005677a0c44191e721e2de756927031fb9d"
+worker_platform_digest = "sha256:d4c6c639f80b11b7fb0f682bdd93c054f58e748aba354d7fbe92689e04dff2d0"
+
+[study]
+blocks = 30
+order = "alternating"
+random_seed = 1729
+
+[[study.workloads]]
+id = "payload_echo"
+tasks = 1000
+payload_bytes = 1024
+
+[[study.workloads]]
+id = "python_cpu"
+tasks = 100
+payload_bytes = 1024
+
+[celery]
+transport = "redis"
+acknowledgement = "late"
+retry_max_attempts = 3
+result_backend = "redis"
+prefetch = 1
+concurrency = 2
+serialization = "json-base64-bytes"
+
+[dramatiq]
+transport = "redis"
+acknowledgement = "late"
+retry_max_attempts = 3
+result_backend = "redis"
+prefetch = 1
+concurrency = 2
+serialization = "json-base64-bytes"

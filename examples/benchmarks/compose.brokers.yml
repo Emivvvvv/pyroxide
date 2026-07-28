@@ -1,0 +1,63 @@
+services:
+  redis:
+    image: redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952
+    profiles:
+      - execution
+    command: redis-server --appendonly yes --save 60 1
+    ports:
+      - "127.0.0.1:${BROKER_BENCHMARK_REDIS_PORT:-6379}:6379"
+    volumes:
+      - broker-benchmark-redis:/data
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+
+  celery-worker:
+    image: python:3.14.0-slim@sha256:0aecac02dc3d4c5dbb024b753af084cafe41f5416e02193f1ce345d671ec966e
+    profiles:
+      - execution
+    working_dir: /workspace
+    volumes:
+      - ../..:/workspace:ro
+    environment:
+      BENCHMARK_CELERY_VERSION: "5.6.3"
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      WORKER_CONCURRENCY: "2"
+      WORKER_PREFETCH_MULTIPLIER: "1"
+      TASK_SERIALIZER: json
+    command: >-
+      sh -c "pip install --no-cache-dir 'celery[redis]==5.6.3' redis==6.4.0 &&
+      celery -A examples.benchmarks.brokers.celery_worker:app worker --concurrency=2 --prefetch-multiplier=1"
+    depends_on:
+      redis:
+        condition: service_healthy
+    mem_limit: 768m
+
+  dramatiq-worker:
+    image: python:3.14.0-slim@sha256:0aecac02dc3d4c5dbb024b753af084cafe41f5416e02193f1ce345d671ec966e
+    profiles:
+      - execution
+    working_dir: /workspace
+    volumes:
+      - ../..:/workspace:ro
+    environment:
+      BENCHMARK_DRAMATIQ_VERSION: "2.2.0"
+      DRAMATIQ_BROKER_URL: redis://redis:6379/2
+      DRAMATIQ_RESULT_BACKEND: redis://redis:6379/3
+      WORKER_CONCURRENCY: "2"
+      dramatiq_queue_prefetch: "1"
+      TASK_SERIALIZER: json-base64-bytes
+    command: >-
+      sh -c "pip install --no-cache-dir 'dramatiq[redis]==2.2.0' redis==6.4.0 &&
+      dramatiq examples.benchmarks.brokers.dramatiq_worker --processes 2 --threads 1"
+    depends_on:
+      redis:
+        condition: service_healthy
+    mem_limit: 768m
+
+volumes:
+  broker-benchmark-redis:

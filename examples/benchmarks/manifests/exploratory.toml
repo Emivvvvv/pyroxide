@@ -1,0 +1,191 @@
+schema_version = 1
+
+[profile]
+id = "exploratory"
+track = "local"
+output_label = "exploratory"
+comparison_scope = "not_for_ranked_conclusions"
+
+[requirements]
+fresh_process_blocks = 5
+calibrated_operations = 100
+
+[availability]
+optional_backends = {}
+
+[matrix]
+worker_levels = [1, 2, 4, "physical_cores"]
+task_grains = ["scheduler", "python_cpu", "payload"]
+payload_bytes = [1024, 1048576, 16777216]
+
+[[workloads]]
+id = "scheduler-1k"
+kind = "trivial"
+tasks_per_sample = 1000
+payload_bytes = 1024
+
+[[workloads]]
+id = "python-cpu-1k"
+kind = "python_cpu"
+tasks_per_sample = 32
+payload_bytes = 1024
+
+[[workloads]]
+id = "payload-1m"
+kind = "payload_echo"
+tasks_per_sample = 16
+payload_bytes = 1048576
+
+[[workloads]]
+id = "payload-16m"
+kind = "payload_echo"
+tasks_per_sample = 2
+payload_bytes = 16777216
+
+[[backends]]
+id = "pyroxide-threaded"
+kind = "pyroxide_threaded"
+workers = 4
+
+[[backends]]
+id = "pyroxide-isolated"
+kind = "pyroxide_isolated"
+workers = 4
+
+[[backends]]
+id = "thread-pool"
+kind = "thread_pool"
+workers = 4
+
+[[backends]]
+id = "process-pool"
+kind = "process_pool"
+workers = 4
+
+[[experiments]]
+id = "scheduler-pyroxide-threaded"
+workload = "scheduler-1k"
+backend = "pyroxide-threaded"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 5
+
+[[experiments]]
+id = "scheduler-pyroxide-isolated"
+workload = "scheduler-1k"
+backend = "pyroxide-isolated"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 5
+
+[[experiments]]
+id = "scheduler-thread"
+workload = "scheduler-1k"
+backend = "thread-pool"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 5
+
+[[experiments]]
+id = "scheduler-process"
+workload = "scheduler-1k"
+backend = "process-pool"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 5
+
+[[experiments]]
+id = "python-cpu-pyroxide-threaded"
+workload = "python-cpu-1k"
+backend = "pyroxide-threaded"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 5
+
+[[experiments]]
+id = "python-cpu-pyroxide-isolated"
+workload = "python-cpu-1k"
+backend = "pyroxide-isolated"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 5
+
+[[experiments]]
+id = "python-cpu-thread"
+workload = "python-cpu-1k"
+backend = "thread-pool"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 5
+
+[[experiments]]
+id = "python-cpu-process"
+workload = "python-cpu-1k"
+backend = "process-pool"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 5
+
+[[experiments]]
+id = "payload-1m-pyroxide-threaded"
+workload = "payload-1m"
+backend = "pyroxide-threaded"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 5
+
+[[experiments]]
+id = "payload-1m-pyroxide-isolated"
+workload = "payload-1m"
+backend = "pyroxide-isolated"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 5
+
+[[experiments]]
+id = "payload-1m-thread"
+workload = "payload-1m"
+backend = "thread-pool"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 5
+
+[[experiments]]
+id = "payload-1m-process"
+workload = "payload-1m"
+backend = "process-pool"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 5
+
+[[experiments]]
+id = "payload-16m-pyroxide-threaded"
+workload = "payload-16m"
+backend = "pyroxide-threaded"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 5
+
+[[experiments]]
+id = "payload-16m-pyroxide-isolated"
+workload = "payload-16m"
+backend = "pyroxide-isolated"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 5
+
+[[experiments]]
+id = "payload-16m-thread"
+workload = "payload-16m"
+backend = "thread-pool"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 5
+
+[[experiments]]
+id = "payload-16m-process"
+workload = "payload-16m"
+backend = "process-pool"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 5

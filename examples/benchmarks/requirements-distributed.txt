@@ -1,0 +1,6 @@
+celery[redis]==5.6.3
+dask==2026.7.1
+distributed==2026.7.1
+dramatiq[redis]==2.2.0
+ray==2.56.1
+redis==6.4.0

@@ -1,0 +1,26 @@
+[profile]
+id = "odoo19-py314"
+release_label = "Odoo 19"
+odoo_source = "odoo19"
+python_image = "python314"
+postgres_image = "postgres16"
+database_locale = "C.UTF-8"
+
+[fixture]
+seed = 1729
+
+[capacity]
+cpu_budget = 4
+odoo_workers = 2
+pyroxide_pool_size = 2
+
+[odoo]
+single_process_workers = 1
+multiprocess_workers = 2
+worker_recycling = "disabled_for_measurement"
+
+[measurement]
+boundaries = ["orm_extraction_and_query_count", "compute_only", "orm_result_write", "end_to_end_shell_invocation", "authenticated_http_request"]
+
+[health]
+evidence = ["total_threads", "child_processes", "rss_bytes", "open_file_descriptors", "worker_recycling", "next_request_health"]

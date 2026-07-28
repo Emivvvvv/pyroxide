@@ -1,0 +1,32 @@
+schema_version = 1
+
+[run]
+blocks = 5
+iterations = 1000
+payload_bytes = 1024
+random_seed = 1729
+
+[[experiments]]
+id = "native-direct-boundaries"
+workload = "shared-rust-frame-1k"
+semantics = "batched_mean_direct_native_call"
+backends = ["ctypes-direct", "cffi-direct", "pyo3-direct", "nanobind-direct"]
+
+[[experiments]]
+id = "native-scheduled-boundary"
+workload = "shared-rust-frame-1k"
+semantics = "batched_mean_pyroxide_dylib_scheduled_call"
+backends = ["pyroxide-dylib-scheduled"]
+
+[[experiments]]
+id = "wasm-cold-boundary"
+workload = "shared-rust-frame-1k"
+semantics = "batched_mean_wasmtime_compile_instantiate_and_call"
+backends = ["wasmtime-cold"]
+iterations = 1
+
+[[experiments]]
+id = "wasm-warm-boundaries"
+workload = "shared-rust-frame-1k"
+semantics = "batched_mean_pre_registered_guest_call"
+backends = ["wasmtime-warm", "pyroxide-wasm-scheduled"]

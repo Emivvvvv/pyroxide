@@ -1,0 +1,107 @@
+schema_version = 1
+
+[profile]
+id = "soak"
+track = "reliability"
+output_label = "reliability_separate"
+comparison_scope = "never_merge_with_steady_state_throughput"
+
+[requirements]
+fresh_process_blocks = 5
+soak_minutes = 30
+rc_soak_hours = 4
+
+[availability]
+optional_backends = {}
+
+[matrix]
+worker_levels = [4]
+
+[[workloads]]
+id = "saturation"
+kind = "trivial"
+tasks_per_sample = 1
+payload_bytes = 1024
+
+[[workloads]]
+id = "crash"
+kind = "trivial"
+tasks_per_sample = 1
+payload_bytes = 1024
+
+[[workloads]]
+id = "cancellation"
+kind = "trivial"
+tasks_per_sample = 1
+payload_bytes = 1024
+
+[[workloads]]
+id = "recycling"
+kind = "trivial"
+tasks_per_sample = 1
+payload_bytes = 1024
+
+[[workloads]]
+id = "exploratory-soak"
+kind = "trivial"
+tasks_per_sample = 1
+payload_bytes = 1024
+
+[[workloads]]
+id = "rc-soak"
+kind = "trivial"
+tasks_per_sample = 1
+payload_bytes = 1024
+
+[[backends]]
+id = "pyroxide"
+kind = "pyroxide"
+workers = 4
+
+[[experiments]]
+id = "saturation-reliability"
+workload = "saturation"
+backend = "pyroxide"
+profile = "reliability"
+random_seed = 1729
+repetitions = 1
+
+[[experiments]]
+id = "crash-reliability"
+workload = "crash"
+backend = "pyroxide"
+profile = "reliability"
+random_seed = 1729
+repetitions = 1
+
+[[experiments]]
+id = "cancellation-reliability"
+workload = "cancellation"
+backend = "pyroxide"
+profile = "reliability"
+random_seed = 1729
+repetitions = 1
+
+[[experiments]]
+id = "recycling-reliability"
+workload = "recycling"
+backend = "pyroxide"
+profile = "reliability"
+random_seed = 1729
+repetitions = 1
+
+[[experiments]]
+id = "exploratory-soak-30m"
+workload = "exploratory-soak"
+backend = "pyroxide"
+profile = "reliability"
+random_seed = 1729
+repetitions = 1
+
+[[experiments]]
+id = "rc-soak-4h"
+workload = "rc-soak"
+backend = "pyroxide"
+profile = "reliability"
+random_seed = 1729
+repetitions = 1

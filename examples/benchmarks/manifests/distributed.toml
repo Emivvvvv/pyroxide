@@ -1,0 +1,70 @@
+schema_version = 1
+
+[profile]
+id = "distributed"
+track = "distributed"
+output_label = "distributed_separate"
+comparison_scope = "separate_from_local_executor_tables"
+
+[requirements]
+fresh_process_blocks = 5
+
+[availability]
+optional_backends = { dask_single_node = "optional_must_be_present", ray_single_node = "optional_must_be_present" }
+
+[matrix]
+python_versions = ["3.14"]
+
+[[workloads]]
+id = "trivial"
+kind = "trivial"
+tasks_per_sample = 1000
+payload_bytes = 1024
+
+[[workloads]]
+id = "python-cpu"
+kind = "python_cpu"
+tasks_per_sample = 100
+payload_bytes = 1024
+
+[[backends]]
+id = "ray"
+kind = "ray_single_node"
+workers = 4
+
+[[backends]]
+id = "dask"
+kind = "dask_single_node"
+workers = 4
+
+[[experiments]]
+id = "trivial-ray"
+workload = "trivial"
+backend = "ray"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30
+
+[[experiments]]
+id = "trivial-dask"
+workload = "trivial"
+backend = "dask"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30
+
+[[experiments]]
+id = "python-cpu-ray"
+workload = "python-cpu"
+backend = "ray"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30
+
+[[experiments]]
+id = "python-cpu-dask"
+workload = "python-cpu"
+backend = "dask"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30

@@ -1,0 +1,114 @@
+schema_version = 1
+
+[profile]
+id = "python-314t"
+track = "local"
+output_label = "free_threaded_compatible_only"
+comparison_scope = "local_executor_table"
+
+[requirements]
+fresh_process_blocks = 5
+post_import_gil = "abort_if_enabled"
+
+[availability]
+optional_backends = {}
+extension_compatibility = { cffi_native = "unavailable_until_verified", ctypes_native = "unavailable_until_verified", pyo3_native = "unavailable_until_verified" }
+
+[matrix]
+python_versions = ["3.14t"]
+
+[[workloads]]
+id = "scheduler"
+kind = "trivial"
+tasks_per_sample = 1000
+payload_bytes = 1024
+
+[[workloads]]
+id = "python-cpu"
+kind = "python_cpu"
+tasks_per_sample = 32
+payload_bytes = 1024
+
+[[backends]]
+id = "pyroxide-threaded"
+kind = "pyroxide_threaded"
+workers = 4
+
+[[backends]]
+id = "pyroxide-isolated"
+kind = "pyroxide_isolated"
+workers = 4
+
+[[backends]]
+id = "thread-pool"
+kind = "thread_pool"
+workers = 4
+
+[[backends]]
+id = "process-pool"
+kind = "process_pool"
+workers = 4
+
+[[experiments]]
+id = "scheduler-pyroxide-threaded"
+workload = "scheduler"
+backend = "pyroxide-threaded"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30
+
+[[experiments]]
+id = "scheduler-pyroxide-isolated"
+workload = "scheduler"
+backend = "pyroxide-isolated"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30
+
+[[experiments]]
+id = "scheduler-thread"
+workload = "scheduler"
+backend = "thread-pool"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30
+
+[[experiments]]
+id = "scheduler-process"
+workload = "scheduler"
+backend = "process-pool"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30
+
+[[experiments]]
+id = "python-cpu-pyroxide-threaded"
+workload = "python-cpu"
+backend = "pyroxide-threaded"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30
+
+[[experiments]]
+id = "python-cpu-pyroxide-isolated"
+workload = "python-cpu"
+backend = "pyroxide-isolated"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30
+
+[[experiments]]
+id = "python-cpu-thread"
+workload = "python-cpu"
+backend = "thread-pool"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30
+
+[[experiments]]
+id = "python-cpu-process"
+workload = "python-cpu"
+backend = "process-pool"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30

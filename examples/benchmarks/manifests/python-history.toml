@@ -1,0 +1,91 @@
+schema_version = 1
+
+[profile]
+id = "python-history"
+track = "local"
+output_label = "historical_reduced"
+comparison_scope = "local_executor_table"
+
+[requirements]
+fresh_process_blocks = 5
+
+[availability]
+optional_backends = {}
+
+[matrix]
+python_versions = ["3.10", "3.11", "3.12", "3.13", "3.14"]
+
+[[workloads]]
+id = "trivial"
+kind = "trivial"
+tasks_per_sample = 1000
+payload_bytes = 1024
+
+[[workloads]]
+id = "python-cpu"
+kind = "python_cpu"
+tasks_per_sample = 100
+payload_bytes = 1024
+
+[[backends]]
+id = "pyroxide"
+kind = "pyroxide"
+workers = 4
+
+[[backends]]
+id = "thread-pool"
+kind = "thread_pool"
+workers = 4
+
+[[backends]]
+id = "process-pool"
+kind = "process_pool"
+workers = 4
+
+[[experiments]]
+id = "trivial-pyroxide"
+workload = "trivial"
+backend = "pyroxide"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30
+
+[[experiments]]
+id = "trivial-thread"
+workload = "trivial"
+backend = "thread-pool"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30
+
+[[experiments]]
+id = "trivial-process"
+workload = "trivial"
+backend = "process-pool"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30
+
+[[experiments]]
+id = "python-cpu-pyroxide"
+workload = "python-cpu"
+backend = "pyroxide"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30
+
+[[experiments]]
+id = "python-cpu-thread"
+workload = "python-cpu"
+backend = "thread-pool"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30
+
+[[experiments]]
+id = "python-cpu-process"
+workload = "python-cpu"
+backend = "process-pool"
+profile = "steady_state"
+random_seed = 1729
+repetitions = 30
