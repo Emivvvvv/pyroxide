@@ -168,17 +168,9 @@ class _RunState:
                     self._maximum_child_count, child_count
                 )
 
-    def take_latencies(self) -> list[float]:
+    def take_observation(self) -> tuple[dict[str, int | bool], list[float]]:
         with self._lock:
-            if self._frozen:
-                return []
-            latencies = self._latencies
-            self._latencies = []
-            return latencies
-
-    def operations(self) -> dict[str, int | bool]:
-        with self._lock:
-            return {
+            operations = {
                 "accepted_operations": self._accepted,
                 "completed_operations": self._completed,
                 "failed_operations": self._failed,
@@ -188,10 +180,16 @@ class _RunState:
                 "post_crash_success": self._post_crash_success,
                 "post_recycle_success": self._post_recycle_success,
             }
+            latencies = self._latencies
+            self._latencies = []
+            return operations, latencies
 
-    def final_values(self) -> dict[str, int | bool | None]:
+    def freeze_and_take_final(
+        self,
+    ) -> tuple[dict[str, int | bool | None], list[float]]:
         with self._lock:
-            return {
+            self._frozen = True
+            final_values = {
                 "accepted_operations": self._accepted,
                 "completed_operations": self._completed,
                 "failed_operations": self._failed,
@@ -202,15 +200,13 @@ class _RunState:
                 "post_recycle_success": self._post_recycle_success,
                 "max_observed_child_count": self._maximum_child_count,
             }
+            latencies = self._latencies
+            self._latencies = []
+            return final_values, latencies
 
     def assertion_failures(self) -> list[dict[str, str]]:
         with self._lock:
             return [dict(failure) for failure in self._assertion_failures]
-
-    def freeze(self) -> None:
-        with self._lock:
-            self._frozen = True
-
 
 def _positive_float(value: str) -> float:
     parsed = float(value)
@@ -256,17 +252,29 @@ def _reserve_output(path: Path) -> tuple[int, int]:
         os.close(descriptor)
 
 
+def _unlink_reserved_empty(path: Path, identity: tuple[int, int]) -> None:
+    try:
+        status = path.stat()
+        if (
+            (status.st_dev, status.st_ino) == identity
+            and status.st_size == 0
+        ):
+            path.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def reserve_outputs(output: Path, summary: Path) -> None:
     """Create empty raw and summary artifacts without replacing either one."""
     try:
-        _reserve_output(output)
+        output_identity = _reserve_output(output)
     except FileExistsError as error:
         raise FileExistsError(f"refusing to overwrite existing output: {output}") from error
 
     try:
         summary_identity = _reserve_output(summary)
     except OSError as error:
-        output.unlink()
+        _unlink_reserved_empty(output, output_identity)
         if isinstance(error, FileExistsError):
             raise FileExistsError(
                 f"refusing to overwrite existing summary: {summary}"
@@ -696,14 +704,15 @@ def _sample_record(
     sampler: Any,
     state: _RunState,
 ) -> dict[str, Any]:
+    operations, latencies = state.take_observation()
     return {
         "record_type": "sample",
         "timestamp_utc": _utc_timestamp(),
         "elapsed_seconds": float(elapsed_seconds),
         "engine": _engine_snapshot(pyroxide_facade),
         "resources": _resource_snapshot(sampler, state),
-        "operations": state.operations(),
-        "latency_seconds": state.take_latencies(),
+        "operations": operations,
+        "latency_seconds": latencies,
     }
 
 
@@ -962,12 +971,13 @@ def _run_reliability_configured(
             final_engine = {field: -1 for field in _ENGINE_FIELDS}
     else:
         final_engine = {field: -1 for field in _ENGINE_FIELDS}
-    state.freeze()
+    final_values, final_latencies = state.freeze_and_take_final()
     final: dict[str, Any] = {
         "record_type": "final",
         "timestamp_utc": _utc_timestamp(),
         "elapsed_seconds": float(monotonic() - started),
-        **state.final_values(),
+        **final_values,
+        "latency_seconds": final_latencies,
         "shutdown_seconds": float(max(0.0, shutdown_seconds)),
         "final_engine": final_engine,
     }
@@ -1058,10 +1068,15 @@ def summarize_observations(
         for record in records
         if record.get("record_type") == "assertion_failure"
     ]
+    latency_records = [
+        record
+        for record in records
+        if record.get("record_type") in {"sample", "final"}
+    ]
     latencies = _numeric_values(
         [
             latency
-            for record in samples
+            for record in latency_records
             for latency in (
                 record.get("latency_seconds")
                 if isinstance(record.get("latency_seconds"), list)

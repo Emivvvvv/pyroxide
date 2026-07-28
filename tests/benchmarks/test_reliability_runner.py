@@ -478,6 +478,91 @@ def test_output_reservation_rolls_back_raw_file_when_summary_creation_fails(
     assert not output.exists()
 
 
+def test_output_rollback_preserves_a_replacement_inode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Rollback must leave a replacement artifact untouched."""
+    output = tmp_path / "raw.jsonl"
+    summary = tmp_path / "summary.json"
+    reserve_output = reliability_runner._reserve_output
+    calls = 0
+
+    def reserve_then_replace(path: Path) -> tuple[int, int]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return reserve_output(path)
+        output.unlink()
+        output.write_bytes(b"replacement\n")
+        raise FileNotFoundError
+
+    monkeypatch.setattr(reliability_runner, "_reserve_output", reserve_then_replace)
+
+    with pytest.raises(FileNotFoundError):
+        reliability_runner.reserve_outputs(output, summary)
+
+    assert output.read_bytes() == b"replacement\n"
+
+
+def test_take_observation_keeps_terminal_counts_with_drained_latency() -> None:
+    """A sample must atomically pair counters with the latency batch it drains."""
+    state = reliability_runner._RunState(recycle_target=1)
+    state.accept()
+    state.finish("completed", 0.125)
+
+    operations, latencies = state.take_observation()
+
+    assert operations["accepted_operations"] == 1
+    assert operations["completed_operations"] == 1
+    assert latencies == [0.125]
+    assert state.take_observation()[1] == []
+
+
+def test_sample_record_uses_take_observation_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Separate counter and latency reads could split one terminal operation."""
+    state = reliability_runner._RunState(recycle_target=1)
+    operations = {
+        "accepted_operations": 1,
+        "completed_operations": 1,
+        "failed_operations": 0,
+        "cancelled_operations": 0,
+        "rejected_operations": 0,
+        "incorrect_results": 0,
+        "post_crash_success": False,
+        "post_recycle_success": False,
+    }
+    monkeypatch.setattr(
+        state,
+        "take_observation",
+        lambda: (operations, [0.125]),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        state,
+        "operations",
+        lambda: pytest.fail("sample record read operations separately"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        state,
+        "take_latencies",
+        lambda: pytest.fail("sample record drained latency separately"),
+        raising=False,
+    )
+
+    record = reliability_runner._sample_record(
+        elapsed_seconds=0.0,
+        pyroxide_facade=FakePyroxide(),
+        sampler=FakeSampler(),
+        state=state,
+    )
+
+    assert record["operations"] == operations
+    assert record["latency_seconds"] == [0.125]
+
+
 def test_summary_writer_refuses_an_existing_or_replaced_summary(tmp_path: Path) -> None:
     """Summary writing must never replace an artifact it did not reserve."""
     output = tmp_path / "raw.jsonl"
@@ -543,6 +628,7 @@ def test_deterministic_summary_uses_nearest_rank_and_window_medians(
             },
             "engine": {"submitted": 4, "completed": 4},
         },
+        {"record_type": "final", "latency_seconds": [0.05]},
         {"record_type": "metadata", "seed": 1729},
     ]
 
@@ -550,10 +636,10 @@ def test_deterministic_summary_uses_nearest_rank_and_window_medians(
 
     assert summary["sample_count"] == 4
     assert summary["latency_seconds"] == {
-        "count": 4,
-        "median": 0.025,
-        "p95": 0.04,
-        "maximum": 0.04,
+        "count": 5,
+        "median": 0.03,
+        "p95": 0.05,
+        "maximum": 0.05,
     }
     assert summary["resources"]["first_window"]["rss_median_bytes"] == 150
     assert summary["resources"]["last_window"]["rss_median_bytes"] == 350
@@ -666,6 +752,82 @@ def test_scenario_controller_records_terminal_accounting_and_recovery(
     )
     assert facade.shutdown_calls == [True]
     assert summary["ok"] is True
+
+
+def test_final_tail_latency_is_recorded_after_the_last_sample(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A terminal result after sampling closes must reach the final latency batch."""
+    output = tmp_path / "tail.jsonl"
+    output.touch()
+    clock = FakeClock()
+    terminal_waiting = threading.Event()
+    terminal_after_last_sample = threading.Event()
+
+    class FinalTailHandle(FakeHandle):
+        def result(self) -> int:
+            terminal_waiting.set()
+            assert terminal_after_last_sample.wait(timeout=1)
+            return super().result()
+
+    class FinalTailPyroxide(FakePyroxide):
+        def __init__(self) -> None:
+            super().__init__()
+            self._tail_handle_created = False
+
+        def task(self, function: Any, *, isolated: bool = False) -> Any:
+            submit = super().task(function, isolated=isolated)
+
+            def submit_with_tail(payload: Any) -> FakeHandle:
+                if function.__name__ == "_identity" and not self._tail_handle_created:
+                    self._tail_handle_created = True
+                    handle = FinalTailHandle(self, value=payload, status="Running")
+                    self.handles.append(handle)
+                    self.submitted_tasks += 1
+                    return handle
+                return submit(payload)
+
+            return submit_with_tail
+
+    config = reliability_runner.ReliabilityConfig(
+        duration_seconds=3.0,
+        sample_interval_seconds=1.0,
+        output=output,
+        summary=tmp_path / "tail.summary.json",
+    )
+    append_jsonl = reliability_runner._append_jsonl
+
+    def append_and_release(path: Path, record: dict[str, object]) -> None:
+        append_jsonl(path, record)
+        if (
+            record.get("record_type") == "sample"
+            and record["elapsed_seconds"] == 0.0
+        ):
+            assert terminal_waiting.wait(timeout=1)
+        if (
+            record.get("record_type") == "sample"
+            and record["elapsed_seconds"] == config.duration_seconds
+        ):
+            terminal_after_last_sample.set()
+
+    monkeypatch.setattr(reliability_runner, "_append_jsonl", append_and_release)
+
+    summary = reliability_runner.run_reliability(
+        config,
+        pyroxide_facade=FinalTailPyroxide(),
+        sampler=FakeSampler(),
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    final = summary["final"]
+    terminal_operations = (
+        final["completed_operations"]
+        + final["failed_operations"]
+        + final["cancelled_operations"]
+    )
+    assert final["latency_seconds"]
+    assert summary["latency_seconds"]["count"] == terminal_operations
 
 
 def test_reliability_run_restores_process_environment(
