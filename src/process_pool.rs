@@ -1,7 +1,9 @@
 use interprocess::local_socket::{LocalSocketListener, LocalSocketStream};
 use pyo3::types::PyAnyMethods;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -9,9 +11,10 @@ pub(crate) struct IpcWorker {
     pub(crate) child: Child,
     pub(crate) stream: LocalSocketStream,
     pub(crate) socket_path: String,
+    socket_dir: Option<PathBuf>,
     pub(crate) tasks_run: usize,
-    pub(crate) registered_wasms: std::collections::HashSet<String>,
-    pub(crate) registered_dylibs: std::collections::HashSet<String>,
+    pub(crate) registered_wasms: std::collections::HashMap<String, u64>,
+    pub(crate) registered_dylibs: std::collections::HashMap<String, u64>,
     pub(crate) last_used: std::time::Instant,
 }
 
@@ -27,11 +30,71 @@ impl Drop for IpcWorker {
         if cfg!(unix) && std::path::Path::new(&self.socket_path).exists() {
             let _ = std::fs::remove_file(&self.socket_path);
         }
+        if let Some(socket_dir) = self.socket_dir.take() {
+            let _ = std::fs::remove_dir_all(socket_dir);
+        }
     }
+}
+
+struct SocketDirectoryGuard(Option<PathBuf>);
+
+impl SocketDirectoryGuard {
+    fn take(&mut self) -> Option<PathBuf> {
+        self.0.take()
+    }
+}
+
+impl Drop for SocketDirectoryGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn create_socket_path() -> Result<(String, SocketDirectoryGuard), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    for _ in 0..16 {
+        let directory = std::env::temp_dir().join(format!(
+            "pyroxide-ipc-{}-{}",
+            std::process::id(),
+            rand::random::<u32>()
+        ));
+        match std::fs::create_dir(&directory) {
+            Ok(()) => {
+                std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+                    .map_err(|error| {
+                        let _ = std::fs::remove_dir(&directory);
+                        format!("Failed to secure worker socket directory: {error}")
+                    })?;
+                let socket_path = directory.join("worker.sock");
+                return Ok((
+                    socket_path.to_string_lossy().into_owned(),
+                    SocketDirectoryGuard(Some(directory)),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!("Failed to create worker socket directory: {error}"));
+            }
+        }
+    }
+    Err("Failed to allocate a unique worker socket directory".to_string())
+}
+
+#[cfg(not(unix))]
+fn create_socket_path() -> Result<(String, SocketDirectoryGuard), String> {
+    Ok((
+        format!("pyro3_ipc_{}", rand::random::<u32>()),
+        SocketDirectoryGuard(None),
+    ))
 }
 
 pub(crate) struct IsolatedProcessPool {
     workers: Mutex<Vec<IpcWorker>>,
+    shutdown: AtomicBool,
 }
 
 static PROCESS_POOL: OnceLock<Arc<IsolatedProcessPool>> = OnceLock::new();
@@ -77,20 +140,21 @@ pub(crate) fn get_process_pool() -> Arc<IsolatedProcessPool> {
                 }
                 if let Ok(entries) = std::fs::read_dir("/dev/shm") {
                     for entry in entries.flatten() {
-                        if let Ok(filename) = entry.file_name().into_string()
-                            && filename.starts_with("pyroxide_shm_")
-                        {
-                            let parts: Vec<&str> = filename.split('_').collect();
-                            let pid_str = if filename.starts_with("pyroxide_shm_res_") {
-                                parts.get(3)
-                            } else {
-                                parts.get(2)
-                            };
-                            if let Some(pid_str) = pid_str
-                                && let Ok(pid) = pid_str.parse::<i32>()
-                                && unsafe { libc::kill(pid, 0) } != 0
-                            {
-                                let _ = std::fs::remove_file(entry.path());
+                        if let Ok(filename) = entry.file_name().into_string() {
+                            if filename.starts_with("pyroxide_shm_") {
+                                let parts: Vec<&str> = filename.split('_').collect();
+                                let pid_str = if filename.starts_with("pyroxide_shm_res_") {
+                                    parts.get(3)
+                                } else {
+                                    parts.get(2)
+                                };
+                                if let Some(pid_str) = pid_str {
+                                    if let Ok(pid) = pid_str.parse::<i32>() {
+                                        if unsafe { libc::kill(pid, 0) } != 0 {
+                                            let _ = std::fs::remove_file(entry.path());
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -98,6 +162,7 @@ pub(crate) fn get_process_pool() -> Arc<IsolatedProcessPool> {
             }
             let pool = Arc::new(IsolatedProcessPool {
                 workers: Mutex::new(Vec::new()),
+                shutdown: AtomicBool::new(false),
             });
             spawn_idle_reaper(pool.clone());
             pool
@@ -108,6 +173,9 @@ pub(crate) fn get_process_pool() -> Arc<IsolatedProcessPool> {
 impl IsolatedProcessPool {
     /// Acquires a warm worker, or spawns a new one if none is available.
     pub fn acquire_worker(&self) -> Result<IpcWorker, String> {
+        if self.shutdown.load(Ordering::Acquire) {
+            return Err("isolated process pool has been shut down".to_string());
+        }
         {
             let mut guard = self.workers.lock().unwrap_or_else(|e| e.into_inner());
             while let Some(mut worker) = guard.pop() {
@@ -124,7 +192,9 @@ impl IsolatedProcessPool {
     }
 
     pub fn release_worker(&self, mut worker: IpcWorker) {
-        if get_max_tasks_per_worker() > 0 && worker.tasks_run >= get_max_tasks_per_worker() {
+        if self.shutdown.load(Ordering::Acquire)
+            || (get_max_tasks_per_worker() > 0 && worker.tasks_run >= get_max_tasks_per_worker())
+        {
             drop(worker); // kills child process and cleans socket file
             return;
         }
@@ -140,6 +210,9 @@ impl IsolatedProcessPool {
     }
 
     fn spawn_new_worker(&self) -> Result<IpcWorker, String> {
+        if self.shutdown.load(Ordering::Acquire) {
+            return Err("isolated process pool has been shut down".to_string());
+        }
         let (python_path, sys_path_items) =
             pyo3::Python::attach(|py| -> Result<(String, Vec<String>), String> {
                 let sys = py
@@ -158,20 +231,13 @@ impl IsolatedProcessPool {
                 Ok((exe_str, paths))
             })?;
 
-        let rand_num: u32 = rand::random();
-
-        let socket_path = if cfg!(unix) {
-            format!("/tmp/pyro3_ipc_{rand_num}.sock")
-        } else {
-            format!("pyro3_ipc_{rand_num}")
-        };
-
-        if cfg!(unix) {
-            let _ = std::fs::remove_file(&socket_path);
-        }
+        let (socket_path, mut socket_dir) = create_socket_path()?;
 
         let listener = LocalSocketListener::bind(socket_path.as_str())
             .map_err(|e| format!("Failed to bind local socket {socket_path}: {e}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("Failed to set non-blocking on listener: {e}"))?;
 
         let mut cmd = Command::new(&python_path);
         cmd.env("PYROXIDE_WORKER", "1")
@@ -186,10 +252,6 @@ impl IsolatedProcessPool {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn pyroxide worker child process: {e}"))?;
-
-        listener
-            .set_nonblocking(true)
-            .map_err(|e| format!("Failed to set non-blocking on listener: {e}"))?;
 
         let mut stream = None;
         let start = std::time::Instant::now();
@@ -212,6 +274,7 @@ impl IsolatedProcessPool {
                 }
                 Err(e) => {
                     let _ = child.kill();
+                    let _ = child.wait();
                     return Err(format!("Failed to accept local socket connection: {e}"));
                 }
             }
@@ -226,17 +289,20 @@ impl IsolatedProcessPool {
             }
         };
 
-        stream
-            .set_nonblocking(false)
-            .map_err(|e| format!("Failed to set stream back to blocking: {e}"))?;
+        if let Err(error) = stream.set_nonblocking(false) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("Failed to set stream back to blocking: {error}"));
+        }
 
         let mut worker = IpcWorker {
             child,
             stream,
             socket_path,
+            socket_dir: socket_dir.take(),
             tasks_run: 0,
-            registered_wasms: std::collections::HashSet::new(),
-            registered_dylibs: std::collections::HashSet::new(),
+            registered_wasms: std::collections::HashMap::new(),
+            registered_dylibs: std::collections::HashMap::new(),
             last_used: std::time::Instant::now(),
         };
 
@@ -246,17 +312,35 @@ impl IsolatedProcessPool {
     }
 }
 
+pub(crate) fn shutdown_process_pool() {
+    if let Some(pool) = PROCESS_POOL.get() {
+        pool.shutdown.store(true, Ordering::Release);
+        let workers = {
+            let mut workers = pool
+                .workers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            std::mem::take(&mut *workers)
+        };
+        drop(workers);
+    }
+}
+
 fn sync_registries(worker: &mut IpcWorker) -> Result<(), String> {
-    for (name, wasm_bytes) in crate::get_wasm_bytes() {
-        send_registration_task(&mut worker.stream, 10, &name, &wasm_bytes)
+    for (name, registration) in crate::get_wasm_registrations() {
+        send_registration_task(&mut worker.stream, 10, &name, &registration.value)
             .map_err(|e| format!("Failed to sync WASM module {name} to worker: {e}"))?;
-        worker.registered_wasms.insert(name);
+        worker
+            .registered_wasms
+            .insert(name, registration.generation);
     }
 
-    for (name, path) in crate::get_dylib_paths() {
-        send_registration_task(&mut worker.stream, 11, &name, path.as_bytes())
+    for (name, registration) in crate::get_dylib_registrations() {
+        send_registration_task(&mut worker.stream, 11, &name, registration.value.as_bytes())
             .map_err(|e| format!("Failed to sync dylib {name} to worker: {e}"))?;
-        worker.registered_dylibs.insert(name);
+        worker
+            .registered_dylibs
+            .insert(name, registration.generation);
     }
 
     Ok(())
@@ -268,9 +352,19 @@ pub(crate) fn send_registration_task(
     metadata: &str,
     payload: &[u8],
 ) -> Result<(), String> {
+    let metadata_len = crate::checked_ipc_len(
+        metadata.len() as u64,
+        crate::MAX_IPC_METADATA_BYTES,
+        "metadata",
+    )?;
+    let payload_len = crate::checked_ipc_len(
+        payload.len() as u64,
+        crate::get_max_ipc_frame_bytes(),
+        "payload",
+    )?;
     let mut header = vec![task_type, 0u8];
-    header.extend_from_slice(&(metadata.len() as u32).to_be_bytes());
-    header.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+    header.extend_from_slice(&(metadata_len as u32).to_be_bytes());
+    header.extend_from_slice(&(payload_len as u64).to_be_bytes());
 
     stream.write_all(&header).map_err(|e| e.to_string())?;
     stream
@@ -285,7 +379,11 @@ pub(crate) fn send_registration_task(
         .map_err(|e| format!("Failed to read registration response header: {e}"))?;
     let success = res_header[0] == 1;
     let _res_flags = res_header[1];
-    let data_len = u64::from_be_bytes(res_header[2..10].try_into().unwrap_or([0u8; 8])) as usize;
+    let data_len = crate::checked_ipc_len(
+        u64::from_be_bytes(res_header[2..10].try_into().unwrap_or([0u8; 8])),
+        crate::get_max_ipc_frame_bytes(),
+        "registration response",
+    )?;
 
     let mut data = vec![0u8; data_len];
     stream.read_exact(&mut data).map_err(|e| e.to_string())?;
@@ -342,6 +440,9 @@ fn spawn_idle_reaper(pool: Arc<IsolatedProcessPool>) {
         loop {
             // Wake up every 2 seconds to check
             std::thread::sleep(Duration::from_secs(2));
+            if pool.shutdown.load(Ordering::Acquire) {
+                break;
+            }
 
             let idle_timeout = Duration::from_secs(get_idle_timeout_secs());
             let min_workers = get_min_workers();

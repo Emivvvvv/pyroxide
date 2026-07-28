@@ -1,7 +1,230 @@
-use crate::broker::{Broker, Task, TaskStatus};
+use crate::broker::{Broker, QueueAdmission, Task, TaskStatus};
 use pyo3::prelude::*;
-use std::sync::Arc;
+use std::cell::Cell;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, atomic::AtomicBool};
+
+thread_local! {
+    static IN_PROCESS_WORKER: Cell<bool> = const { Cell::new(false) };
+}
+
+struct WorkerContext;
+
+impl WorkerContext {
+    fn enter() -> Self {
+        IN_PROCESS_WORKER.set(true);
+        Self
+    }
+}
+
+impl Drop for WorkerContext {
+    fn drop(&mut self) {
+        IN_PROCESS_WORKER.set(false);
+    }
+}
+
+pub(crate) fn is_in_process_worker() -> bool {
+    IN_PROCESS_WORKER.get()
+}
+
+fn record_shutdown_cancellation(broker: &Broker, task_id: usize, task: &Arc<Task>) {
+    task.cancelled.store(true, Ordering::Release);
+    broker.cancelled_count.fetch_add(1, Ordering::Relaxed);
+    *task
+        .result
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(Err("Task cancelled".to_string()));
+    *task
+        .completed_mutex
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = true;
+    task.completed_cvar.notify_all();
+    #[cfg(unix)]
+    crate::notify_waker(task_id);
+
+    if task.autofree.load(Ordering::Acquire) {
+        crate::broker::free_task(task_id);
+    }
+}
+
+fn cancel_pending_for_shutdown(broker: &Broker, task_id: usize, task: &Arc<Task>) -> bool {
+    if task
+        .status
+        .compare_exchange(
+            TaskStatus::Pending as u8,
+            TaskStatus::Cancelled as u8,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return false;
+    }
+
+    record_shutdown_cancellation(broker, task_id, task);
+    true
+}
+
+#[cfg(any(test, debug_assertions))]
+struct StartClaimHook {
+    reached: std::sync::Barrier,
+    resume: std::sync::Barrier,
+    reached_isolated_loop: std::sync::Mutex<Option<bool>>,
+}
+
+#[cfg(any(test, debug_assertions))]
+static START_CLAIM_HOOK: std::sync::OnceLock<std::sync::Mutex<Option<Arc<StartClaimHook>>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn install_start_claim_hook(hook: Option<Arc<StartClaimHook>>) {
+    *START_CLAIM_HOOK
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = hook;
+}
+
+#[cfg(any(test, debug_assertions))]
+fn pause_before_start_claim(isolated_loop: bool) {
+    let hook = START_CLAIM_HOOK
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    if let Some(hook) = hook {
+        *hook
+            .reached_isolated_loop
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(isolated_loop);
+        hook.reached.wait();
+        hook.resume.wait();
+    }
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn arm_start_claim_test_hook() -> Result<(), String> {
+    let mut installed = START_CLAIM_HOOK
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if installed.is_some() {
+        return Err("start-claim test hook is already armed".to_string());
+    }
+    *installed = Some(Arc::new(StartClaimHook {
+        reached: std::sync::Barrier::new(2),
+        resume: std::sync::Barrier::new(2),
+        reached_isolated_loop: std::sync::Mutex::new(None),
+    }));
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn wait_start_claim_test_hook() -> Result<bool, String> {
+    let hook = START_CLAIM_HOOK
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+        .ok_or_else(|| "start-claim test hook is not armed".to_string())?;
+    hook.reached.wait();
+    hook.reached_isolated_loop
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .ok_or_else(|| "start-claim test hook did not record a worker loop".to_string())
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn resume_start_claim_test_hook() -> Result<(), String> {
+    let hook = START_CLAIM_HOOK
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take()
+        .ok_or_else(|| "start-claim test hook is not armed".to_string())?;
+    hook.resume.wait();
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartClaimResult {
+    Started,
+    CancelledForShutdown,
+    Unavailable,
+}
+
+fn transition_pending_to_running(
+    status: &std::sync::atomic::AtomicU8,
+    cancel_pending_on_shutdown: &AtomicBool,
+    _isolated_loop: bool,
+) -> StartClaimResult {
+    #[cfg(any(test, debug_assertions))]
+    pause_before_start_claim(_isolated_loop);
+
+    match status.compare_exchange(
+        TaskStatus::Pending as u8,
+        TaskStatus::Running as u8,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+    ) {
+        Ok(_) => {
+            // The claim, shutdown store, and this check have one global order.
+            // A shutdown store ordered before the claim is therefore visible
+            // here, and the not-yet-executed task is cancelled.
+            if cancel_pending_on_shutdown.load(Ordering::SeqCst)
+                && status
+                    .compare_exchange(
+                        TaskStatus::Running as u8,
+                        TaskStatus::Cancelled as u8,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    )
+                    .is_ok()
+            {
+                StartClaimResult::CancelledForShutdown
+            } else {
+                StartClaimResult::Started
+            }
+        }
+        Err(_) => StartClaimResult::Unavailable,
+    }
+}
+
+fn claim_pending_for_execution(
+    broker: &Broker,
+    task_id: usize,
+    task: &Arc<Task>,
+    cancel_pending_on_shutdown: &AtomicBool,
+    isolated_loop: bool,
+) -> bool {
+    if cancel_pending_on_shutdown.load(Ordering::SeqCst)
+        && cancel_pending_for_shutdown(broker, task_id, task)
+    {
+        return false;
+    }
+    if task.cancelled.load(Ordering::Acquire) {
+        if task.autofree.load(Ordering::Acquire) {
+            crate::broker::free_task(task_id);
+        }
+        return false;
+    }
+
+    match transition_pending_to_running(&task.status, cancel_pending_on_shutdown, isolated_loop) {
+        StartClaimResult::Started => {
+            broker.running_count.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+        StartClaimResult::CancelledForShutdown => {
+            record_shutdown_cancellation(broker, task_id, task);
+            false
+        }
+        StartClaimResult::Unavailable => {
+            if task.autofree.load(Ordering::Acquire) {
+                crate::broker::free_task(task_id);
+            }
+            false
+        }
+    }
+}
 
 pub(crate) enum NativePayload {
     Str(String),
@@ -35,44 +258,37 @@ impl Drop for ShmemGuard {
     }
 }
 
-fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>) {
+fn worker_loop(
+    broker: Arc<Broker>,
+    receiver: crossbeam_channel::Receiver<usize>,
+    admission: Arc<QueueAdmission>,
+    cancel_pending_on_shutdown: Arc<AtomicBool>,
+) {
+    let _worker_context = WorkerContext::enter();
     while let Ok(task_id) = receiver.recv() {
+        if task_id == crate::broker::STOP_TASK_ID {
+            break;
+        }
+        admission.release(1);
+
         // 1. Get task from Slab using a read lock
         let task = broker.tasks.get(task_id).map(|e| Arc::clone(&*e));
 
         if let Some(task) = task {
-            // Check cancellation before starting
-            if task.cancelled.load(Ordering::Acquire) {
-                if task.autofree.load(Ordering::Acquire) {
-                    crate::broker::free_task(task_id);
-                }
-                continue;
-            }
-
-            // Try to transition status from Pending to Running. If it fails, task was cancelled.
-            match task.status.compare_exchange(
-                TaskStatus::Pending as u8,
-                TaskStatus::Running as u8,
-                Ordering::Release,
-                Ordering::Acquire,
+            if !claim_pending_for_execution(
+                &broker,
+                task_id,
+                &task,
+                &cancel_pending_on_shutdown,
+                false,
             ) {
-                Ok(_) => {}
-                Err(_) => {
-                    if task.autofree.load(Ordering::Acquire) {
-                        crate::broker::free_task(task_id);
-                    }
-                    continue;
-                }
+                continue;
             }
 
             // Route isolated tasks to the process pool
             if task.isolated {
                 let task_clone = Arc::clone(&task);
-                std::thread::spawn(move || {
-                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                        execute_isolated_task(task_id, &task_clone);
-                    }));
-                });
+                execute_isolated_task(task_id, &task_clone);
                 continue;
             }
 
@@ -145,11 +361,9 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                             .ok_or_else(|| format!("WASM module '{module_name}' not registered"))?;
 
                         let engine = crate::get_wasm_engine();
-                        let limit_bytes = task_clone.wasm_memory_limit_bytes.unwrap_or_else(|| {
-                            crate::CONFIG
-                                .wasm_memory_limit_bytes
-                                .load(std::sync::atomic::Ordering::Relaxed)
-                        });
+                        let limit_bytes = task_clone
+                            .wasm_memory_limit_bytes
+                            .unwrap_or_else(crate::get_wasm_memory_limit_bytes);
 
                         let state = crate::WasmState {
                             limits: wasmtime::StoreLimitsBuilder::new()
@@ -159,16 +373,11 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                         let mut store = wasmtime::Store::new(engine, state);
                         store.limiter(|s| &mut s.limits);
 
-                        let timeout_ms = task_clone.wasm_timeout_ms.unwrap_or_else(|| {
-                            crate::CONFIG
-                                .wasm_timeout_ms
-                                .load(std::sync::atomic::Ordering::Relaxed)
-                        });
-                        let tick_ms = std::env::var("PYROXIDE_WASM_TICK_MS")
-                            .ok()
-                            .and_then(|v| v.parse().ok())
-                            .unwrap_or(10);
-                        let ticks = (timeout_ms / tick_ms).max(1) as u64;
+                        let timeout_ms = task_clone
+                            .wasm_timeout_ms
+                            .unwrap_or_else(crate::get_wasm_timeout_ms);
+                        let tick_ms = crate::get_wasm_tick_ms();
+                        let ticks = (timeout_ms / tick_ms).max(1);
                         store.set_epoch_deadline(ticks);
 
                         let linker = wasmtime::Linker::new(engine);
@@ -190,7 +399,8 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                             .get_memory(&mut store, "memory")
                             .ok_or_else(|| "WASM missing export 'memory'".to_string())?;
 
-                        let input_len = input_bytes.len() as i32;
+                        let input_len =
+                            crate::validate_wasm_input_len(input_bytes.len(), limit_bytes)?;
 
                         if task_clone.cancelled.load(Ordering::Acquire) {
                             return Err("Task cancelled".to_string());
@@ -219,6 +429,12 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                         // Unpack pointer and length
                         let out_ptr = (packed_result >> 32) as i32;
                         let out_len = (packed_result & 0xFFFFFFFF) as i32;
+                        let (out_start, out_size) = crate::validate_wasm_output_range(
+                            out_ptr,
+                            out_len,
+                            limit_bytes,
+                            memory.data_size(&store),
+                        )?;
 
                         if task_clone.cancelled.load(Ordering::Acquire) {
                             let _ = dealloc_fn.call(&mut store, (guest_ptr, input_len));
@@ -227,9 +443,9 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                         }
 
                         // Read output bytes
-                        let mut output_bytes = vec![0u8; out_len as usize];
+                        let mut output_bytes = vec![0u8; out_size];
                         memory
-                            .read(&store, out_ptr as usize, &mut output_bytes)
+                            .read(&store, out_start, &mut output_bytes)
                             .map_err(|e| format!("Failed to read from WASM memory: {e}"))?;
 
                         // Free memory in guest
@@ -363,10 +579,14 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
                     Ordering::Release,
                     Ordering::Acquire,
                 ) {
-                    Ok(_) => break,
+                    Ok(_) => {
+                        broker.record_task_completion(final_status);
+                        break;
+                    }
                     Err(actual) => current = actual,
                 }
             }
+            broker.running_count.fetch_sub(1, Ordering::Relaxed);
 
             // 6. Signal the Condvar to wake up waiting Python thread
             {
@@ -388,17 +608,71 @@ fn worker_loop(broker: Arc<Broker>, receiver: crossbeam_channel::Receiver<usize>
     }
 }
 
+fn isolated_worker_loop(
+    broker: Arc<Broker>,
+    receiver: crossbeam_channel::Receiver<usize>,
+    admission: Arc<QueueAdmission>,
+    cancel_pending_on_shutdown: Arc<AtomicBool>,
+) {
+    while let Ok(task_id) = receiver.recv() {
+        if task_id == crate::broker::STOP_TASK_ID {
+            break;
+        }
+        admission.release(1);
+
+        let task = broker.tasks.get(task_id).map(|entry| Arc::clone(&*entry));
+        let Some(task) = task else {
+            continue;
+        };
+
+        if !claim_pending_for_execution(&broker, task_id, &task, &cancel_pending_on_shutdown, true)
+        {
+            continue;
+        }
+
+        let task_clone = Arc::clone(&task);
+        execute_isolated_task(task_id, &task_clone);
+    }
+}
+
 pub(crate) fn spawn_workers(
     count: usize,
     broker: Arc<Broker>,
     receiver: crossbeam_channel::Receiver<usize>,
+    admission: Arc<QueueAdmission>,
+    cancel_pending_on_shutdown: Arc<AtomicBool>,
 ) -> Vec<std::thread::JoinHandle<()>> {
     (0..count)
         .map(|_| {
             let broker = broker.clone();
             let receiver = receiver.clone();
+            let admission = Arc::clone(&admission);
+            let cancel_pending_on_shutdown = Arc::clone(&cancel_pending_on_shutdown);
 
-            std::thread::spawn(move || worker_loop(broker, receiver))
+            std::thread::spawn(move || {
+                worker_loop(broker, receiver, admission, cancel_pending_on_shutdown)
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn spawn_isolated_workers(
+    count: usize,
+    broker: Arc<Broker>,
+    receiver: crossbeam_channel::Receiver<usize>,
+    admission: Arc<QueueAdmission>,
+    cancel_pending_on_shutdown: Arc<AtomicBool>,
+) -> Vec<std::thread::JoinHandle<()>> {
+    (0..count)
+        .map(|_| {
+            let broker = Arc::clone(&broker);
+            let receiver = receiver.clone();
+            let admission = Arc::clone(&admission);
+            let cancel_pending_on_shutdown = Arc::clone(&cancel_pending_on_shutdown);
+
+            std::thread::spawn(move || {
+                isolated_worker_loop(broker, receiver, admission, cancel_pending_on_shutdown)
+            })
         })
         .collect()
 }
@@ -426,7 +700,10 @@ fn wait_readable(
 use pyo3::types::PyBytes;
 
 fn execute_isolated_task(task_id: usize, task: &Arc<Task>) {
-    let result = execute_isolated_task_inner(task);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        execute_isolated_task_inner(task)
+    }))
+    .unwrap_or_else(|_| Err("Rust isolated coordinator panicked".to_string()));
 
     let final_status = match &result {
         Ok(_) => TaskStatus::Completed as u8,
@@ -452,12 +729,19 @@ fn execute_isolated_task(task_id: usize, task: &Arc<Task>) {
             Ordering::Release,
             Ordering::Acquire,
         ) {
-            Ok(_) => break,
+            Ok(_) => {
+                let engine = crate::broker::get_engine();
+                engine.broker.record_task_completion(final_status);
+                break;
+            }
             Err(actual) => current = actual,
         }
     }
 
-    // Signal Condvar
+    let engine = crate::broker::get_engine();
+    engine.broker.running_count.fetch_sub(1, Ordering::Relaxed);
+
+    // Signal completion only after all observable task counters are final.
     {
         let mut completed = task
             .completed_mutex
@@ -478,6 +762,30 @@ fn execute_isolated_task(task_id: usize, task: &Arc<Task>) {
 fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
     use std::io::{Read, Write};
 
+    if let Some(ref wasm_module) = task.wasm_module
+        && !crate::has_wasm_registration(wasm_module)
+    {
+        return Err(format!("WASM module '{wasm_module}' not found in registry"));
+    }
+    if let Some(ref plugin_name) = task.dylib
+        && !crate::has_dylib_registration(plugin_name)
+    {
+        return Err(format!("Dylib '{plugin_name}' not found in registry"));
+    }
+
+    if std::env::var("PYROXIDE_PANIC_TRIGGER").is_ok() {
+        let should_panic = Python::attach(|py| {
+            task.payload
+                .bind(py)
+                .extract::<String>()
+                .map(|value| value == "TRIGGER_ISOLATED_PANIC")
+                .unwrap_or(false)
+        });
+        if should_panic {
+            panic!("Simulated isolated coordinator panic");
+        }
+    }
+
     // 1. Prepare serialization payload based on task type
     let (task_type, metadata, payload_bytes) =
         Python::attach(|py| -> Result<(u8, String, Vec<u8>), String> {
@@ -497,16 +805,12 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
             } else if let Some(ref module_name) = task.wasm_module {
                 // WASM
                 let func_name = task.wasm_func.clone().unwrap_or_else(|| "run".to_string());
-                let limit_bytes = task.wasm_memory_limit_bytes.unwrap_or_else(|| {
-                    crate::CONFIG
-                        .wasm_memory_limit_bytes
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                });
-                let timeout_ms = task.wasm_timeout_ms.unwrap_or_else(|| {
-                    crate::CONFIG
-                        .wasm_timeout_ms
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                });
+                let limit_bytes = task
+                    .wasm_memory_limit_bytes
+                    .unwrap_or_else(crate::get_wasm_memory_limit_bytes);
+                let timeout_ms = task
+                    .wasm_timeout_ms
+                    .unwrap_or_else(crate::get_wasm_timeout_ms);
                 let metadata = format!("{module_name}:{func_name}:{limit_bytes}:{timeout_ms}");
                 let bound_payload = task.payload.bind(py);
                 let bytes = if let Ok(s) = bound_payload.extract::<String>() {
@@ -552,40 +856,69 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
 
     // Lazy sync registries to worker if missing
     if let Some(ref wasm_module) = task.wasm_module {
-        if !worker.registered_wasms.contains(wasm_module) {
-            let wasm_bytes = crate::get_wasm_bytes()
-                .get(wasm_module)
-                .cloned()
-                .ok_or_else(|| format!("WASM module '{wasm_module}' not found in registry"))?;
-
-            crate::process_pool::send_registration_task(
-                &mut worker.stream,
-                10,
-                wasm_module,
-                &wasm_bytes,
-            )
-            .map_err(|e| format!("Failed to sync WASM module {wasm_module}: {e}"))?;
-            worker.registered_wasms.insert(wasm_module.clone());
+        match crate::get_wasm_registration_sync(
+            wasm_module,
+            worker.registered_wasms.get(wasm_module).copied(),
+        ) {
+            crate::RegistrySync::Missing => {
+                pool.release_worker(worker);
+                return Err(format!("WASM module '{wasm_module}' not found in registry"));
+            }
+            crate::RegistrySync::Current => {}
+            crate::RegistrySync::Changed(registration) => {
+                crate::process_pool::send_registration_task(
+                    &mut worker.stream,
+                    10,
+                    wasm_module,
+                    &registration.value,
+                )
+                .map_err(|e| format!("Failed to sync WASM module {wasm_module}: {e}"))?;
+                worker
+                    .registered_wasms
+                    .insert(wasm_module.clone(), registration.generation);
+            }
         }
-    } else if let Some(ref plugin_name) = task.dylib
-        && !worker.registered_dylibs.contains(plugin_name)
-    {
-        let library_path = crate::get_dylib_paths()
-            .get(plugin_name)
-            .cloned()
-            .ok_or_else(|| format!("Dylib '{plugin_name}' not found in registry"))?;
-
-        crate::process_pool::send_registration_task(
-            &mut worker.stream,
-            11,
+    } else if let Some(ref plugin_name) = task.dylib {
+        match crate::get_dylib_registration_sync(
             plugin_name,
-            library_path.as_bytes(),
-        )
-        .map_err(|e| format!("Failed to sync dylib {plugin_name}: {e}"))?;
-        worker.registered_dylibs.insert(plugin_name.clone());
+            worker.registered_dylibs.get(plugin_name).copied(),
+        ) {
+            crate::RegistrySync::Missing => {
+                pool.release_worker(worker);
+                return Err(format!("Dylib '{plugin_name}' not found in registry"));
+            }
+            crate::RegistrySync::Current => {}
+            crate::RegistrySync::Changed(registration) => {
+                if worker.registered_dylibs.remove(plugin_name).is_some() {
+                    crate::process_pool::send_registration_task(
+                        &mut worker.stream,
+                        12,
+                        plugin_name,
+                        &[],
+                    )
+                    .map_err(|e| format!("Failed to remove stale dylib {plugin_name}: {e}"))?;
+                }
+
+                crate::process_pool::send_registration_task(
+                    &mut worker.stream,
+                    11,
+                    plugin_name,
+                    registration.value.as_bytes(),
+                )
+                .map_err(|e| format!("Failed to sync dylib {plugin_name}: {e}"))?;
+                worker
+                    .registered_dylibs
+                    .insert(plugin_name.clone(), registration.generation);
+            }
+        }
     }
 
     // 3. Write request frame: [Type: 1 byte] [Flags: 1 byte] [Extra Len: 4 bytes] [Payload Len: 8 bytes] [Metadata] [Payload]
+    crate::checked_ipc_len(
+        payload_bytes.len() as u64,
+        crate::get_max_ipc_frame_bytes(),
+        "payload",
+    )?;
     let use_shm = payload_bytes.len() >= crate::get_shm_threshold();
     let mut flags = 0u8;
     let mut actual_payload = payload_bytes.clone();
@@ -621,9 +954,19 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
         }
     }
 
+    let metadata_len = crate::checked_ipc_len(
+        metadata.len() as u64,
+        crate::MAX_IPC_METADATA_BYTES,
+        "metadata",
+    )?;
+    let payload_len = crate::checked_ipc_len(
+        actual_payload.len() as u64,
+        crate::get_max_ipc_frame_bytes(),
+        "payload",
+    )?;
     let mut header = vec![task_type, flags];
-    header.extend_from_slice(&(metadata.len() as u32).to_be_bytes());
-    header.extend_from_slice(&(actual_payload.len() as u64).to_be_bytes());
+    header.extend_from_slice(&(metadata_len as u32).to_be_bytes());
+    header.extend_from_slice(&(payload_len as u64).to_be_bytes());
 
     let write_result = (|| -> std::io::Result<()> {
         worker.stream.write_all(&header)?;
@@ -682,7 +1025,11 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
 
     let success = resp_header[0] == 1;
     let res_flags = resp_header[1];
-    let data_len = u64::from_be_bytes(resp_header[2..10].try_into().unwrap_or([0u8; 8])) as usize;
+    let data_len = crate::checked_ipc_len(
+        u64::from_be_bytes(resp_header[2..10].try_into().unwrap_or([0u8; 8])),
+        crate::get_max_ipc_frame_bytes(),
+        "response",
+    )?;
 
     let mut data_bytes = vec![0u8; data_len];
     let mut data_read = 0;
@@ -767,7 +1114,11 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
                     }
                 }
                 let ptr = shmem.as_ptr();
-                let size = shmem.len();
+                let size = crate::checked_ipc_len(
+                    shmem.len() as u64,
+                    crate::get_max_ipc_frame_bytes(),
+                    "shared-memory response",
+                )?;
                 let slice = unsafe { std::slice::from_raw_parts(ptr, size) };
 
                 let py_res = Python::attach(|py| unpack_worker_response(py, slice, task));
@@ -794,4 +1145,68 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
     pool.release_worker(worker);
 
     final_res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        StartClaimHook, StartClaimResult, install_start_claim_hook, transition_pending_to_running,
+    };
+    use crate::broker::TaskStatus;
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    use std::sync::{Arc, Barrier, mpsc};
+    use std::time::Duration;
+
+    #[test]
+    fn shutdown_wins_the_claim_gap_in_both_execution_modes() {
+        let mut observations = Vec::new();
+
+        for isolated in [false, true] {
+            let status = Arc::new(AtomicU8::new(TaskStatus::Pending as u8));
+            let cancel_pending = Arc::new(AtomicBool::new(false));
+            let hook = Arc::new(StartClaimHook {
+                reached: Barrier::new(2),
+                resume: Barrier::new(2),
+                reached_isolated_loop: std::sync::Mutex::new(None),
+            });
+            install_start_claim_hook(Some(Arc::clone(&hook)));
+
+            let (outcome_tx, outcome_rx) = mpsc::channel();
+            let claiming_status = Arc::clone(&status);
+            let claiming_cancel_pending = Arc::clone(&cancel_pending);
+            let claimant = std::thread::spawn(move || {
+                let result = transition_pending_to_running(
+                    &claiming_status,
+                    &claiming_cancel_pending,
+                    isolated,
+                );
+                outcome_tx.send(result).unwrap();
+            });
+
+            hook.reached.wait();
+            cancel_pending.store(true, Ordering::SeqCst);
+            hook.resume.wait();
+
+            let result = outcome_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            claimant.join().unwrap();
+            install_start_claim_hook(None);
+            observations.push((isolated, result, status.load(Ordering::Acquire)));
+        }
+
+        assert_eq!(
+            observations,
+            vec![
+                (
+                    false,
+                    StartClaimResult::CancelledForShutdown,
+                    TaskStatus::Cancelled as u8,
+                ),
+                (
+                    true,
+                    StartClaimResult::CancelledForShutdown,
+                    TaskStatus::Cancelled as u8,
+                ),
+            ]
+        );
+    }
 }

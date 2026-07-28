@@ -1,4 +1,5 @@
 import shutil
+
 import pytest
 from pyroxide import compile_c, compile_zig, dylib_task
 

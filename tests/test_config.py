@@ -1,8 +1,11 @@
-import pytest
-import time
 import threading
+import time
+
 import pyroxide
-from pyroxide import register_wasm_wat, wasm_task, TaskHandle
+import pytest
+from pyroxide import register_wasm_wat, wasm_task
+
+from tests.test_admission import run_child
 
 # WebAssembly module that runs an infinite loop
 WAT_INFINITE_LOOP = """
@@ -86,3 +89,72 @@ def test_config_thread_safety():
 
     assert results["override_thread_val"] == 50
     assert results["normal_thread_val"] is None
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"memory_limit_bytes": 0}, "memory_limit_bytes must be a positive integer"),
+        ({"timeout_ms": 0}, "timeout_ms must be a positive integer"),
+        ({"memory_limit_bytes": True}, "memory_limit_bytes must be a positive integer"),
+    ],
+)
+def test_global_wasm_limits_reject_invalid_values(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        pyroxide.config.set_wasm_limits(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"wasm_timeout_ms": 0},
+        {"wasm_memory_limit_bytes": -1},
+        {"queue_timeout_ms": -1},
+    ],
+)
+def test_scoped_limits_reject_invalid_values(kwargs):
+    with pytest.raises(ValueError):
+        with pyroxide.config.scoped(**kwargs):
+            pass
+
+
+def test_queue_timeout_accepts_zero_but_rejects_negative():
+    pyroxide.config.set_queue_timeout(0)
+    with pytest.raises(ValueError, match="timeout_ms must be a non-negative integer"):
+        pyroxide.config.set_queue_timeout(-1)
+    pyroxide.config.set_queue_timeout(1000)
+
+
+def test_wasm_timeout_environment_variable_is_effective():
+    result = run_child(
+        '''
+        import time
+        from pyroxide import register_wasm_wat, wasm_task
+
+        wat = """
+        (module
+          (memory (export "memory") 1)
+          (func (export "run") (param i32 i32) (result i64)
+            (loop br 0)
+            i64.const 0)
+          (func (export "alloc") (param i32) (result i32) i32.const 0)
+          (func (export "dealloc") (param i32) (param i32)))
+        """
+        register_wasm_wat("env_timeout", wat)
+
+        @wasm_task("env_timeout")
+        def run(payload):
+            pass
+
+        started = time.monotonic()
+        try:
+            run(b"x").result()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("infinite WASM task completed")
+        assert time.monotonic() - started < 0.5
+        ''',
+        PYROXIDE_WASM_TIMEOUT_MS="50",
+    )
+    assert result.returncode == 0, result.stderr

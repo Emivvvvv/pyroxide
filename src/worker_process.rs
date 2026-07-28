@@ -3,6 +3,23 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyModule};
 use std::io::{Read, Write};
 
+#[cfg(unix)]
+fn cleanup_socket_path(socket_path: &str) {
+    let path = std::path::Path::new(socket_path);
+    let _ = std::fs::remove_file(path);
+    if path.file_name() == Some(std::ffi::OsStr::new("worker.sock")) {
+        if let Some(parent) = path.parent() {
+            let is_private_directory = parent
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|name| name.starts_with("pyroxide-ipc-"));
+            if is_private_directory {
+                let _ = std::fs::remove_dir(parent);
+            }
+        }
+    }
+}
+
 pub(crate) struct ShmemGuard {
     pub(crate) shmem: Option<shared_memory::Shmem>,
 }
@@ -48,6 +65,7 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let ppid = unsafe { libc::getppid() };
+        let socket_path = socket_path.to_string();
         std::thread::spawn(move || unsafe {
             let kq = libc::kqueue();
             if kq == -1 {
@@ -65,6 +83,7 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
             let mut ke_out: libc::kevent = std::mem::zeroed();
             let res = libc::kevent(kq, std::ptr::null(), 0, &mut ke_out, 1, std::ptr::null());
             if res > 0 {
+                cleanup_socket_path(&socket_path);
                 std::process::exit(1);
             }
         });
@@ -73,10 +92,12 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let ppid = unsafe { libc::getppid() };
+        let socket_path = socket_path.to_string();
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 if unsafe { libc::getppid() } != ppid {
+                    cleanup_socket_path(&socket_path);
                     std::process::exit(1);
                 }
             }
@@ -133,14 +154,22 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
         stream
             .read_exact(&mut extra_len_buf)
             .map_err(|e| format!("Failed to read extra_len: {e}"))?;
-        let extra_len = u32::from_be_bytes(extra_len_buf) as usize;
+        let extra_len = crate::checked_ipc_len(
+            u32::from_be_bytes(extra_len_buf) as u64,
+            crate::MAX_IPC_METADATA_BYTES,
+            "metadata",
+        )?;
 
         // Read Payload Len (8 bytes)
         let mut payload_len_buf = [0u8; 8];
         stream
             .read_exact(&mut payload_len_buf)
             .map_err(|e| format!("Failed to read payload_len: {e}"))?;
-        let payload_len = u64::from_be_bytes(payload_len_buf) as usize;
+        let payload_len = crate::checked_ipc_len(
+            u64::from_be_bytes(payload_len_buf),
+            crate::get_max_ipc_frame_bytes(),
+            "payload",
+        )?;
 
         // Read Extra Metadata Bytes
         let mut extra_bytes = vec![0u8; extra_len];
@@ -175,7 +204,11 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
             }
 
             let ptr = shmem.as_ptr();
-            let size = shmem.len();
+            let size = crate::checked_ipc_len(
+                shmem.len() as u64,
+                crate::get_max_ipc_frame_bytes(),
+                "shared-memory payload",
+            )?;
             // Store guard locally to keep mapped until the end of this task execution
             _shm_guard = Some(ShmemGuard::new(shmem));
             // Safety: SHM is mapped and valid for the duration of this loop iteration.
@@ -186,8 +219,17 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
         };
 
         // Process Task
-        let (success, response_bytes) =
+        let (mut success, mut response_bytes) =
             execute_worker_task(task_type, &metadata, actual_payload_slice);
+
+        if let Err(error) = crate::checked_ipc_len(
+            response_bytes.len() as u64,
+            crate::get_max_ipc_frame_bytes(),
+            "response",
+        ) {
+            success = false;
+            response_bytes = error.into_bytes();
+        }
 
         let use_shm = success && response_bytes.len() >= crate::get_shm_threshold();
         let mut res_flags = 0u8;
@@ -335,11 +377,8 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, 
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(1000)
                 };
-                let tick_ms = std::env::var("PYROXIDE_WASM_TICK_MS")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(10);
-                let ticks = (timeout_ms / tick_ms).max(1) as u64;
+                let tick_ms = crate::get_wasm_tick_ms();
+                let ticks = (timeout_ms / tick_ms).max(1);
                 store.set_epoch_deadline(ticks);
 
                 let linker = wasmtime::Linker::new(engine);
@@ -361,7 +400,7 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, 
                     .get_memory(&mut store, "memory")
                     .ok_or_else(|| "WASM missing export 'memory'".to_string())?;
 
-                let input_len = payload.len() as i32;
+                let input_len = crate::validate_wasm_input_len(payload.len(), limit_bytes)?;
 
                 // Allocate guest memory
                 let guest_ptr = alloc_fn
@@ -381,11 +420,17 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, 
                 // Unpack pointer and length
                 let out_ptr = (packed_result >> 32) as i32;
                 let out_len = (packed_result & 0xFFFFFFFF) as i32;
+                let (out_start, out_size) = crate::validate_wasm_output_range(
+                    out_ptr,
+                    out_len,
+                    limit_bytes,
+                    memory.data_size(&store),
+                )?;
 
                 // Read output bytes
-                let mut output_bytes = vec![0u8; out_len as usize];
+                let mut output_bytes = vec![0u8; out_size];
                 memory
-                    .read(&store, out_ptr as usize, &mut output_bytes)
+                    .read(&store, out_start, &mut output_bytes)
                     .map_err(|e| format!("Failed to read from WASM memory: {e}"))?;
 
                 // Free memory in guest
@@ -461,6 +506,13 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, 
                 None
             };
             match crate::register_dylib_internal(plugin_name, library_path, free_fn_name) {
+                Ok(_) => (true, Vec::new()),
+                Err(e) => (false, e.into_bytes()),
+            }
+        }
+        12 => {
+            // Unregister a stale Dylib before replacing it in a warm worker.
+            match crate::unregister_dylib_internal(metadata) {
                 Ok(_) => (true, Vec::new()),
                 Err(e) => (false, e.into_bytes()),
             }

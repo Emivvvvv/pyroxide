@@ -1,5 +1,6 @@
 import os
-from pyroxide import register_wasm, generate_stubs
+
+from pyroxide import generate_stubs, register_wasm
 
 WASM_PATH = os.path.join(os.path.dirname(__file__), "resources", "rot13.wasm")
 

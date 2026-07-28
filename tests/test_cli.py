@@ -1,9 +1,8 @@
-import pytest
 import os
-import tempfile
-import subprocess
 import shutil
+import subprocess
 import sys
+import tempfile
 
 # We'll use the infinite loop WAT to test WASM stub generation
 WAT_CODE = """
@@ -24,10 +23,7 @@ WAT_CODE = """
 def test_cli_stub_compilation_from_scan():
     temp_dir = tempfile.mkdtemp(prefix="pyroxide_cli_test_")
     try:
-        # 1. Write the WASM module file
-        wasm_path = os.path.join(temp_dir, "test_module.wasm")
-        # Compile WAT to WASM using wat2wasm if possible, or just write mock WAT and use register_wasm_wat.
-        # Wait, our CLI tool supports compiling from register_wasm_wat!
+        # The CLI scanner can discover an inline register_wasm_wat call.
         # So we can write a python file that registers it via register_wasm_wat:
         py_content = f"""
 import pyroxide

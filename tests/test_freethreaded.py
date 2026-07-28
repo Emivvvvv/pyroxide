@@ -1,5 +1,5 @@
 import sys
-import pytest
+
 from pyroxide.config import is_free_threaded
 
 

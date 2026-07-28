@@ -1,5 +1,7 @@
-import pytest
 import os
+import time
+
+import pytest
 from pyroxide import register_wasm, wasm_task
 
 WASM_PATH = os.path.join(os.path.dirname(__file__), "resources", "rot13.wasm")
@@ -57,6 +59,31 @@ def test_wasm_missing_function_fails():
     assert "missing export 'nonexistent_function'" in str(exc_info.value)
 
 
+@pytest.mark.parametrize("isolated", [False, True])
+def test_wasm_rejects_negative_output_pointer(isolated):
+    from pyroxide import register_wasm_wat
+
+    wat = """
+(module
+  (memory (export "memory") 1)
+  (func (export "run") (param i32 i32) (result i64)
+    i64.const -4294967296
+  )
+  (func (export "alloc") (param i32) (result i32) i32.const 0)
+  (func (export "dealloc") (param i32) (param i32))
+)
+"""
+    module_name = f"negative_output_pointer_{isolated}"
+    register_wasm_wat(module_name, wat)
+
+    @wasm_task(module_name, isolated=isolated)
+    def invalid_output(payload: bytes) -> bytes:
+        pass
+
+    with pytest.raises(RuntimeError, match="negative output pointer"):
+        invalid_output(b"x").result()
+
+
 def test_wasm_parallel_execution():
     register_wasm("rot13_multi", WASM_BYTES)
 
@@ -73,6 +100,7 @@ def test_wasm_parallel_execution():
 
 def test_wasm_cancellation():
     from pyroxide import register_wasm_wat
+
     WAT_LOOP = """
 (module
   (memory (export "memory") 1)
@@ -91,13 +119,17 @@ def test_wasm_cancellation():
         pass
 
     handle = loop_task("start")
-    cancelled = handle.cancel()
-    assert cancelled is True
-    assert handle.status == "Cancelled"
+    deadline = time.monotonic() + 2
+    while handle.status == "Pending":
+        assert time.monotonic() < deadline
+        time.sleep(0.001)
 
-    with pytest.raises(RuntimeError) as exc_info:
+    assert handle.status == "Running"
+    assert handle.cancel() is False
+    assert handle.status == "Running"
+
+    with pytest.raises(RuntimeError):
         handle.result()
-    assert "Task cancelled" in str(exc_info.value)
 
 
 def test_wasm_oop_proxy():
@@ -109,6 +141,8 @@ def test_wasm_oop_proxy():
 
     handle = proxy.run("Hello OOP WASM!")
     assert handle.result() == "Uryyb BBC JNFZ!"
+    handles = proxy.run.batch(["Batch One", "Batch Two"])
+    assert [handle.result() for handle in handles] == ["Ongpu Bar", "Ongpu Gjb"]
 
 
 def test_compile_wat_wasm():
@@ -132,4 +166,3 @@ def test_compile_wat_wasm():
     proxy = load_wasm(mod_name)
     handle = proxy.run("hello")
     assert handle.result() == ""
-

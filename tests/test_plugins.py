@@ -1,5 +1,6 @@
-import pytest
 import os
+
+import pytest
 from pyroxide import compile_rust, dylib_task
 
 RUST_PLUGIN_SRC = """
@@ -62,6 +63,11 @@ def test_dylib_bytes():
     handle = process_bytes(b"raw-data-bytes")
     res = handle.result()
     assert res == b"DYLIB: raw-data-bytes"
+    handles = process_bytes.batch([b"batch-one", b"batch-two"])
+    assert [handle.result() for handle in handles] == [
+        b"DYLIB: batch-one",
+        b"DYLIB: batch-two",
+    ]
 
 
 def test_dylib_compilation_failure():
@@ -116,7 +122,7 @@ def test_dylib_oop_proxy():
 
 def test_dylib_mini_ffi():
     """Verifies that load_dylib works with signatures dictionary for FFI calls."""
-    from pyroxide import load_dylib, compile_rust
+    from pyroxide import compile_rust, load_dylib
 
     RUST_FFI_SRC = """
     #[no_mangle]
@@ -152,11 +158,13 @@ def test_dylib_mini_ffi():
 
     assert handle_add.result() == 42
     assert handle_double.result() == 6.28
+    handles = proxy.ffi_add.batch([(1, 2), (20, 22)])
+    assert [handle.result() for handle in handles] == [3, 42]
 
 
 def test_dylib_ffi_large_signature():
     """Verifies FFI dispatcher with a large 8-argument signature."""
-    from pyroxide import load_dylib, compile_rust
+    from pyroxide import compile_rust, load_dylib
 
     RUST_LARGE_SRC = """
     #[no_mangle]
@@ -191,7 +199,7 @@ def test_dylib_ffi_large_signature():
 
 def test_dylib_no_free_success():
     """Verifies that FFI signature tasks can execute successfully without a free function."""
-    from pyroxide import load_dylib, compile_rust
+    from pyroxide import compile_rust, load_dylib
 
     RUST_NO_FREE_SRC = """
     #[no_mangle]
@@ -218,7 +226,7 @@ def test_dylib_no_free_success():
 
 def test_dylib_no_free_raw_fail():
     """Verifies that raw bytes execution fails with RuntimeError if pyroxide_plugin_free is missing."""
-    from pyroxide import load_dylib, compile_rust
+    from pyroxide import compile_rust, load_dylib
 
     RUST_NO_FREE_SRC = """
     #[no_mangle]

@@ -1,61 +1,22 @@
 import argparse
+import ast
 import os
 import sys
-import ast
-from typing import Dict, Any
+from typing import Any, Dict
+
 import pyroxide
 from pyroxide.stubs import generate_stubs
 
-try:
+if sys.version_info >= (3, 11):
     import tomllib
-except ImportError:
-    try:
-        import tomli as tomllib
-    except ImportError:
-        tomllib = None
+else:
+    import tomli as tomllib
 
 
 def parse_pyproject(path: str = "pyproject.toml") -> Dict[str, Any]:
     """Parses pyproject.toml and returns [tool.pyroxide.stubs] configuration."""
     if not os.path.exists(path):
         return {}
-    if tomllib is None:
-        # Simple fallback parsing for simple formats if tomllib is missing
-        config = {}
-        try:
-            with open(path, "r") as f:
-                lines = f.readlines()
-            in_section = False
-            for line in lines:
-                line = line.strip()
-                if line.startswith("[tool.pyroxide.stubs]"):
-                    in_section = True
-                    continue
-                if line.startswith("[") and in_section:
-                    break
-                if in_section and "=" in line:
-                    parts = line.split("=", 1)
-                    key = parts[0].strip()
-                    val_str = parts[1].strip()
-                    # basic dict parsing if it looks like { type = "wasm", ... }
-                    if val_str.startswith("{") and val_str.endswith("}"):
-                        val_dict = {}
-                        val_str = val_str[1:-1]
-                        for pair in val_str.split(","):
-                            if ":" in pair:
-                                k, v = pair.split(":", 1)
-                            elif "=" in pair:
-                                k, v = pair.split("=", 1)
-                            else:
-                                continue
-                            val_dict[k.strip().replace('"', "").replace("'", "")] = (
-                                v.strip().replace('"', "").replace("'", "")
-                            )
-                        config[key] = val_dict
-        except Exception:
-            pass
-        return config
-
     try:
         with open(path, "rb") as f:
             data = tomllib.load(f)
@@ -65,7 +26,7 @@ def parse_pyproject(path: str = "pyproject.toml") -> Dict[str, Any]:
         return {}
 
 
-def scan_py_files(target_dir: str = ".") -> Dict[str, Dict[str, str]]:
+def scan_py_files(target_dir: str = ".") -> Dict[str, Dict[str, Any]]:
     """
     Scans Python files recursively and extracts literal registration/compilation calls:
     - compile_rust("name", "source_code")

@@ -1,9 +1,10 @@
-import pytest
+import asyncio
 import os
 import sys
-import asyncio
 import time
-from pyroxide import task, compile_c, load_dylib, group, TaskHandle
+
+import pytest
+from pyroxide import TaskHandle, compile_c, group, load_dylib, task
 from pyroxide.workflows import ExceptionGroup
 
 
@@ -39,7 +40,7 @@ def test_ffi_signature_length_validation():
         return a + b;
     }
     """
-    lib_path = compile_c("test_ffi_val", c_source)
+    compile_c("test_ffi_val", c_source)
 
     # Load dylib with signature (2 * i32 = 8 bytes)
     math_lib = load_dylib(
@@ -142,7 +143,7 @@ def test_symbol_cache_pollution_prevention():
     // But we can register the same library name, compile a custom function, and load it as FFI,
     // and then call it using execute_dylib or vice versa to see if it doesn't crash on invalid cast.
     """
-    lib_path = compile_c("cache_pollute_lib", c_source)
+    compile_c("cache_pollute_lib", c_source)
 
     # Load dylib with custom signature
     lib = load_dylib(
@@ -165,28 +166,28 @@ def test_symbol_cache_pollution_prevention():
 
 
 def test_cancelled_task_wait_runtime_error():
-    # Calling wait() on a cancelled task with a timeout should raise RuntimeError, not TimeoutError
-    @task
-    def long_task(x):
-        time.sleep(0.5)
-        return x
+    # Calling wait() on a genuinely cancelled task raises RuntimeError, not TimeoutError.
+    from tests.isolated_helper import long_isolated_task_helper
 
-    handle = long_task("val")
-    time.sleep(0.02)
-    handle.cancel()
+    handle = long_isolated_task_helper("val")
+    deadline = time.monotonic() + 5
+    while handle.status == "Pending":
+        assert time.monotonic() < deadline
+        time.sleep(0.001)
+    assert handle.status == "Running"
+    assert handle.cancel() is True
 
     with pytest.raises(RuntimeError, match="Task cancelled"):
         handle.wait(timeout_sec=1.0)
 
 
 def test_compilation_lock_self_healing():
-    from pyroxide.plugins import CrossProcessLock
     import tempfile
+
+    from pyroxide.plugins import CrossProcessLock
 
     with tempfile.TemporaryDirectory() as tempdir:
         lock_dir = os.path.join(tempdir, "my_lock")
-        lock1 = CrossProcessLock(lock_dir)
-
         # Manually create stale lock directory with a non-existent PID
         os.makedirs(lock_dir)
         pid_file = os.path.join(lock_dir, "owner.pid")
@@ -320,7 +321,7 @@ def test_shared_memory_no_leaks():
 
 
 def test_unregister_dylib():
-    from pyroxide import compile_c, unregister_dylib, load_dylib
+    from pyroxide import compile_c, load_dylib, unregister_dylib
 
     c_source = """
     #include <stdint.h>

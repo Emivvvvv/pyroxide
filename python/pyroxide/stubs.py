@@ -1,6 +1,8 @@
 import os
 from typing import Optional
 
+__all__ = ["generate_stubs"]
+
 
 def generate_stubs(name: str, library_type: str, out_path: Optional[str] = None) -> str:
     """

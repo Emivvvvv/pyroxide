@@ -1,18 +1,16 @@
-import pytest
+import asyncio
 import os
 import sys
-import asyncio
 import tempfile
-import shutil
-import time
 import threading
+import time
+
+import pytest
 from pyroxide import (
-    register_wasm_wat,
-    wasm_task,
-    load_wasm,
     compile_c,
     generate_stubs,
-    TaskHandle,
+    register_wasm_wat,
+    wasm_task,
 )
 
 # Global event to block workers cleanly
@@ -218,7 +216,7 @@ def test_stub_imports_generation():
     # Verify that we can import and load the proxy class from the generated .py file
     sys.path.insert(0, os.getcwd())
     try:
-        from my_stub_proxy import load_dylib_my_stub, My_stubDylibProxy
+        from my_stub_proxy import load_dylib_my_stub
 
         proxy = load_dylib_my_stub()
         assert proxy is not None
@@ -278,8 +276,9 @@ def test_repr_no_poll():
 
 # 8. Regression: Fire-and-Forget Task Retention
 def test_fire_and_forget_retention():
-    from pyroxide import task
     import gc
+
+    from pyroxide import task
 
     execution_event = threading.Event()
 
@@ -300,26 +299,27 @@ def test_fire_and_forget_retention():
 def test_cancellation_no_overwrite():
     from pyroxide import task
 
+    task_started_event = threading.Event()
     task_block_event = threading.Event()
 
     @task
     def blockable_task(x):
+        task_started_event.set()
         task_block_event.wait()
         return x
 
     handle = blockable_task("result_value")
-    time.sleep(0.05)  # Let it enter pending/running status
+    assert task_started_event.wait(2)
+    assert handle.status == "Running"
 
-    # Cancel the task while it is blocked in worker execution
-    assert handle.cancel() is True
+    # Running in-process Python cannot be safely interrupted.
+    assert handle.cancel() is False
 
     # Allow the worker function to complete
     task_block_event.set()
-    time.sleep(0.1)  # Wait for worker loop to finish result write
 
-    # Verify the result has not been overwritten and still raises Task cancelled
-    with pytest.raises(RuntimeError, match="Task cancelled"):
-        handle.result(consume=False)
+    # The real result remains available because cancellation was rejected.
+    assert handle.result(consume=False) == "result_value"
 
 
 # 10. Regression: Disable Dynamic Compilation via Env Var

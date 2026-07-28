@@ -1,16 +1,20 @@
 # -*- coding: utf-8 -*-
-from typing import List, Iterable
-import builtins
-from pyroxide.types import TaskHandle
 import asyncio
+import builtins
+from typing import Iterable, List
 
-ExceptionGroup = getattr(builtins, "ExceptionGroup", None)
-if ExceptionGroup is None:
-    # Define a fallback ExceptionGroup for Python < 3.11
-    class ExceptionGroup(Exception):
-        def __init__(self, message: str, exceptions: List[Exception]):
-            super().__init__(message)
-            self.exceptions = exceptions
+from pyroxide.types import TaskHandle
+
+__all__ = ["TaskGroup", "group"]
+
+
+class FallbackExceptionGroup(Exception):
+    def __init__(self, message: str, exceptions: List[Exception]):
+        super().__init__(message)
+        self.exceptions = exceptions
+
+
+ExceptionGroup = getattr(builtins, "ExceptionGroup", FallbackExceptionGroup)
 
 
 class TaskGroup:

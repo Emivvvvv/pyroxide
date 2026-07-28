@@ -1,15 +1,64 @@
 import os
-import subprocess
-import tempfile
-import sys
 import shutil
+import subprocess
+import sys
+import tempfile
 import threading
 import time
-from typing import Dict, Optional, Callable, Any
-from ._pyroxide import register_dylib, submit_dylib_task
+from typing import Any, Callable, Dict, Optional
+
+from ._pyroxide import register_dylib, submit_dylib_batch, submit_dylib_task
 from .types import TaskHandle
 
+__all__ = [
+    "CompilerNotFoundError",
+    "compile_c",
+    "compile_rust",
+    "compile_zig",
+    "dylib_task",
+    "load_dylib",
+    "unregister_dylib",
+]
+
 _compile_lock = threading.Lock()
+
+
+def _cache_dir() -> str:
+    configured = os.environ.get("PYROXIDE_CACHE_DIR")
+    return os.path.abspath(os.path.expanduser(configured or "~/.pyroxide/cache"))
+
+
+def _compiler_timeout_seconds() -> float:
+    try:
+        timeout = float(os.environ.get("PYROXIDE_COMPILER_TIMEOUT_SEC", "300"))
+    except ValueError:
+        timeout = 300.0
+    return timeout if timeout > 0 else 300.0
+
+
+def _acquire_compilation_locks(lock: "CrossProcessLock") -> None:
+    _compile_lock.acquire()
+    try:
+        lock.acquire()
+    except BaseException:
+        _compile_lock.release()
+        raise
+
+
+def _publish_library(compiled_path: str, cache_dir: str, lib_name: str) -> str:
+    os.makedirs(cache_dir, exist_ok=True)
+    dest_path = os.path.join(cache_dir, lib_name)
+    fd, temp_path = tempfile.mkstemp(prefix=f".{lib_name}.", dir=cache_dir)
+    os.close(fd)
+    try:
+        shutil.copy2(compiled_path, temp_path)
+        os.replace(temp_path, dest_path)
+    finally:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
+    return dest_path
 
 
 class CrossProcessLock:
@@ -90,6 +139,7 @@ class CrossProcessLock:
 
 class CompilerNotFoundError(RuntimeError):
     """Raised when a required compiler binary (cargo, gcc, clang, zig) is missing from PATH."""
+
     pass
 
 
@@ -143,11 +193,10 @@ def compile_rust(
     _check_compilation_enabled()
     _verify_compiler("cargo")
 
-    cache_dir = os.path.expanduser("~/.pyroxide/cache")
+    cache_dir = _cache_dir()
     lock_path = os.path.join(cache_dir, "compile.lock")
     lock = CrossProcessLock(lock_path)
-    _compile_lock.acquire()
-    lock.acquire()
+    _acquire_compilation_locks(lock)
 
     temp_dir = tempfile.mkdtemp(prefix=f"pyroxide_dylib_{name}_")
     try:
@@ -158,6 +207,7 @@ def compile_rust(
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=_compiler_timeout_seconds(),
         )
 
         cargo_toml_path = os.path.join(temp_dir, "Cargo.toml")
@@ -190,6 +240,7 @@ def compile_rust(
             cwd=temp_dir,
             capture_output=True,
             text=True,
+            timeout=_compiler_timeout_seconds(),
         )
         if res.returncode != 0:
             raise RuntimeError(f"Cargo build failed:\n{res.stderr}\n{res.stdout}")
@@ -208,15 +259,7 @@ def compile_rust(
             raise FileNotFoundError(f"Compiled library not found at: {compiled_path}")
 
         # Copy to persistent cache directory
-        cache_dir = os.path.expanduser("~/.pyroxide/cache")
-        os.makedirs(cache_dir, exist_ok=True)
-        dest_path = os.path.join(cache_dir, lib_name)
-        if os.path.exists(dest_path):
-            try:
-                os.unlink(dest_path)
-            except OSError:
-                pass
-        shutil.copy2(compiled_path, dest_path)
+        dest_path = _publish_library(compiled_path, cache_dir, lib_name)
 
         # Register dylib with the Rust core engine
         register_dylib(name, dest_path)
@@ -245,11 +288,10 @@ def compile_c(name: str, source_code: str) -> str:
     cc = os.environ.get("CC", "clang" if sys.platform == "darwin" else "gcc")
     _verify_compiler(cc)
 
-    cache_dir = os.path.expanduser("~/.pyroxide/cache")
+    cache_dir = _cache_dir()
     lock_path = os.path.join(cache_dir, "compile.lock")
     lock = CrossProcessLock(lock_path)
-    _compile_lock.acquire()
-    lock.acquire()
+    _acquire_compilation_locks(lock)
 
     temp_dir = tempfile.mkdtemp(prefix=f"pyroxide_c_{name}_")
     try:
@@ -266,7 +308,12 @@ def compile_c(name: str, source_code: str) -> str:
         compiled_path = os.path.join(temp_dir, lib_name)
 
         cmd = [cc, "-shared", "-o", compiled_path, "-fPIC", src_path]
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        res = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_compiler_timeout_seconds(),
+        )
         if res.returncode != 0:
             raise RuntimeError(f"C compilation failed:\n{res.stderr}\n{res.stdout}")
 
@@ -274,15 +321,7 @@ def compile_c(name: str, source_code: str) -> str:
             raise FileNotFoundError(f"Compiled C library not found at: {compiled_path}")
 
         # Copy to persistent cache directory
-        cache_dir = os.path.expanduser("~/.pyroxide/cache")
-        os.makedirs(cache_dir, exist_ok=True)
-        dest_path = os.path.join(cache_dir, lib_name)
-        if os.path.exists(dest_path):
-            try:
-                os.unlink(dest_path)
-            except OSError:
-                pass
-        shutil.copy2(compiled_path, dest_path)
+        dest_path = _publish_library(compiled_path, cache_dir, lib_name)
 
         register_dylib(name, dest_path)
         return dest_path
@@ -309,11 +348,10 @@ def compile_zig(name: str, source_code: str) -> str:
     _check_compilation_enabled()
     _verify_compiler("zig")
 
-    cache_dir = os.path.expanduser("~/.pyroxide/cache")
+    cache_dir = _cache_dir()
     lock_path = os.path.join(cache_dir, "compile.lock")
     lock = CrossProcessLock(lock_path)
-    _compile_lock.acquire()
-    lock.acquire()
+    _acquire_compilation_locks(lock)
 
     temp_dir = tempfile.mkdtemp(prefix=f"pyroxide_zig_{name}_")
     try:
@@ -323,7 +361,13 @@ def compile_zig(name: str, source_code: str) -> str:
 
         # Compiles dynamic library. Zig build-lib generates output in cwd
         cmd = ["zig", "build-lib", "-dynamic", "-O", "ReleaseFast", src_path]
-        res = subprocess.run(cmd, cwd=temp_dir, capture_output=True, text=True)
+        res = subprocess.run(
+            cmd,
+            cwd=temp_dir,
+            capture_output=True,
+            text=True,
+            timeout=_compiler_timeout_seconds(),
+        )
         if res.returncode != 0:
             raise RuntimeError(f"Zig compilation failed:\n{res.stderr}\n{res.stdout}")
 
@@ -342,15 +386,7 @@ def compile_zig(name: str, source_code: str) -> str:
             )
 
         # Copy to persistent cache directory
-        cache_dir = os.path.expanduser("~/.pyroxide/cache")
-        os.makedirs(cache_dir, exist_ok=True)
-        dest_path = os.path.join(cache_dir, lib_name)
-        if os.path.exists(dest_path):
-            try:
-                os.unlink(dest_path)
-            except OSError:
-                pass
-        shutil.copy2(compiled_path, dest_path)
+        dest_path = _publish_library(compiled_path, cache_dir, lib_name)
 
         register_dylib(name, dest_path)
         return dest_path
@@ -385,19 +421,34 @@ def dylib_task(
 
     def decorator(func: Callable[[Any], Any]) -> Callable[[Any], TaskHandle]:
         def wrapper(payload: Any) -> TaskHandle:
+            from .config import _local
+
+            queue_time = getattr(_local, "queue_timeout_ms", None)
             task_id = submit_dylib_task(
                 dylib_name,
                 symbol_name,
                 payload,
                 ffi_sig=ffi_sig,
                 isolated=isolated,
+                queue_timeout_ms=queue_time,
             )
             return TaskHandle(task_id)
 
         def batch(payloads: list) -> list[TaskHandle]:
-            return [wrapper(p) for p in payloads]
+            from .config import _local
 
-        wrapper.batch = batch
+            queue_time = getattr(_local, "queue_timeout_ms", None)
+            task_ids = submit_dylib_batch(
+                dylib_name,
+                symbol_name,
+                payloads,
+                ffi_sig=ffi_sig,
+                isolated=isolated,
+                queue_timeout_ms=queue_time,
+            )
+            return [TaskHandle(task_id) for task_id in task_ids]
+
+        setattr(wrapper, "batch", batch)
         return wrapper
 
     return decorator
@@ -416,6 +467,8 @@ class DylibProxy:
     def __getattr__(self, symbol_name: str):
         sig = self._signatures.get(symbol_name)
         if sig:
+            import struct
+
             # FFI custom signature call
             args_types = sig.get("args", [])
             ret_type = sig.get("ret", "void")
@@ -430,23 +483,7 @@ class DylibProxy:
             pack_format = "=" + "".join(type_mapping[t] for t in args_types)
             unpack_format = "=" + type_mapping.get(ret_type, "")
 
-            def ffi_method(*args) -> TaskHandle:
-                import struct
-                from .config import _local
-
-                packed_payload = struct.pack(pack_format, *args)
-                ffi_sig_arg = (args_types, ret_type)
-
-                queue_time = getattr(_local, "queue_timeout_ms", None)
-                task_id = submit_dylib_task(
-                    self._lib_name,
-                    symbol_name,
-                    packed_payload,
-                    ffi_sig=ffi_sig_arg,
-                    isolated=self._isolated,
-                    queue_timeout_ms=queue_time,
-                )
-
+            def ffi_handle(task_id: int) -> TaskHandle:
                 handle = TaskHandle(task_id)
                 original_result = handle.result
                 original_result_async = handle.result_async
@@ -471,20 +508,49 @@ class DylibProxy:
                         return None
                     return struct.unpack(unpack_format, res_bytes)[0]
 
-                handle.result = ffi_result
-                handle.result_async = ffi_result_async
+                setattr(handle, "result", ffi_result)
+                setattr(handle, "result_async", ffi_result_async)
                 return handle
 
-            def ffi_batch(payloads: list) -> list[TaskHandle]:
-                res = []
-                for p in payloads:
-                    if isinstance(p, tuple):
-                        res.append(ffi_method(*p))
-                    else:
-                        res.append(ffi_method(p))
-                return res
+            def ffi_method(*args) -> TaskHandle:
+                from .config import _local
 
-            ffi_method.batch = ffi_batch
+                packed_payload = struct.pack(pack_format, *args)
+                ffi_sig_arg = (args_types, ret_type)
+
+                queue_time = getattr(_local, "queue_timeout_ms", None)
+                task_id = submit_dylib_task(
+                    self._lib_name,
+                    symbol_name,
+                    packed_payload,
+                    ffi_sig=ffi_sig_arg,
+                    isolated=self._isolated,
+                    queue_timeout_ms=queue_time,
+                )
+
+                return ffi_handle(task_id)
+
+            def ffi_batch(payloads: list) -> list[TaskHandle]:
+                from .config import _local
+
+                def pack_payload(payload):
+                    args = payload if isinstance(payload, tuple) else (payload,)
+                    return struct.pack(pack_format, *args)
+
+                ffi_sig_arg = (args_types, ret_type)
+                queue_time = getattr(_local, "queue_timeout_ms", None)
+                task_ids = submit_dylib_batch(
+                    self._lib_name,
+                    symbol_name,
+                    payloads,
+                    ffi_sig=ffi_sig_arg,
+                    isolated=self._isolated,
+                    queue_timeout_ms=queue_time,
+                    payload_builder=pack_payload,
+                )
+                return [ffi_handle(task_id) for task_id in task_ids]
+
+            setattr(ffi_method, "batch", ffi_batch)
             return ffi_method
         else:
             # Regular bytes/string call
@@ -503,9 +569,20 @@ class DylibProxy:
                 return TaskHandle(task_id)
 
             def dylib_batch(payloads: list) -> list[TaskHandle]:
-                return [dylib_method(p) for p in payloads]
+                from .config import _local
 
-            dylib_method.batch = dylib_batch
+                queue_time = getattr(_local, "queue_timeout_ms", None)
+                task_ids = submit_dylib_batch(
+                    self._lib_name,
+                    symbol_name,
+                    payloads,
+                    ffi_sig=None,
+                    isolated=self._isolated,
+                    queue_timeout_ms=queue_time,
+                )
+                return [TaskHandle(task_id) for task_id in task_ids]
+
+            setattr(dylib_method, "batch", dylib_batch)
             return dylib_method
 
 

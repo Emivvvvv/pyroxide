@@ -1,9 +1,9 @@
+import threading
 import time
+from typing import Any
+
 import pytest
 from pyroxide import task
-
-
-from typing import Any
 
 
 @task
@@ -184,10 +184,19 @@ def test_task_group_workflow():
     assert results == [25, 100, 225]
     assert tg.status == "Completed"
 
-    # 2. Test group cancellation
-    h_cancel = native_sleep.batch(["SLEEP:500", "SLEEP:500"])
-    tg_cancel = group(h_cancel)
-    # Give a tiny sleep to allow the tasks to enter the running/pending state
-    time.sleep(0.01)
-    tg_cancel.cancel()
-    assert tg_cancel.status == "Cancelled"
+    # 2. Running in-process tasks reject cancellation and keep their result.
+    started = threading.Event()
+    release = threading.Event()
+
+    @task
+    def controlled(value):
+        started.set()
+        release.wait()
+        return value
+
+    tg_cancel = group([controlled("real result")])
+    assert started.wait(2)
+    assert tg_cancel.cancel() is False
+    assert tg_cancel.status == "Running"
+    release.set()
+    assert tg_cancel.result() == ["real result"]

@@ -1,5 +1,6 @@
 import argparse
 import sys
+
 from pyroxide import _pyroxide
 
 
@@ -11,7 +12,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        # Start the Rust-native high-performance IPC loop
+        # Start the Rust-native IPC loop.
         _pyroxide.start_worker_loop(args.socket)
     except Exception as e:
         print(f"Pyroxide worker process crashed: {e}", file=sys.stderr)

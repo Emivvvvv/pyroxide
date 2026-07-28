@@ -3,15 +3,17 @@ pub mod process_pool;
 pub mod worker;
 pub mod worker_process;
 
-use crate::broker::{get_task_result, get_task_status, wait_task};
+use crate::broker::{get_engine_stats, get_task_result, get_task_status, wait_task};
 use object::Object;
 use pyo3::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use wasmtime::{Engine, Module};
+
+pyo3::create_exception!(_pyroxide, ForkSafetyError, pyo3::exceptions::PyRuntimeError);
 
 pub(crate) struct GlobalConfig {
     pub(crate) wasm_memory_limit_bytes: AtomicUsize,
@@ -24,22 +26,142 @@ pub(crate) static CONFIG: GlobalConfig = GlobalConfig {
     wasm_timeout_ms: AtomicU64::new(1000),                        // 1 second default
     queue_timeout_ms: AtomicU64::new(1000),                       // 1 second default
 };
+static GLOBAL_WASM_MEMORY_SET: AtomicBool = AtomicBool::new(false);
+static GLOBAL_WASM_TIMEOUT_SET: AtomicBool = AtomicBool::new(false);
+static GLOBAL_QUEUE_TIMEOUT_SET: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn get_wasm_memory_limit_bytes() -> usize {
+    if GLOBAL_WASM_MEMORY_SET.load(Ordering::Acquire) {
+        return CONFIG.wasm_memory_limit_bytes.load(Ordering::Relaxed);
+    }
+    std::env::var("PYROXIDE_WASM_MEMORY_LIMIT_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0 && *value <= i32::MAX as usize)
+        .unwrap_or(100 * 1024 * 1024)
+}
+
+pub(crate) fn get_wasm_timeout_ms() -> u64 {
+    if GLOBAL_WASM_TIMEOUT_SET.load(Ordering::Acquire) {
+        return CONFIG.wasm_timeout_ms.load(Ordering::Relaxed);
+    }
+    std::env::var("PYROXIDE_WASM_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1000)
+}
+
+pub(crate) fn get_queue_timeout_ms() -> u64 {
+    if GLOBAL_QUEUE_TIMEOUT_SET.load(Ordering::Acquire) {
+        return CONFIG.queue_timeout_ms.load(Ordering::Relaxed);
+    }
+    std::env::var("PYROXIDE_QUEUE_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1000)
+}
+
+pub(crate) const MAX_IPC_METADATA_BYTES: usize = 1024 * 1024;
+
+pub(crate) fn get_max_ipc_frame_bytes() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("PYROXIDE_MAX_IPC_FRAME_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(64 * 1024 * 1024)
+    })
+}
+
+pub(crate) fn get_max_native_output_bytes() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("PYROXIDE_MAX_NATIVE_OUTPUT_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(64 * 1024 * 1024)
+    })
+}
+
+pub(crate) fn validate_native_output_len(len: usize, max: usize) -> Result<(), String> {
+    if len > max {
+        return Err(format!(
+            "Native plugin output length {len} exceeds limit {max}"
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn checked_ipc_len(len: u64, max: usize, label: &str) -> Result<usize, String> {
+    let len = usize::try_from(len).map_err(|_| format!("IPC {label} length is too large"))?;
+    if len > max {
+        return Err(format!("IPC {label} length {len} exceeds limit {max}"));
+    }
+    Ok(len)
+}
+
+pub(crate) fn get_wasm_tick_ms() -> u64 {
+    std::env::var("PYROXIDE_WASM_TICK_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(10)
+}
+
+pub(crate) fn validate_wasm_input_len(len: usize, limit: usize) -> Result<i32, String> {
+    if len > limit {
+        return Err(format!(
+            "WASM input length {len} exceeds memory limit {limit}"
+        ));
+    }
+    i32::try_from(len).map_err(|_| "WASM input is too large for guest memory".to_string())
+}
+
+pub(crate) fn validate_wasm_output_range(
+    ptr: i32,
+    len: i32,
+    limit: usize,
+    memory_size: usize,
+) -> Result<(usize, usize), String> {
+    let ptr = usize::try_from(ptr).map_err(|_| "WASM returned a negative output pointer")?;
+    let len = usize::try_from(len).map_err(|_| "WASM returned a negative output length")?;
+    if len > limit {
+        return Err(format!(
+            "WASM output length {len} exceeds memory limit {limit}"
+        ));
+    }
+    let end = ptr
+        .checked_add(len)
+        .ok_or_else(|| "WASM output range overflowed".to_string())?;
+    if end > memory_size {
+        return Err(format!(
+            "WASM output range {ptr}..{end} exceeds guest memory size {memory_size}"
+        ));
+    }
+    Ok((ptr, len))
+}
 
 #[pyfunction]
 fn set_global_wasm_memory_limit_bytes(bytes: usize) {
     CONFIG
         .wasm_memory_limit_bytes
         .store(bytes, Ordering::Relaxed);
+    GLOBAL_WASM_MEMORY_SET.store(true, Ordering::Release);
 }
 
 #[pyfunction]
 fn set_global_wasm_timeout_ms(ms: u64) {
     CONFIG.wasm_timeout_ms.store(ms, Ordering::Relaxed);
+    GLOBAL_WASM_TIMEOUT_SET.store(true, Ordering::Release);
 }
 
 #[pyfunction]
 fn set_global_queue_timeout_ms(ms: u64) {
     CONFIG.queue_timeout_ms.store(ms, Ordering::Relaxed);
+    GLOBAL_QUEUE_TIMEOUT_SET.store(true, Ordering::Release);
 }
 
 #[derive(Hash, Eq, PartialEq, Clone)]
@@ -56,10 +178,49 @@ pub(crate) struct DylibPlugin {
 
 static DYLIB_PLUGINS: OnceLock<RwLock<HashMap<String, Arc<DylibPlugin>>>> = OnceLock::new();
 
-static DYLIB_PATHS: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
-static WASM_BYTES: OnceLock<RwLock<HashMap<String, Vec<u8>>>> = OnceLock::new();
+#[derive(Clone)]
+pub(crate) struct RegistryEntry<T> {
+    pub(crate) value: T,
+    pub(crate) generation: u64,
+}
+
+pub(crate) enum RegistrySync<T> {
+    Missing,
+    Current,
+    Changed(RegistryEntry<T>),
+}
+
+fn registry_sync<T: Clone>(
+    registrations: &HashMap<String, RegistryEntry<T>>,
+    name: &str,
+    known_generation: Option<u64>,
+) -> RegistrySync<T> {
+    match registrations.get(name) {
+        None => RegistrySync::Missing,
+        Some(entry) if known_generation == Some(entry.generation) => RegistrySync::Current,
+        Some(entry) => RegistrySync::Changed(entry.clone()),
+    }
+}
+
+static NEXT_REGISTRY_GENERATION: AtomicU64 = AtomicU64::new(1);
+static DYLIB_PATHS: OnceLock<RwLock<HashMap<String, RegistryEntry<String>>>> = OnceLock::new();
+static WASM_BYTES: OnceLock<RwLock<HashMap<String, RegistryEntry<Vec<u8>>>>> = OnceLock::new();
+
+fn next_registry_generation() -> u64 {
+    NEXT_REGISTRY_GENERATION.fetch_add(1, Ordering::Relaxed)
+}
 
 pub(crate) fn get_dylib_paths() -> HashMap<String, String> {
+    DYLIB_PATHS
+        .get_or_init(|| RwLock::new(HashMap::new()))
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|(name, entry)| (name.clone(), entry.value.clone()))
+        .collect()
+}
+
+pub(crate) fn get_dylib_registrations() -> HashMap<String, RegistryEntry<String>> {
     DYLIB_PATHS
         .get_or_init(|| RwLock::new(HashMap::new()))
         .read()
@@ -67,12 +228,50 @@ pub(crate) fn get_dylib_paths() -> HashMap<String, String> {
         .clone()
 }
 
-pub(crate) fn get_wasm_bytes() -> HashMap<String, Vec<u8>> {
+pub(crate) fn get_wasm_registrations() -> HashMap<String, RegistryEntry<Vec<u8>>> {
     WASM_BYTES
         .get_or_init(|| RwLock::new(HashMap::new()))
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .clone()
+}
+
+pub(crate) fn get_dylib_registration_sync(
+    name: &str,
+    known_generation: Option<u64>,
+) -> RegistrySync<String> {
+    let registrations = DYLIB_PATHS
+        .get_or_init(|| RwLock::new(HashMap::new()))
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
+    registry_sync(&registrations, name, known_generation)
+}
+
+pub(crate) fn get_wasm_registration_sync(
+    name: &str,
+    known_generation: Option<u64>,
+) -> RegistrySync<Vec<u8>> {
+    let registrations = WASM_BYTES
+        .get_or_init(|| RwLock::new(HashMap::new()))
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
+    registry_sync(&registrations, name, known_generation)
+}
+
+pub(crate) fn has_dylib_registration(name: &str) -> bool {
+    DYLIB_PATHS
+        .get_or_init(|| RwLock::new(HashMap::new()))
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(name)
+}
+
+pub(crate) fn has_wasm_registration(name: &str) -> bool {
+    WASM_BYTES
+        .get_or_init(|| RwLock::new(HashMap::new()))
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(name)
 }
 
 pub(crate) fn get_shm_threshold() -> usize {
@@ -121,6 +320,16 @@ pub(crate) fn register_dylib_internal(
     }
 }
 
+pub(crate) fn unregister_dylib_internal(name: &str) -> Result<(), String> {
+    if let Some(registry) = DYLIB_PLUGINS.get() {
+        registry
+            .write()
+            .map_err(|e| format!("Registry poisoned: {e}"))?
+            .remove(name);
+    }
+    Ok(())
+}
+
 /// Registers a dynamic shared library (.so / .dylib / .dll) with the Pyroxide engine.
 #[pyfunction]
 #[pyo3(signature = (name, library_path, free_fn_name=None))]
@@ -129,6 +338,7 @@ fn register_dylib(
     library_path: String,
     free_fn_name: Option<String>,
 ) -> PyResult<()> {
+    broker::check_engine_process()?;
     register_dylib_internal(name.clone(), library_path.clone(), free_fn_name.clone())
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
     let paths = DYLIB_PATHS.get_or_init(|| RwLock::new(HashMap::new()));
@@ -140,19 +350,24 @@ fn register_dylib(
     paths
         .write()
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?
-        .insert(name, val_to_store);
+        .insert(
+            name,
+            RegistryEntry {
+                value: val_to_store,
+                generation: next_registry_generation(),
+            },
+        );
     Ok(())
 }
 
 /// Unregisters a dynamic shared library from the registries.
 #[pyfunction]
 fn unregister_dylib(name: String) -> PyResult<()> {
+    broker::check_engine_process()?;
     if let Some(Ok(mut paths_guard)) = DYLIB_PATHS.get().map(|p| p.write()) {
         paths_guard.remove(&name);
     }
-    if let Some(Ok(mut plugins_guard)) = DYLIB_PLUGINS.get().map(|p| p.write()) {
-        plugins_guard.remove(&name);
-    }
+    unregister_dylib_internal(&name).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
     Ok(())
 }
 
@@ -217,6 +432,8 @@ pub(crate) fn execute_dylib(
             }
         }
     };
+    // Safety: `run_ptr_val` was resolved from this live library as a
+    // `PluginRunFn` and the cache key separates raw and typed FFI signatures.
     let run_fn: PluginRunFn =
         unsafe { std::mem::transmute(run_ptr_val as *const std::ffi::c_void) };
 
@@ -230,6 +447,10 @@ pub(crate) fn execute_dylib(
         let out_ptr = (run_fn)(payload.as_ptr(), payload.len(), &mut out_len);
         if out_ptr.is_null() {
             return Err("Execution returned NULL pointer".to_string());
+        }
+        if let Err(error) = validate_native_output_len(out_len, get_max_native_output_bytes()) {
+            (free_fn)(out_ptr, out_len);
+            return Err(error);
         }
         let output = std::slice::from_raw_parts(out_ptr, out_len).to_vec();
         (free_fn)(out_ptr, out_len);
@@ -493,6 +714,7 @@ fn submit_dylib_task(
     isolated: bool,
     queue_timeout_ms: Option<u64>,
 ) -> PyResult<usize> {
+    broker::check_engine_process()?;
     let py_payload = payload.into_any().unbind();
     py.detach(move || {
         broker::submit_dylib_task(
@@ -506,12 +728,48 @@ fn submit_dylib_task(
     })
 }
 
+#[pyfunction]
+#[pyo3(signature = (plugin_name, symbol_name, payloads, ffi_sig=None, isolated=false, queue_timeout_ms=None, payload_builder=None))]
+#[allow(clippy::too_many_arguments)]
+fn submit_dylib_batch(
+    py: Python<'_>,
+    plugin_name: String,
+    symbol_name: String,
+    payloads: Bound<'_, pyo3::types::PyList>,
+    ffi_sig: Option<(Vec<String>, String)>,
+    isolated: bool,
+    queue_timeout_ms: Option<u64>,
+    payload_builder: Option<Bound<'_, PyAny>>,
+) -> PyResult<Vec<usize>> {
+    broker::check_engine_process()?;
+    let batch_len = payloads.len();
+    let py_payloads = payloads.unbind();
+    let py_payload_builder = payload_builder.map(Bound::unbind);
+    py.detach(move || {
+        broker::submit_dylib_batch(
+            plugin_name,
+            symbol_name,
+            py_payloads,
+            batch_len,
+            ffi_sig,
+            isolated,
+            queue_timeout_ms,
+            py_payload_builder,
+        )
+    })
+}
+
 pub(crate) struct WasmState {
     pub(crate) limits: wasmtime::StoreLimits,
 }
 
 static WASM_ENGINE: OnceLock<Engine> = OnceLock::new();
 static WASM_REGISTRY: OnceLock<RwLock<HashMap<String, Module>>> = OnceLock::new();
+static WASM_TICKER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn stop_wasm_ticker() {
+    WASM_TICKER_SHUTDOWN.store(true, Ordering::Release);
+}
 
 pub(crate) fn get_wasm_engine() -> &'static Engine {
     WASM_ENGINE.get_or_init(|| {
@@ -521,11 +779,8 @@ pub(crate) fn get_wasm_engine() -> &'static Engine {
 
         let engine_clone = engine.clone();
         std::thread::spawn(move || {
-            let tick_ms = std::env::var("PYROXIDE_WASM_TICK_MS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(10);
-            loop {
+            let tick_ms = get_wasm_tick_ms();
+            while !WASM_TICKER_SHUTDOWN.load(Ordering::Acquire) {
                 engine_clone.increment_epoch();
                 std::thread::sleep(std::time::Duration::from_millis(tick_ms));
             }
@@ -560,18 +815,26 @@ pub(crate) fn register_wasm_module_internal(
 /// This function registers a WebAssembly module binary under a name in the global registry.
 #[pyfunction]
 fn register_wasm_module(module_name: String, wasm_bytes: Vec<u8>) -> PyResult<()> {
+    broker::check_engine_process()?;
     register_wasm_module_internal(module_name.clone(), wasm_bytes.clone())
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
     let bytes = WASM_BYTES.get_or_init(|| RwLock::new(HashMap::new()));
     bytes
         .write()
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?
-        .insert(module_name, wasm_bytes);
+        .insert(
+            module_name,
+            RegistryEntry {
+                value: wasm_bytes,
+                generation: next_registry_generation(),
+            },
+        );
     Ok(())
 }
 
 #[pyfunction]
 fn register_wasm_wat(module_name: String, wat_str: String) -> PyResult<()> {
+    broker::check_engine_process()?;
     let wasm_bytes = wat::parse_str(&wat_str)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     register_wasm_module_internal(module_name.clone(), wasm_bytes.clone())
@@ -580,7 +843,13 @@ fn register_wasm_wat(module_name: String, wat_str: String) -> PyResult<()> {
     bytes
         .write()
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?
-        .insert(module_name, wasm_bytes);
+        .insert(
+            module_name,
+            RegistryEntry {
+                value: wasm_bytes,
+                generation: next_registry_generation(),
+            },
+        );
     Ok(())
 }
 
@@ -598,12 +867,43 @@ fn submit_wasm_task(
     wasm_timeout_ms: Option<u64>,
     queue_timeout_ms: Option<u64>,
 ) -> PyResult<usize> {
+    broker::check_engine_process()?;
     let py_payload = payload.into_any().unbind();
     py.detach(move || {
         broker::submit_wasm_task(
             module_name,
             func_name,
             py_payload,
+            isolated,
+            wasm_memory_limit_bytes,
+            wasm_timeout_ms,
+            queue_timeout_ms,
+        )
+    })
+}
+
+#[pyfunction]
+#[pyo3(signature = (module_name, func_name, payloads, isolated=false, wasm_memory_limit_bytes=None, wasm_timeout_ms=None, queue_timeout_ms=None))]
+#[allow(clippy::too_many_arguments)]
+fn submit_wasm_batch(
+    py: Python<'_>,
+    module_name: String,
+    func_name: String,
+    payloads: Bound<'_, pyo3::types::PyList>,
+    isolated: bool,
+    wasm_memory_limit_bytes: Option<usize>,
+    wasm_timeout_ms: Option<u64>,
+    queue_timeout_ms: Option<u64>,
+) -> PyResult<Vec<usize>> {
+    broker::check_engine_process()?;
+    let batch_len = payloads.len();
+    let py_payloads = payloads.unbind();
+    py.detach(move || {
+        broker::submit_wasm_batch(
+            module_name,
+            func_name,
+            py_payloads,
+            batch_len,
             isolated,
             wasm_memory_limit_bytes,
             wasm_timeout_ms,
@@ -622,13 +922,14 @@ fn submit_task(
     isolated: bool,
     queue_timeout_ms: Option<u64>,
 ) -> PyResult<usize> {
+    broker::check_engine_process()?;
     let py_callable = callable.map(|c| c.into_any().unbind());
     let py_payload = payload.into_any().unbind();
 
     py.detach(move || broker::submit_task(py_callable, py_payload, isolated, queue_timeout_ms))
 }
 
-/// This function submits a batch of tasks to the broker under a single write lock.
+/// Submit a batch after atomically reserving capacity for every item.
 #[pyfunction]
 #[pyo3(signature = (callable, payloads, isolated=false, queue_timeout_ms=None))]
 fn submit_batch(
@@ -638,27 +939,33 @@ fn submit_batch(
     isolated: bool,
     queue_timeout_ms: Option<u64>,
 ) -> PyResult<Vec<usize>> {
+    broker::check_engine_process()?;
     let py_callable = callable.map(|c| c.into_any().unbind());
-    let mut py_payloads = Vec::with_capacity(payloads.len());
-    let mut py_callables = Vec::with_capacity(payloads.len());
+    let batch_len = payloads.len();
+    let py_payloads = payloads.unbind();
 
-    for item in payloads.iter() {
-        py_payloads.push(item.into_any().unbind());
-        py_callables.push(py_callable.as_ref().map(|c| c.clone_ref(py)));
-    }
-
-    py.detach(move || broker::submit_batch(py_callables, py_payloads, isolated, queue_timeout_ms))
+    py.detach(move || {
+        broker::submit_batch(
+            py_callable,
+            py_payloads,
+            batch_len,
+            isolated,
+            queue_timeout_ms,
+        )
+    })
 }
 
 /// This function cancels a task with the given ID.
 #[pyfunction]
 fn cancel_task(task_id: usize) -> PyResult<bool> {
+    broker::check_engine_process()?;
     Ok(broker::cancel_task(task_id))
 }
 
 /// This function returns the status of the task with the given ID.
 #[pyfunction]
 fn get_status(task_id: usize) -> PyResult<String> {
+    broker::check_engine_process()?;
     match get_task_status(task_id) {
         Some(status) => Ok(status),
         None => Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -671,6 +978,7 @@ fn get_status(task_id: usize) -> PyResult<String> {
 #[pyfunction]
 #[pyo3(signature = (task_id, timeout_ms=None))]
 fn wait_status(py: Python<'_>, task_id: usize, timeout_ms: Option<u64>) -> PyResult<String> {
+    broker::check_engine_process()?;
     let res = py.detach(move || wait_task(task_id, timeout_ms));
     match res {
         Some(status) => Ok(status),
@@ -682,7 +990,8 @@ fn wait_status(py: Python<'_>, task_id: usize, timeout_ms: Option<u64>) -> PyRes
 
 /// This function retrieves the result of a completed task.
 #[pyfunction]
-fn get_result<'py>(py: Python<'py>, task_id: usize) -> PyResult<Bound<'py, PyAny>> {
+fn get_result(py: Python<'_>, task_id: usize) -> PyResult<Bound<'_, PyAny>> {
+    broker::check_engine_process()?;
     match get_task_result(py, task_id) {
         Some(Ok(val)) => Ok(val.into_bound(py)),
         Some(Err(err)) => Err(pyo3::exceptions::PyRuntimeError::new_err(err)),
@@ -694,18 +1003,22 @@ fn get_result<'py>(py: Python<'py>, task_id: usize) -> PyResult<Bound<'py, PyAny
 
 /// This function removes a task from the Slab to reclaim memory.
 #[pyfunction]
-fn free_task(task_id: usize) {
+fn free_task(task_id: usize) -> PyResult<()> {
+    broker::check_engine_process()?;
     broker::free_task(task_id);
+    Ok(())
 }
 
 /// This function returns the current number of tasks allocated in the Slab (useful for debugging leaks).
 #[pyfunction]
-fn get_slab_size() -> usize {
-    broker::get_slab_size()
+fn get_slab_size() -> PyResult<usize> {
+    broker::check_engine_process()?;
+    Ok(broker::get_slab_size())
 }
 
 #[pyfunction]
 fn get_wasm_exports(module_name: String) -> PyResult<Vec<String>> {
+    broker::check_engine_process()?;
     let module = get_wasm_module(&module_name).ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err(format!(
             "WASM module '{module_name}' not registered"
@@ -723,6 +1036,7 @@ fn get_wasm_exports(module_name: String) -> PyResult<Vec<String>> {
 
 #[pyfunction]
 fn get_dylib_exports(plugin_name: String) -> PyResult<Vec<String>> {
+    broker::check_engine_process()?;
     let paths = get_dylib_paths();
     let raw_path = paths.get(&plugin_name).ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err(format!(
@@ -767,6 +1081,7 @@ fn get_dylib_exports(plugin_name: String) -> PyResult<Vec<String>> {
 
 #[pyfunction]
 fn get_dylib_metadata(name: &str) -> PyResult<Option<String>> {
+    broker::check_engine_process()?;
     let registry = DYLIB_PLUGINS.get().ok_or_else(|| {
         PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Dylib registry not initialized")
     })?;
@@ -806,11 +1121,12 @@ fn get_dylib_metadata(name: &str) -> PyResult<Option<String>> {
 
 #[pyfunction]
 fn get_dylib_path(name: String) -> PyResult<Option<String>> {
+    broker::check_engine_process()?;
     let paths = DYLIB_PATHS.get_or_init(|| RwLock::new(HashMap::new()));
     let map = paths
         .read()
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-    Ok(map.get(&name).cloned())
+    Ok(map.get(&name).map(|entry| entry.value.clone()))
 }
 
 #[pyfunction]
@@ -820,56 +1136,83 @@ fn start_worker_loop(socket_path: String) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn set_autofree(task_id: usize) {
+fn set_autofree(task_id: usize) -> PyResult<()> {
+    broker::check_engine_process()?;
     broker::set_autofree(task_id);
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
+#[pyfunction]
+fn _arm_start_claim_test_hook() -> PyResult<()> {
+    worker::arm_start_claim_test_hook().map_err(pyo3::exceptions::PyRuntimeError::new_err)
+}
+
+#[cfg(debug_assertions)]
+#[pyfunction]
+fn _wait_start_claim_test_hook() -> PyResult<bool> {
+    worker::wait_start_claim_test_hook().map_err(pyo3::exceptions::PyRuntimeError::new_err)
+}
+
+#[cfg(debug_assertions)]
+#[pyfunction]
+fn _resume_start_claim_test_hook() -> PyResult<()> {
+    worker::resume_start_claim_test_hook().map_err(pyo3::exceptions::PyRuntimeError::new_err)
+}
+
+#[pyfunction]
+#[pyo3(signature = (wait=true, cancel_pending=false))]
+fn shutdown_engine(py: Python<'_>, wait: bool, cancel_pending: bool) -> PyResult<()> {
+    py.detach(move || broker::shutdown_engine(wait, cancel_pending))
 }
 
 #[cfg(unix)]
-static ASYNC_WAKER_FD: OnceLock<std::os::fd::RawFd> = OnceLock::new();
+static ASYNC_WAKER_FD: AtomicI32 = AtomicI32::new(-1);
 
 #[cfg(unix)]
 #[pyfunction]
 fn register_async_waker(fd: std::os::fd::RawFd) {
-    let _ = ASYNC_WAKER_FD.set(fd);
+    ASYNC_WAKER_FD.store(fd, Ordering::Release);
 }
 
 #[cfg(unix)]
-pub(crate) fn notify_waker(task_id: usize) {
-    if let Some(&fd) = ASYNC_WAKER_FD.get() {
-        let bytes = (task_id as u64).to_le_bytes();
-        let mut written = 0;
-        for _ in 0..3 {
-            unsafe {
-                let res = libc::write(
-                    fd,
-                    bytes[written..].as_ptr() as *const libc::c_void,
-                    bytes.len() - written,
-                );
-                if res > 0 {
-                    written += res as usize;
-                    if written >= bytes.len() {
-                        break;
-                    }
-                } else if res < 0 {
-                    let err_kind = std::io::Error::last_os_error().kind();
-                    if err_kind == std::io::ErrorKind::WouldBlock {
-                        std::thread::yield_now();
-                    } else if err_kind == std::io::ErrorKind::Interrupted {
-                        continue;
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
+#[pyfunction]
+fn unregister_async_waker(fd: std::os::fd::RawFd) -> bool {
+    ASYNC_WAKER_FD
+        .compare_exchange(fd, -1, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
+#[cfg(unix)]
+pub(crate) fn notify_waker(_task_id: usize) {
+    let fd = ASYNC_WAKER_FD.load(Ordering::Acquire);
+    if fd < 0 {
+        return;
+    }
+
+    let byte = [1u8];
+    loop {
+        let result = unsafe { libc::write(fd, byte.as_ptr().cast::<libc::c_void>(), byte.len()) };
+        if result >= 0 {
+            break;
+        }
+
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            break;
         }
     }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn notify_waker(_task_id: usize) {
+    // Windows uses the executor-backed async wait path.
 }
 
 /// PyO3 entry point
 #[pymodule]
 fn _pyroxide(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("ForkSafetyError", _py.get_type::<ForkSafetyError>())?;
     m.add_function(wrap_pyfunction!(set_global_wasm_memory_limit_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(set_global_wasm_timeout_ms, m)?)?;
     m.add_function(wrap_pyfunction!(set_global_queue_timeout_ms, m)?)?;
@@ -884,17 +1227,101 @@ fn _pyroxide(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(register_wasm_module, m)?)?;
     m.add_function(wrap_pyfunction!(register_wasm_wat, m)?)?;
     m.add_function(wrap_pyfunction!(submit_wasm_task, m)?)?;
+    m.add_function(wrap_pyfunction!(submit_wasm_batch, m)?)?;
     m.add_function(wrap_pyfunction!(register_dylib, m)?)?;
     m.add_function(wrap_pyfunction!(unregister_dylib, m)?)?;
     m.add_function(wrap_pyfunction!(submit_dylib_task, m)?)?;
+    m.add_function(wrap_pyfunction!(submit_dylib_batch, m)?)?;
     m.add_function(wrap_pyfunction!(get_wasm_exports, m)?)?;
     m.add_function(wrap_pyfunction!(get_dylib_exports, m)?)?;
     m.add_function(wrap_pyfunction!(get_dylib_metadata, m)?)?;
     m.add_function(wrap_pyfunction!(get_dylib_path, m)?)?;
     m.add_function(wrap_pyfunction!(start_worker_loop, m)?)?;
     m.add_function(wrap_pyfunction!(set_autofree, m)?)?;
+    m.add_function(wrap_pyfunction!(shutdown_engine, m)?)?;
+    m.add_function(wrap_pyfunction!(get_engine_stats, m)?)?;
+    #[cfg(debug_assertions)]
+    {
+        m.add_function(wrap_pyfunction!(_arm_start_claim_test_hook, m)?)?;
+        m.add_function(wrap_pyfunction!(_wait_start_claim_test_hook, m)?)?;
+        m.add_function(wrap_pyfunction!(_resume_start_claim_test_hook, m)?)?;
+    }
     #[cfg(unix)]
     m.add_function(wrap_pyfunction!(register_async_waker, m)?)?;
+    #[cfg(unix)]
+    m.add_function(wrap_pyfunction!(unregister_async_waker, m)?)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::{
+        RegistryEntry, RegistrySync, checked_ipc_len, registry_sync, validate_native_output_len,
+        validate_wasm_input_len, validate_wasm_output_range,
+    };
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn wasm_input_must_fit_guest_i32_and_configured_limit() {
+        assert!(validate_wasm_input_len(8, 16).is_ok());
+        assert!(validate_wasm_input_len(17, 16).is_err());
+        assert!(validate_wasm_input_len(i32::MAX as usize + 1, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn wasm_output_range_rejects_negative_or_out_of_bounds_values() {
+        assert!(validate_wasm_output_range(-1, 4, 16, 16).is_err());
+        assert!(validate_wasm_output_range(0, -1, 16, 16).is_err());
+        assert!(validate_wasm_output_range(8, 9, 16, 16).is_err());
+        assert!(validate_wasm_output_range(8, 8, 16, 16).is_ok());
+    }
+
+    #[test]
+    fn ipc_length_is_checked_before_conversion_or_allocation() {
+        assert_eq!(checked_ipc_len(8, 16, "payload").unwrap(), 8);
+        assert!(checked_ipc_len(17, 16, "payload").is_err());
+        assert!(checked_ipc_len(u64::MAX, 16, "payload").is_err());
+    }
+
+    #[test]
+    fn native_output_length_is_bounded_before_copying() {
+        assert!(validate_native_output_len(16, 16).is_ok());
+        assert!(validate_native_output_len(17, 16).is_err());
+    }
+
+    #[test]
+    fn current_registry_lookup_does_not_clone_its_payload() {
+        struct CloneCounter(Arc<AtomicUsize>);
+
+        impl Clone for CloneCounter {
+            fn clone(&self) -> Self {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Self(Arc::clone(&self.0))
+            }
+        }
+
+        let clones = Arc::new(AtomicUsize::new(0));
+        let registrations = HashMap::from([(
+            "module".to_string(),
+            RegistryEntry {
+                value: CloneCounter(Arc::clone(&clones)),
+                generation: 7,
+            },
+        )]);
+
+        assert!(matches!(
+            registry_sync(&registrations, "module", Some(7)),
+            RegistrySync::Current
+        ));
+        assert_eq!(clones.load(Ordering::Relaxed), 0);
+
+        assert!(matches!(
+            registry_sync(&registrations, "module", Some(6)),
+            RegistrySync::Changed(_)
+        ));
+        assert_eq!(clones.load(Ordering::Relaxed), 1);
+    }
 }

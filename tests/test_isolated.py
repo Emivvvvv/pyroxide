@@ -1,18 +1,50 @@
-import pytest
 import concurrent.futures
-from pyroxide import register_wasm, wasm_task, compile_c, dylib_task
+import os
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+import pytest
+from pyroxide import compile_c, dylib_task, register_wasm, wasm_task
+
 from tests.isolated_helper import (
-    square_isolated,
     crash_task,
     echo_large_payload,
-    get_worker_pid,
+    functional_square_isolated,
+    square_isolated,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def run_isolated_child(
+    code: str, **overrides: str
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.update(overrides)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(ROOT / "python"), str(ROOT), env.get("PYTHONPATH", "")]
+    )
+    return subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(code)],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
 
 
 # 1. Test basic Python isolated execution
 def test_isolated_python_task():
     handle = square_isolated(9)
     assert handle.result() == 81
+
+
+def test_functional_style_isolated_python_task():
+    """task(func, isolated=True) must keep the original function picklable."""
+    assert functional_square_isolated(11).result() == 121
 
 
 # 2. Test crash safety (Process Exit)
@@ -41,6 +73,15 @@ def test_isolated_pool_recovery():
     assert handle2.result() == 144
 
 
+def test_isolated_coordinator_panic_finishes_task():
+    import pyroxide
+
+    handle = square_isolated("TRIGGER_ISOLATED_PANIC")
+    with pytest.raises(RuntimeError, match="panicked"):
+        handle.result(timeout_sec=2)
+    assert pyroxide.stats()["running_tasks"] == 0
+
+
 # 4. Test parallel concurrency with isolated workers
 def test_isolated_concurrency():
     # Submit multiple isolated tasks concurrently using a ThreadPoolExecutor
@@ -55,8 +96,45 @@ def test_isolated_concurrency():
     assert results == [i * i for i in range(10)]
 
 
+def test_isolated_process_count_is_bounded():
+    import os
+    import subprocess
+    import sys
+    import textwrap
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    env["PYROXIDE_WORKERS"] = "8"
+    env["PYROXIDE_MAX_PROCESSES"] = "2"
+    env["PYROXIDE_MAX_TASKS_PER_WORKER"] = "100"
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(root / "python"), str(root), env.get("PYTHONPATH", "")]
+    )
+    code = textwrap.dedent(
+        """
+        from tests.isolated_helper import delayed_worker_pid
+
+        handles = [delayed_worker_pid(0.4) for _ in range(8)]
+        pids = {handle.result() for handle in handles}
+        assert len(pids) <= 2, pids
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 # 5. Test WASM isolated execution
 def test_isolated_wasm_task():
+    from pyroxide import load_wasm
+
     from tests.test_wasm import WASM_BYTES
 
     register_wasm("rot13_isolated", WASM_BYTES)
@@ -67,6 +145,48 @@ def test_isolated_wasm_task():
 
     handle = rot13_cipher("Hello Isolated WASM!")
     assert handle.result() == "Uryyb Vfbyngrq JNFZ!"
+    proxy = load_wasm("rot13_isolated", isolated=True)
+    handles = proxy.run.batch(["Batch One", "Batch Two"])
+    assert [handle.result() for handle in handles] == ["Ongpu Bar", "Ongpu Gjb"]
+
+
+def test_warm_isolated_worker_refreshes_replaced_wasm():
+    result = run_isolated_child(
+        """
+        import pyroxide
+        from pyroxide import load_wasm, register_wasm_wat
+
+        def constant_wat(value):
+            pointer = 32
+            packed = (pointer << 32) | len(value)
+            return f'''
+            (module
+              (memory (export "memory") 1)
+              (data (i32.const {pointer}) "{value}")
+              (func (export "run") (param i32 i32) (result i64)
+                i64.const {packed}
+              )
+              (func (export "alloc") (param i32) (result i32) i32.const 0)
+              (func (export "dealloc") (param i32 i32))
+            )
+            '''
+
+        register_wasm_wat("replace_wasm", constant_wat("old"))
+        proxy = load_wasm("replace_wasm", isolated=True)
+        assert proxy.run("payload").result() == "old"
+
+        register_wasm_wat("replace_wasm", constant_wat("new"))
+        replaced = proxy.run("payload").result()
+        pyroxide.shutdown(wait=True)
+
+        assert replaced == "new"
+        """,
+        PYROXIDE_WORKERS="1",
+        PYROXIDE_MAX_PROCESSES="1",
+        PYROXIDE_MAX_TASKS_PER_WORKER="0",
+        PYROXIDE_IDLE_TIMEOUT_SEC="60",
+    )
+    assert result.returncode == 0, result.stderr
 
 
 # 6. Test dylib isolated execution
@@ -94,6 +214,128 @@ def test_isolated_dylib_task():
 
     handle = caesar_cipher(b"abc")
     assert handle.result() == b"bcd"
+    handles = caesar_cipher.batch([b"abc", b"xyz"])
+    assert [handle.result() for handle in handles] == [b"bcd", b"yz{"]
+
+
+def test_warm_isolated_worker_refreshes_replaced_dylib(tmp_path):
+    result = run_isolated_child(
+        """
+        import pyroxide
+        from pyroxide import compile_c, load_dylib
+        from pyroxide._pyroxide import register_dylib
+
+        def shift_source(amount):
+            return f'''
+            #include <stdint.h>
+            #include <stdlib.h>
+
+            uint8_t* pyroxide_plugin_run(
+                const uint8_t* ptr,
+                size_t len,
+                size_t* out_len
+            ) {{
+                uint8_t* result = (uint8_t*)malloc(len);
+                for (size_t index = 0; index < len; index++) {{
+                    result[index] = ptr[index] + {amount};
+                }}
+                *out_len = len;
+                return result;
+            }}
+
+            void pyroxide_plugin_free(uint8_t* ptr, size_t len) {{
+                free(ptr);
+            }}
+            '''
+
+        first_path = compile_c("replace_dylib_first", shift_source(1))
+        second_path = compile_c("replace_dylib_second", shift_source(2))
+        register_dylib("replace_dylib", first_path)
+
+        proxy = load_dylib("replace_dylib", isolated=True)
+        assert proxy.pyroxide_plugin_run(b"abc").result() == b"bcd"
+
+        register_dylib("replace_dylib", second_path)
+        replaced = proxy.pyroxide_plugin_run(b"abc").result()
+        pyroxide.shutdown(wait=True)
+
+        assert replaced == b"cde"
+        """,
+        PYROXIDE_WORKERS="1",
+        PYROXIDE_MAX_PROCESSES="1",
+        PYROXIDE_MAX_TASKS_PER_WORKER="0",
+        PYROXIDE_IDLE_TIMEOUT_SEC="60",
+        PYROXIDE_CACHE_DIR=str(tmp_path / "cache"),
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_unregister_blocks_stale_dylib_after_active_worker_returns(tmp_path):
+    result = run_isolated_child(
+        f"""
+        import time
+        from pathlib import Path
+
+        import pyroxide
+        from pyroxide import compile_c, load_dylib, unregister_dylib
+        from tests.isolated_helper import get_worker_pid, report_pid_then_sleep
+
+        source = '''
+        #include <stdint.h>
+        #include <stdlib.h>
+
+        uint8_t* pyroxide_plugin_run(
+            const uint8_t* ptr,
+            size_t len,
+            size_t* out_len
+        ) {{
+            uint8_t* result = (uint8_t*)malloc(len);
+            for (size_t index = 0; index < len; index++) {{
+                result[index] = ptr[index] + 1;
+            }}
+            *out_len = len;
+            return result;
+        }}
+
+        void pyroxide_plugin_free(uint8_t* ptr, size_t len) {{
+            free(ptr);
+        }}
+        '''
+        compile_c("unregister_active_dylib", source)
+        proxy = load_dylib("unregister_active_dylib", isolated=True)
+        assert proxy.pyroxide_plugin_run(b"abc").result() == b"bcd"
+
+        pid_path = Path({str(tmp_path / "active-worker.pid")!r})
+        active = report_pid_then_sleep((str(pid_path), 0.2))
+        deadline = time.monotonic() + 5
+        while not pid_path.exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.001)
+
+        unregister_dylib("unregister_active_dylib")
+        active_worker_pid = active.result()
+        assert active_worker_pid > 0
+
+        stale_result = None
+        stale_error = None
+        try:
+            stale_result = proxy.pyroxide_plugin_run(b"abc").result()
+        except RuntimeError as error:
+            stale_error = str(error)
+
+        next_worker_pid = get_worker_pid(None).result()
+        pyroxide.shutdown(wait=True)
+        assert stale_result is None, stale_result
+        assert stale_error is not None and "not found" in stale_error.lower(), stale_error
+        assert next_worker_pid == active_worker_pid
+        """,
+        PYROXIDE_WORKERS="1",
+        PYROXIDE_MAX_PROCESSES="1",
+        PYROXIDE_MAX_TASKS_PER_WORKER="0",
+        PYROXIDE_IDLE_TIMEOUT_SEC="60",
+        PYROXIDE_CACHE_DIR=str(tmp_path / "cache"),
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_isolated_large_payload_shm():
@@ -103,6 +345,42 @@ def test_isolated_large_payload_shm():
     result = handle.result()
     assert len(result) == len(large_data)
     assert result == large_data
+
+
+def test_shared_memory_frames_respect_ipc_limit():
+    import os
+    import subprocess
+    import sys
+    import textwrap
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    env["PYROXIDE_MAX_IPC_FRAME_BYTES"] = "1024"
+    env["PYROXIDE_SHM_THRESHOLD"] = "512"
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(root / "python"), str(root), env.get("PYTHONPATH", "")]
+    )
+    code = textwrap.dedent(
+        """
+        import pytest
+        from tests.isolated_helper import echo_large_payload, make_large_response
+
+        with pytest.raises(RuntimeError, match="exceeds limit"):
+            echo_large_payload("x" * 4096).result()
+        with pytest.raises(RuntimeError, match="exceeds limit"):
+            make_large_response(4096).result()
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_isolated_scale_to_zero():
@@ -126,8 +404,12 @@ print("SUCCESS")
 """
     env = os.environ.copy()
     env["PYROXIDE_IDLE_TIMEOUT_SEC"] = "1"
-    env["PYTHONPATH"] = f"{os.path.abspath('python')}:{os.path.abspath('.')}:{env.get('PYTHONPATH', '')}"
-    res = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    env["PYTHONPATH"] = (
+        f"{os.path.abspath('python')}:{os.path.abspath('.')}:{env.get('PYTHONPATH', '')}"
+    )
+    res = subprocess.run(
+        [sys.executable, "-c", code], env=env, capture_output=True, text=True
+    )
     assert res.returncode == 0, f"Subprocess failed: {res.stderr}"
     assert "SUCCESS" in res.stdout
 
@@ -234,3 +516,5 @@ def test_isolated_dylib_ffi():
 
     handle = proxy.my_mul_fn(6, 7)
     assert handle.result() == 42
+    handles = proxy.my_mul_fn.batch([(2, 3), (6, 7)])
+    assert [handle.result() for handle in handles] == [6, 42]

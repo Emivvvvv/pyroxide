@@ -1,4 +1,5 @@
 import concurrent.futures
+
 from pyroxide import task
 from pyroxide._pyroxide import get_slab_size
 
