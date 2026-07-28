@@ -131,6 +131,30 @@ def test_isolated_process_count_is_bounded():
     assert result.returncode == 0, result.stderr
 
 
+def test_isolated_worker_recycles_after_exact_task_limit():
+    result = run_isolated_child(
+        """
+        import pyroxide
+        from tests.isolated_helper import get_worker_pid
+
+        first_pid = get_worker_pid(None).result()
+        for _ in range(99):
+            assert get_worker_pid(None).result() == first_pid
+        replacement_pid = get_worker_pid(None).result()
+        assert replacement_pid != first_pid
+        pyroxide.shutdown(wait=True)
+        stats = pyroxide.stats()
+        assert stats["queued_tasks"] == 0
+        assert stats["running_tasks"] == 0
+        """,
+        PYROXIDE_WORKERS="1",
+        PYROXIDE_MAX_PROCESSES="1",
+        PYROXIDE_MAX_TASKS_PER_WORKER="100",
+        PYROXIDE_IDLE_TIMEOUT_SEC="60",
+    )
+    assert result.returncode == 0, result.stderr
+
+
 # 5. Test WASM isolated execution
 def test_isolated_wasm_task():
     from pyroxide import load_wasm
