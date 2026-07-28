@@ -22,6 +22,7 @@ if __name__ == "__main__" and __spec__ is not None:
     sys.modules.setdefault(__spec__.name, sys.modules[__name__])
 
 _RESERVED_SUMMARIES: dict[Path, tuple[int, int]] = {}
+_RESERVED_OUTPUTS: dict[Path, tuple[int, int]] = {}
 _ENGINE_FIELDS = (
     "worker_count",
     "max_processes",
@@ -252,9 +253,13 @@ def _reserve_output(path: Path) -> tuple[int, int]:
         os.close(descriptor)
 
 
+def _reservation_key(path: Path) -> Path:
+    return Path(os.path.abspath(path))
+
+
 def _unlink_reserved_empty(path: Path, identity: tuple[int, int]) -> None:
     try:
-        status = path.stat()
+        status = os.stat(path, follow_symlinks=False)
         if (
             (status.st_dev, status.st_ino) == identity
             and status.st_size == 0
@@ -280,6 +285,7 @@ def reserve_outputs(output: Path, summary: Path) -> None:
                 f"refusing to overwrite existing summary: {summary}"
             ) from error
         raise
+    _RESERVED_OUTPUTS[_reservation_key(output)] = output_identity
     _RESERVED_SUMMARIES[summary.resolve()] = summary_identity
 
 
@@ -694,7 +700,8 @@ def _recycle_target(config: ReliabilityConfig) -> int:
 
 
 def _planned_cycles(config: ReliabilityConfig) -> int:
-    return min(3, max(1, math.ceil(config.duration_seconds / 300)))
+    cycle_interval = min(1.0, config.sample_interval_seconds)
+    return max(1, math.ceil(config.duration_seconds / cycle_interval))
 
 
 def _sample_record(
@@ -1144,8 +1151,23 @@ def write_summary_exclusive(path: Path, summary: Mapping[str, object]) -> None:
 
 def _append_jsonl(path: Path, record: Mapping[str, object]) -> None:
     encoded = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
-    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND)
+    reserved_identity = _RESERVED_OUTPUTS.get(_reservation_key(path))
+    flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
     try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        if reserved_identity is not None:
+            raise FileExistsError(
+                f"refusing to overwrite existing output: {path}"
+            ) from error
+        raise
+    try:
+        status = os.fstat(descriptor)
+        if (
+            reserved_identity is not None
+            and (status.st_dev, status.st_ino) != reserved_identity
+        ):
+            raise FileExistsError(f"refusing to overwrite existing output: {path}")
         with os.fdopen(descriptor, "ab", closefd=False) as stream:
             stream.write(encoded)
             stream.flush()
@@ -1159,17 +1181,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = parse_args(argv)
     reserve_outputs(config.output, config.summary)
     try:
-        summary = run_reliability(config)
-    except Exception as error:
-        failure = {
-            "record_type": "assertion_failure",
-            "name": "unexpected_exception",
-            "message": str(error),
-        }
-        _append_jsonl(config.output, failure)
-        summary = summarize_observations([failure], config)
-    write_summary_exclusive(config.summary, summary)
-    return 0 if summary.get("ok") is True else 1
+        try:
+            summary = run_reliability(config)
+        except Exception as error:
+            failure = {
+                "record_type": "assertion_failure",
+                "name": "unexpected_exception",
+                "message": str(error),
+            }
+            _append_jsonl(config.output, failure)
+            summary = summarize_observations([failure], config)
+        write_summary_exclusive(config.summary, summary)
+        return 0 if summary.get("ok") is True else 1
+    finally:
+        _RESERVED_OUTPUTS.pop(_reservation_key(config.output), None)
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised by the script entry point.

@@ -504,6 +504,31 @@ def test_output_rollback_preserves_a_replacement_inode(
     assert output.read_bytes() == b"replacement\n"
 
 
+@pytest.mark.parametrize("replacement_kind", ["file", "symlink"])
+def test_raw_writer_refuses_a_replacement_after_reservation(
+    tmp_path: Path, replacement_kind: str
+) -> None:
+    """Appending must never follow a path that no longer names the reserved inode."""
+    output = tmp_path / "raw.jsonl"
+    summary = tmp_path / "summary.json"
+    replacement = tmp_path / "replacement.jsonl"
+    reliability_runner.reserve_outputs(output, summary)
+    output.unlink()
+    if replacement_kind == "file":
+        replacement = output
+    replacement.write_bytes(b"replacement\n")
+    if replacement_kind == "symlink":
+        output.symlink_to(replacement)
+
+    with pytest.raises(FileExistsError, match="refusing to overwrite"):
+        reliability_runner._append_jsonl(
+            output,
+            {"record_type": "metadata"},
+        )
+
+    assert replacement.read_bytes() == b"replacement\n"
+
+
 def test_take_observation_keeps_terminal_counts_with_drained_latency() -> None:
     """A sample must atomically pair counters with the latency batch it drains."""
     state = reliability_runner._RunState(recycle_target=1)
@@ -752,6 +777,48 @@ def test_scenario_controller_records_terminal_accounting_and_recovery(
     )
     assert facade.shutdown_calls == [True]
     assert summary["ok"] is True
+
+
+def test_duration_run_schedules_representative_cycles_until_the_deadline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A duration profile must not become idle after its startup scenario cycle."""
+    output = tmp_path / "duration-cycles.jsonl"
+    output.touch()
+    clock = FakeClock()
+    cycle_starts: list[tuple[int, float]] = []
+
+    def record_cycle(*, cycle: int, monotonic: Any, **kwargs: Any) -> None:
+        del kwargs
+        cycle_starts.append((cycle, monotonic()))
+
+    monkeypatch.setattr(
+        reliability_runner,
+        "_run_scenario_cycle",
+        record_cycle,
+    )
+    config = reliability_runner.ReliabilityConfig(
+        duration_seconds=5.0,
+        sample_interval_seconds=1.0,
+        output=output,
+        summary=tmp_path / "duration-cycles.summary.json",
+    )
+
+    reliability_runner.run_reliability(
+        config,
+        pyroxide_facade=FakePyroxide(),
+        sampler=FakeSampler(),
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    assert cycle_starts == [
+        (0, 0.0),
+        (1, 1.0),
+        (2, 2.0),
+        (3, 3.0),
+        (4, 4.0),
+    ]
 
 
 def test_final_tail_latency_is_recorded_after_the_last_sample(
@@ -1068,17 +1135,18 @@ def test_unrelated_error_after_cancel_request_is_not_counted_as_cancelled(
         output=output,
         summary=tmp_path / "bad-cancellation.summary.json",
     )
+    facade = BadCancellationPyroxide()
 
     summary = reliability_runner.run_reliability(
         config,
-        pyroxide_facade=BadCancellationPyroxide(),
+        pyroxide_facade=facade,
         sampler=FakeSampler(),
         monotonic=clock.monotonic,
         sleep=clock.sleep,
     )
 
     final = summary["final"]
-    assert final["cancelled_operations"] == 0
+    assert final["cancelled_operations"] == facade.cancelled_tasks - 1
     assert any(
         failure["name"] == "RuntimeError"
         and failure["message"] == "IPC fixture error"
