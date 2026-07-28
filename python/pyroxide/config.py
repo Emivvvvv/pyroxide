@@ -120,6 +120,10 @@ def stats() -> dict:
     Gauges include worker count, queue capacity, queued, running, and retained
     active tasks. Counters include submitted, rejected, completed, failed, and
     cancelled tasks.
+
+    Fields are read independently. During concurrent activity the returned
+    mapping is an approximate cross-field snapshot and may combine values from
+    nearby moments; use quiescent readings for drain or leak checks.
     """
     from ._pyroxide import get_engine_stats
 

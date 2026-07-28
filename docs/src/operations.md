@@ -70,6 +70,11 @@ metrics = pyroxide.stats()
 | `failed_tasks` | Lifetime failed completions |
 | `cancelled_tasks` | Lifetime effective cancellations |
 
+Fields are read independently. During concurrent activity, `stats()` is an
+approximate cross-field snapshot and may combine values from nearby moments;
+use quiescent readings for drain or leak checks. If you require a linearizable
+cross-field snapshot, open an issue with your use case.
+
 Counters are process-local and reset on restart. Export them with labels supplied
 by your application; Pyroxide does not run a metrics server.
 

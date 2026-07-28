@@ -140,9 +140,9 @@ for the ABI and memory-safety contract.
 
 ## Operations
 
-`pyroxide.stats()` reports queue capacity, queued/running/active task counts, and
-lifetime submitted/completed/failed/cancelled/rejected counters. The complete
-environment-variable reference and deployment checklist are in the
+`pyroxide.stats()` reports approximate cross-field telemetry during active
+execution: queue capacity, queued/running/active task counts, and lifetime
+submitted/completed/failed/cancelled/rejected counters. See the
 [operations guide](https://emivvvvv.github.io/pyroxide/operations.html).
 
 Performance depends on payload size, execution mode, worker count, platform, and
