@@ -1,5 +1,3 @@
-import os
-
 import pytest
 from pyroxide import compile_rust, dylib_task
 
@@ -27,11 +25,10 @@ pub unsafe extern "C" fn pyroxide_plugin_free(ptr: *mut u8, len: usize) {
 """
 
 
-def test_dylib_lifecycle():
+def test_dylib_lifecycle(tmp_path, monkeypatch):
     """Verifies end-to-end dylib compilation, registration, execution, and OS access."""
-    marker_path = "temp_dylib_marker.txt"
-    if os.path.exists(marker_path):
-        os.remove(marker_path)
+    monkeypatch.chdir(tmp_path)
+    marker_path = tmp_path / "temp_dylib_marker.txt"
 
     compile_rust("dyn_greeter", RUST_PLUGIN_SRC)
 
@@ -45,15 +42,14 @@ def test_dylib_lifecycle():
     assert res == "DYLIB: Developer"
 
     # Verify that the dylib executed with full OS file-writing access
-    assert os.path.exists(marker_path)
-    with open(marker_path, "r") as f:
-        content = f.read()
+    assert marker_path.exists()
+    content = marker_path.read_text()
     assert content == "payload:Developer"
-    os.remove(marker_path)
 
 
-def test_dylib_bytes():
+def test_dylib_bytes(tmp_path, monkeypatch):
     """Verifies that dylib tasks correctly handle raw byte payloads."""
+    monkeypatch.chdir(tmp_path)
     compile_rust("dyn_bytes", RUST_PLUGIN_SRC)
 
     @dylib_task("dyn_bytes")

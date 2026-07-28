@@ -1,6 +1,8 @@
 # Batch submission and groups
 
-Every `@task` function has a `.batch(payloads)` helper.
+Use `.batch(payloads)` to submit related inputs with one all-or-nothing
+admission decision. Functions created by `@task` and `@dylib_task` expose the
+helper directly.
 
 ```python
 from pyroxide import task
@@ -20,6 +22,17 @@ empty list.
 
 Batching is an API and admission convenience. It does not promise one internal
 lock acquisition or a fixed speedup; measure it for your workload.
+
+WASM batching is available on proxy methods:
+
+```python
+from pyroxide import load_wasm
+
+codec = load_wasm("codec")
+handles = codec.run.batch([b"one", b"two"])
+```
+
+The `@wasm_task` decorator submits one payload at a time.
 
 ## Task groups
 
@@ -46,3 +59,7 @@ for handle in tasks.handles:
 The async context manager waits for all handles and groups failures. On Python
 3.10, Pyroxide exposes a compatible fallback exception container with an
 `exceptions` attribute; Python 3.11+ uses built-in `ExceptionGroup`.
+
+Use individual handles when each item needs different admission or cancellation
+logic. See [Production operations](operations.md#backpressure) before choosing a
+batch size for a bounded queue.

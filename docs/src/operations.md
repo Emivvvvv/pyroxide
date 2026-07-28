@@ -1,8 +1,10 @@
 # Production operations
 
-Start with a canary using representative payloads and failure cases. Pyroxide is
-embedded in the application process, so capacity, shutdown, and native-code risk
-belong in the application's operational design.
+Pyroxide removes a separate broker and worker service, but it does not remove
+operational decisions. Because the engine lives inside the application,
+capacity, shutdown, and native-code risk belong in the application's design.
+
+Start with a canary using representative payloads and failure cases.
 
 ## Configuration
 

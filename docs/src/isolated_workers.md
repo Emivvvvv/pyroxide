@@ -1,6 +1,7 @@
 # Isolated worker processes
 
-Set `isolated=True` to execute a task in a separate Python interpreter process.
+Use `isolated=True` when CPU-bound Python needs another interpreter on regular
+CPython, or when trusted native code needs process crash containment.
 
 ```python
 from pyroxide import task
@@ -12,9 +13,8 @@ def calculate(value: int) -> int:
 print(calculate(1_000_000).result())
 ```
 
-Use isolation for CPU-bound Python on regular CPython, or to contain crashes from
-trusted native plugins. Isolation adds serialization, IPC, and possible cold-start
-cost.
+Isolation adds serialization, IPC, and possible cold-start cost. It is a
+deliberate boundary, not a default performance upgrade.
 
 ## Importability contract
 
@@ -74,3 +74,7 @@ Do not initialize Pyroxide before calling `fork()`. An inherited engine contains
 threads and synchronization state that cannot be used safely in the child.
 Pyroxide detects this and raises `ForkSafetyError`. Initialize Pyroxide separately
 after the fork, or use a spawn-based process model.
+
+See [Choosing an execution mode](execution_modes.md) for alternatives and
+[Production operations](operations.md) for capacity, recycling, and shutdown
+settings.

@@ -8,7 +8,8 @@ with open(WASM_PATH, "rb") as f:
     WASM_BYTES = f.read()
 
 
-def test_stub_generation_wasm():
+def test_stub_generation_wasm(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     register_wasm("rot13_stub", WASM_BYTES)
 
     stub_file = "rot13_stub_proxy.pyi"
@@ -33,9 +34,10 @@ def test_stub_generation_wasm():
             os.remove(stub_file)
 
 
-def test_load_wasm_generate_stubs():
+def test_load_wasm_generate_stubs(tmp_path, monkeypatch):
     from pyroxide import load_wasm
 
+    monkeypatch.chdir(tmp_path)
     register_wasm("rot13_auto_stub", WASM_BYTES)
 
     stub_file = "rot13_auto_stub_proxy.pyi"
@@ -51,9 +53,10 @@ def test_load_wasm_generate_stubs():
             os.remove(stub_file)
 
 
-def test_load_dylib_metadata_and_stubs():
+def test_load_dylib_metadata_and_stubs(tmp_path, monkeypatch):
     from pyroxide import compile_c, load_dylib
 
+    monkeypatch.chdir(tmp_path)
     # C plugin exposing pyroxide_metadata
     C_SRC = """
     #include <stdint.h>

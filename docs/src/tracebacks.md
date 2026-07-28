@@ -1,7 +1,9 @@
 # Exceptions and tracebacks
 
-If background Python code raises, `result()` raises a `RuntimeError` containing
-the original exception text and formatted background traceback.
+Pyroxide keeps the background traceback when Python work fails, so you can
+diagnose the original call site after the exception crosses a task boundary.
+`result()` raises a `RuntimeError` containing the exception text and formatted
+traceback.
 
 ```python
 from pyroxide import task
@@ -24,3 +26,7 @@ WASM traps, native loader errors, IPC failures, and isolated-worker crashes are
 also surfaced as runtime errors with backend-specific context. A native crash in
 the main process cannot be converted into a Python exception; use process
 isolation for crash containment.
+
+Use [isolated workers](isolated_workers.md) when a native crash must not take
+down the main application, and inspect [Production operations](operations.md)
+for failure and shutdown planning.

@@ -1,61 +1,99 @@
-# Choosing the right tool
+# Choosing Pyroxide or another tool
 
-Pyroxide is one option among several different execution models. Choose by
-failure semantics and deployment needs before comparing speed.
+Choose the execution and deployment model before comparing speed. A local
+executor, an embedded multi-mode engine, a durable queue, and a cluster runtime
+solve different problems.
 
-| Need | Usually choose | Why |
-| --- | --- | --- |
-| Simple background I/O in one process | `ThreadPoolExecutor` or `@task` | No IPC or external service |
-| CPU-bound Python on regular CPython | Process pool or isolated task | Separate interpreters bypass the GIL |
-| CPU-bound Python on CPython 3.14t | Thread pool or `@task`, after testing extensions | Free-threaded execution may scale in-process |
-| Durable jobs, retries, schedules, multi-host workers | Celery, RQ, Dramatiq, Temporal, or a managed queue | Survives application process failure |
-| Stable native algorithm shipped with an application | PyO3, nanobind, Cython, or a reviewed Pyroxide plugin | Compiled implementation and explicit ABI |
-| Bounded portable plugin execution | Pyroxide WASM or another Wasmtime host | Guest memory and execution controls |
+| Need | Usually choose |
+| --- | --- |
+| One straightforward local thread or process pool | `concurrent.futures` |
+| One embedded API for Python threads, isolated processes, WASM, and native libraries | Pyroxide |
+| Durable jobs, retries, schedules, routing, or multi-host workers | Celery, RQ, Dramatiq, Temporal, or a managed queue |
+| Distributed data or compute scheduling | Ray or Dask |
+| One stable native algorithm known at build time | PyO3, nanobind, Cython, or another direct extension |
+| A custom WASM host with its own imports and component model | Wasmtime or another dedicated host |
+
+## What Pyroxide combines
+
+Pyroxide is useful when one application owns the work but not every task belongs
+behind the same boundary.
+
+You can start a blocking operation on a worker thread, move CPU-bound Python to
+another interpreter, run a portable guest in Wasmtime, or call a reviewed native
+library without changing the caller's basic submit-and-result flow. Bounded
+admission, batching, async results, cancellation rules, statistics, and shutdown
+apply across those modes.
+
+That combination is the selling point. Pyroxide is not a distributed queue
+compressed into a Python extension.
 
 ## Standard executors
 
-`ThreadPoolExecutor` is mature, standard-library infrastructure and is often the
-simplest choice for I/O. Pyroxide adds task handles, a bounded Rust broker,
-batch admission, WASM/native backends, and integrated metrics.
+`ThreadPoolExecutor` is mature, built into Python, and often the simplest choice
+for blocking I/O. `ProcessPoolExecutor` has a broad serialization ecosystem and
+is a strong CPU-bound baseline on regular CPython.
 
-`ProcessPoolExecutor` and loky have broader Python serialization ecosystems.
-Pyroxide's isolated mode uses a reusable, lazily created pool and shared-memory
-routing for large serialized frames. All process approaches still pay
-serialization and IPC costs.
+Use them when one pool and its future API are enough. Choose Pyroxide when the
+same application benefits from bounded task admission, integrated telemetry, or
+several execution modes behind one interface.
 
-In the July 2026 four-worker CPU run, loky, `ProcessPoolExecutor`, and
-`InterpreterPoolExecutor` all beat in-process Pyroxide on regular CPython 3.14.
-Pyroxide isolated stayed close to `ProcessPoolExecutor` in the smaller paper
-cell. Choose it for its unified task API, bounded admission, cancellation, and
-crash containment—not because it always wins a throughput chart.
+All process approaches pay serialization and IPC costs. Pyroxide's isolated
+mode reuses lazily created workers and routes large serialized frames through
+shared memory. Python objects are still serialized; this is not end-to-end
+zero-copy.
 
-## Free-threaded CPython
+## Durable and distributed queues
 
-Free-threaded CPython removes the GIL as the universal reason to use processes,
-but it does not compile Python bytecode or guarantee that every extension remains
-free-threaded. Compare the same pure-Python workload on the exact interpreter and
-extension set you will deploy.
+Celery, RQ, Dramatiq, Temporal, and managed queue services are designed for work
+that outlives one application process. Depending on the system, they provide
+durability, retries, schedules, routing, monitoring, and workers on other hosts.
 
-On the tested 3.14t build, Pyroxide threaded and `ThreadPoolExecutor` had
-overlapping CPU-batch bootstrap intervals. Free-threading made both competitive
-with process approaches, but did not make Pyroxide a universal winner.
+Pyroxide provides none of those durability guarantees. Its advantage is the
+opposite trade-off: no broker, no separate worker deployment, and no network hop
+for work that belongs to the current application.
 
-## Native extension pools
+No-op latency is not a fair way to rank these categories. The external systems
+do more operational work because they promise different failure semantics.
 
-PyO3 with Rayon, C++ with OpenMP/TBB, and similar extensions are strong choices
-when the API and algorithm are known at build time. They provide tighter typing
-and wheel-time validation. Pyroxide native plugins favor runtime registration and
-a small C ABI, with the corresponding ABI and trust risks.
+## Cluster runtimes
 
-## Distributed queues
+Ray and Dask coordinate work and data across processes and machines. Choose them
+when cluster scheduling, distributed object/data handling, or elastic compute is
+part of the requirement.
 
-Celery and similar systems incur serialization, broker, and network work because
-they provide durability, routing, retries, scheduling, and multi-host workers.
-Pyroxide provides none of those guarantees. Comparing no-op latency alone is not
-a fair product comparison.
+Pyroxide stays inside one host application. It is a smaller fit for a web
+service, desktop tool, automation process, or plugin host that needs local
+execution choices without becoming a cluster.
 
-Ray and Dask similarly add scheduling and distribution capabilities. Their
-results are reported in a separate operational track and are not inserted into
-the local-executor ranking.
+## Direct native extensions
 
-See [Benchmarking](benchmarks.md) for a reproducible evaluation method.
+PyO3, nanobind, Cython, and C/C++ extension modules are strong choices when the
+algorithm and Python API are known at build time. They offer tight typing,
+wheel-time validation, and direct-call overhead.
+
+Pyroxide native plugins favor runtime registration, background scheduling, and a
+small C ABI. That flexibility brings ABI and trust risks. A scheduled native
+task should not be marketed as faster than a direct binding merely because the
+algorithm itself is compiled.
+
+## Dedicated WASM hosts
+
+Pyroxide supplies a deliberately small guest ABI, no host imports, memory
+limits, and epoch deadlines. This is convenient when WASM is one execution mode
+inside a Python application.
+
+Choose a dedicated Wasmtime host when you need WASI, the Component Model, custom
+imports, or a richer typed interface.
+
+## Ask these questions
+
+1. Must accepted work survive the application process? If yes, use a durable
+   queue.
+2. Must work run across hosts? If yes, use a distributed queue or cluster
+   runtime.
+3. Is one standard executor enough? If yes, keep the standard library.
+4. Does one application need several local execution boundaries with one
+   lifecycle? That is where Pyroxide fits.
+
+See [Choosing an execution mode](execution_modes.md) for Pyroxide's internal
+choices and [Benchmarking](benchmarks.md) for measured comparisons.

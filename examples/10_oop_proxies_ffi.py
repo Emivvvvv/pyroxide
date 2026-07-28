@@ -61,8 +61,11 @@ if __name__ == "__main__":
     stub_path = generate_stubs("my_math_plugin", "dylib")
     print(f"Stub file written to: {stub_path}")
 
-    # Cleanup stub file
+    # Cleanup stub file and proxy helper file
     if os.path.exists(stub_path):
         os.remove(stub_path)
+    py_path = os.path.splitext(stub_path)[0] + ".py"
+    if os.path.exists(py_path):
+        os.remove(py_path)
 
     print("✔ OOP Proxies & FFI Example PASSED.")

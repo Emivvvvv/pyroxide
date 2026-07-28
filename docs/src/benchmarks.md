@@ -7,6 +7,25 @@ compiler, and whether workers are warm.
 The scripts under `examples/benchmarks/` are evaluation tools, not product
 guarantees.
 
+## What the evidence says
+
+The saved studies support a narrow, useful product claim: Pyroxide gives one
+application several execution boundaries with competitive measured overhead.
+They do not show that it is the fastest choice for every task.
+
+- Standard thread and process pools win some workloads.
+- Pyroxide isolated stayed close to `ProcessPoolExecutor` in the measured CPU
+  cells while using the same task API as other Pyroxide modes.
+- In-process execution avoided the process-tree memory cost of process pools in
+  the measured scenarios.
+- Native and WASM results include different boundaries and must not be presented
+  as scheduler-only speedups.
+- Production sizing still requires the application's own payloads, worker
+  counts, platform, and failure cases.
+
+The canonical summaries live in
+[`benchmark_results/`](https://github.com/emivvvvv/pyroxide/tree/main/benchmark_results).
+
 ## Fair-comparison rules
 
 1. Compare systems with the same durability and isolation semantics.
@@ -75,7 +94,7 @@ The broader CPython 3.14 comparison used 100 CPU tasks:
 | Pyroxide threaded | 171.14 ms | 34 MiB |
 | `ThreadPoolExecutor` | 182.83 ms | 30 MiB |
 
-Across CPython 3.10–3.14, Pyroxide threaded was 12–14% faster than the thread
+Across CPython 3.10-3.14, Pyroxide threaded was 12-14% faster than the thread
 pool for that same CPU batch, but both remained much slower than the process
 pool. This is scheduler efficiency under the GIL, not CPU parallelism.
 
@@ -89,8 +108,8 @@ Warm Pyroxide WASM measured 47.57 µs versus 80.24 µs for the tested direct
 
 Distributed and durable systems were measured in separate tracks. In the
 single-node four-worker run, Ray processed 7,542 trivial tasks/s and 1,690 CPU
-tasks/s; Dask processed 685 and 658 tasks/s. Ray used about 963–978 MiB peak
-process-tree RSS versus 329–335 MiB for Dask. With Redis, late acknowledgement,
+tasks/s; Dask processed 685 and 658 tasks/s. Ray used about 963-978 MiB peak
+process-tree RSS versus 329-335 MiB for Dask. With Redis, late acknowledgement,
 JSON serialization, two workers, and result retrieval enabled, Celery processed
 564 payload tasks/s and 251 CPU tasks/s; Dramatiq processed 248 and 93 tasks/s.
 These numbers compare each track's operational cost and must not be ranked

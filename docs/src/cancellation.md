@@ -1,6 +1,8 @@
 # Task cancellation
 
-Cancellation depends on execution state and isolation mode.
+Call `cancel()` when work is no longer useful, but design for the possibility
+that it has already started. Whether Pyroxide can stop it depends on its state
+and execution boundary.
 
 | Task state and mode | `cancel()` | Outcome |
 | --- | --- | --- |
@@ -27,3 +29,7 @@ process termination is acceptable.
 
 WASM execution timeouts are separate from user cancellation. They trap a guest
 after its epoch deadline; see [WebAssembly](wasm_engine.md).
+
+A timeout passed to `result()` or `result_async()` also stops only the wait; it
+does not cancel the task. See [Getting started](getting_started.md) for handle
+lifetime after a timeout.

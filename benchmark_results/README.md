@@ -1,4 +1,4 @@
-# Benchmark evidence — 2026-07-27
+# Benchmark evidence - 2026-07-27
 
 These compact results were produced locally from the committed benchmark
 harness. The repository versions canonical summaries and run metadata supporting
@@ -24,7 +24,7 @@ invalid runs are excluded from the versioned summaries.
 | `local/paper-3.14-2026-07-27.summary.json` | ThreadPool, Pyroxide threaded/isolated, ProcessPool | 30 blocks/cell |
 | `local/python-3.14t-2026-07-27.summary.json` | same matrix with the GIL verified off | 30 blocks/cell |
 | `local/python-3.14-alternatives-2026-07-27.summary.json` | adds InterpreterPool, loky, joblib | 30 blocks/cell |
-| `local/python-history-2026-07-27.summary.json` | CPython 3.10–3.14 | 30 blocks/cell |
+| `local/python-history-2026-07-27.summary.json` | CPython 3.10-3.14 | 30 blocks/cell |
 | `plugins/python-3.14-2026-07-27/` | native and WASM boundaries | 5 blocks/cell |
 | `distributed/python-3.14-2026-07-27/dask-ray.summary.json` | single-node Dask and Ray | 30 blocks/cell |
 | `distributed/python-3.14-2026-07-27/brokers.summary.json` | Redis-backed Celery and Dramatiq | 30 blocks/cell |

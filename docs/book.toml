@@ -2,6 +2,6 @@
 authors = ["Emirhan Tala"]
 language = "en"
 src = "src"
-title = "Pyroxide Documentation Guide"
+title = "Pyroxide User Manual"
 
 [preprocessor.links]

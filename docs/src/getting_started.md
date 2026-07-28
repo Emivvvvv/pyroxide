@@ -1,75 +1,96 @@
 # Getting started
 
-## Submit a Python callable
+A Pyroxide task is a Python callable that returns a `TaskHandle` when you submit
+it. The handle lets you inspect, wait for, await, cancel, or release that piece
+of work.
+
+## Decorate and submit
 
 ```python
 from pyroxide import task
 
 @task
-def factorial(value: int) -> int:
-    import math
-    return math.factorial(value)
+def square(value: int) -> int:
+    return value * value
 
-handle = factorial(500)
-print(handle.status)       # Pending, Running, or Completed
-print(handle.result())     # waits and consumes the result
+handle = square(12)
+print(handle.status)    # Pending, Running, or Completed
+print(handle.result())  # 144
 ```
 
-The decorated function accepts one payload argument. Submission returns a
-`TaskHandle` immediately.
+The decorated callable accepts one payload argument. Calling `square(12)` does
+not run the function inline; it submits the payload and returns immediately.
 
-## Wait, consume, and close
+`result()` waits for completion. By default it also consumes the task record, so
+the handle should not be queried again.
 
-- `handle.wait(timeout_sec=None)` waits and returns the terminal status.
-- `handle.result(timeout_sec=None, consume=True)` returns or raises the result.
-- `handle.result_async(...)` is the non-blocking asyncio form.
-- `handle.close()` releases a terminal record or marks a running record for
-  automatic release.
+## Wait without consuming
 
-After a consuming `result()` or `close()`, do not query the handle again.
+Use `wait()` when you need the terminal status before reading the result:
 
 ```python
-with factorial(500) as handle:
+handle = square(12)
+status = handle.wait(timeout_sec=2)
+result = handle.result()
+```
+
+`wait()` returns `Completed` or `Failed`. It raises `TimeoutError` if the
+deadline expires and `RuntimeError` if the task was cancelled.
+
+Use `consume=False` when more than one part of your code must inspect a finished
+handle:
+
+```python
+handle = square(12)
+result = handle.result(consume=False)
+print(handle.status)
+handle.close()
+```
+
+`close()` releases a terminal record. If work is still running, it marks the
+record for automatic release after completion. A context manager does the same
+cleanup:
+
+```python
+with square(12) as handle:
     result = handle.result()
 ```
 
-## Status values
+## Await inside an event loop
+
+Do not call blocking `result()` on an event-loop thread. Await the asynchronous
+form:
+
+```python
+result = await square(12).result_async(timeout_sec=2)
+```
+
+The result and exception semantics match `result()`. A handle supports only one
+active asynchronous waiter. See [Concurrency and asyncio](concurrency_async.md)
+for a complete example.
+
+## Understand status
 
 | Status | Meaning |
 | --- | --- |
 | `Pending` | Accepted but not started |
 | `Running` | A worker started it |
-| `Completed` | Result is available |
+| `Completed` | A result is available |
 | `Failed` | Execution raised or trapped |
 | `Cancelled` | Work was cancelled before completion |
 
-Running in-process work is not forcibly cancelled. See [Cancellation](cancellation.md).
+Cancellation depends on the execution boundary. Pending work can be cancelled;
+running in-process work cannot be safely interrupted. Read
+[Task cancellation](cancellation.md) before relying on it for control flow.
 
-## Process-isolated Python
+## Do more
 
-```python
-@task(isolated=True)
-def cpu_work(value: int) -> int:
-    return sum(i * i for i in range(value))
-```
+- [Choose threads, processes, WASM, or native execution](execution_modes.md).
+- [Submit related payloads as a batch](batch_submission.md).
+- [Run CPU-bound Python in an isolated process](isolated_workers.md).
+- [Prepare the engine for production](operations.md).
 
-The callable and payload must be pickleable and importable by the worker. Define
-the function in an importable module. Do not rely on closures, lambdas, or a
-definition that exists only in `__main__`.
-
-## Batch and group
-
-```python
-from pyroxide import group
-
-handles = factorial.batch([10, 20, 30])
-task_group = group(handles)
-results = task_group.result()
-```
-
-Batch admission is all-or-nothing. Results preserve input order.
-
-## Shut down cleanly
+Shut Pyroxide down during application teardown:
 
 ```python
 import pyroxide
@@ -77,4 +98,5 @@ import pyroxide
 pyroxide.shutdown(wait=True, cancel_pending=False)
 ```
 
-Shutdown is irreversible for the process. The default drains accepted work.
+Shutdown is idempotent and irreversible in the current process. The default
+waits for accepted work to finish.
