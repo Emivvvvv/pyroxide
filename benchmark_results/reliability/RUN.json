@@ -1,17 +1,19 @@
 {
   "artifacts": {
     "rc1-5m.jsonl": {
-      "sha256": "d909511de29dd51916fdcaaecfde56feb3298aff2e873b317b349fc5c1723b94",
+      "sha256": "cbc179c090e3eb593fe3cd00b13b0eea261bc8563a8181eb05686d3fa423f2a0",
       "tracked": false
     },
     "rc1-5m.summary.json": {
-      "sha256": "23a5ae5344a0c98772bc2865788165e44ad51cdca3f494978af1f5862d834b2b",
+      "sha256": "c6cd74ff75335802fef5627be60f373845b766c6c8a6a7eebf165b42068caf1e",
       "tracked": true
     }
   },
   "command": [
     "uv",
     "run",
+    "--extra",
+    "benchmark",
     "python",
     "-m",
     "examples.benchmarks.reliability_runner",
@@ -22,9 +24,9 @@
     "--seed",
     "1729",
     "--output",
-    "benchmark_results/reliability/rc1-5m.jsonl",
+    "benchmark_results/reliability/invalid/rc1-5m-sustained-benchmark-extra-candidate.jsonl",
     "--summary",
-    "benchmark_results/reliability/rc1-5m.summary.json"
+    "benchmark_results/reliability/invalid/rc1-5m-sustained-benchmark-extra-candidate.summary.json"
   ],
   "schema_version": 1
 }

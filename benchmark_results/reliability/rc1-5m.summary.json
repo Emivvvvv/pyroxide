@@ -1,23 +1,23 @@
 {
   "assertion_failures": [],
   "final": {
-    "accepted_operations": 211,
+    "accepted_operations": 3080,
     "assertion_failure_count": 0,
-    "cancelled_operations": 1,
-    "completed_operations": 209,
-    "elapsed_seconds": 300.02895058300055,
-    "failed_operations": 1,
+    "cancelled_operations": 300,
+    "completed_operations": 2480,
+    "elapsed_seconds": 300.0269810000027,
+    "failed_operations": 300,
     "final_engine": {
       "active_tasks": 0,
-      "cancelled_tasks": 1,
-      "completed_tasks": 209,
-      "failed_tasks": 1,
+      "cancelled_tasks": 300,
+      "completed_tasks": 2480,
+      "failed_tasks": 300,
       "max_processes": 2,
       "queue_capacity": 4,
       "queued_tasks": 0,
-      "rejected_tasks": 1,
+      "rejected_tasks": 300,
       "running_tasks": 0,
-      "submitted_tasks": 211,
+      "submitted_tasks": 3080,
       "worker_count": 2
     },
     "incorrect_results": 0,
@@ -25,25 +25,25 @@
     "max_observed_child_count": 1,
     "post_crash_success": true,
     "post_recycle_success": true,
-    "rejected_operations": 1,
-    "shutdown_seconds": 0.001045667002472328,
-    "timestamp_utc": "2026-07-28T16:44:28.132569+00:00"
+    "rejected_operations": 300,
+    "shutdown_seconds": 0.0023170839995145798,
+    "timestamp_utc": "2026-07-28T18:33:55.010377+00:00"
   },
   "latency_seconds": {
-    "count": 211,
-    "maximum": 0.16105466700173565,
-    "median": 0.0004499589995248243,
-    "p95": 0.002878500003134832
+    "count": 3080,
+    "maximum": 0.18761679199815262,
+    "median": 0.05513964599958854,
+    "p95": 0.12741474999347702
   },
   "ok": true,
   "resources": {
     "first_window": {
       "descriptor_median": 9.0,
-      "rss_median_bytes": 123142144.0
+      "rss_median_bytes": 87916544.0
     },
     "last_window": {
-      "descriptor_median": 3.0,
-      "rss_median_bytes": 88375296.0
+      "descriptor_median": 9.0,
+      "rss_median_bytes": 88948736.0
     },
     "maximum_child_count": 1.0
   },

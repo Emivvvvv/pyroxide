@@ -39,18 +39,19 @@ count, and peak process-tree RSS.
 ## RC1 reliability evidence
 
 The five-minute run used seed 1729. First/last 60-sample process-tree medians
-were 123,142,144/88,375,296 RSS bytes and 9/3 descriptors; maximum child count
-was 1 with a configured maximum of 2. All 211 accepted operations reached one
-terminal state: 209 completed, one deliberate crash failed, and one pending
-operation was cancelled. One bounded-capacity submission was rejected.
+were 87,916,544/88,948,736 RSS bytes and 9/9 descriptors; maximum child count
+was 1 with a configured maximum of 2. All 300 one-second intervals accepted new
+work, reaching 783/1,353/1,928/2,499/3,080 accepted operations at the minute
+boundaries.
 
-Crash recovery and post-recycle work both succeeded. The two 100-task
-recycling-boundary operations took 67.784 ms and 70.157 ms, for a 70.157 ms
-maximum recycling latency. Shutdown took 1.046 ms and left no queued, running,
-or active tasks. The result retains RC1's 100-task worker lifetime while
-documenting synchronous replacement latency. All terminal latencies were
-recorded before the final sample in this run, so its final tail list was empty;
-the summary includes that final list when drain work completes after sampling.
+All 3,080 accepted operations reached one terminal state: 2,480 completed, 300
+deliberate crashes failed, and 300 pending operations were cancelled. There
+were 300 bounded-capacity rejections. Crash recovery and post-recycle work
+succeeded throughout. The two initial 100-task recycling-boundary operations
+took 68.861 ms and 69.144 ms, for a 69.144 ms maximum recycling latency.
+Shutdown took 2.317 ms and left no queued, running, or active tasks. All
+terminal latencies were recorded before the final sample, so its final tail
+list was empty.
 
 `reliability/RUN.json` records the exact command and SHA-256 hashes for the
 ignored raw JSONL and tracked summary. This synthetic five-minute observation
