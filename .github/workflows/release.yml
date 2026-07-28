@@ -9,8 +9,85 @@ permissions:
   contents: read
 
 jobs:
+  validate-release:
+    name: Validate release tag and versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
+        with:
+          python-version: '3.11'
+
+      - name: Match tag to package versions
+        run: |
+          python - <<'PY'
+          import ast
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          with Path("pyproject.toml").open("rb") as stream:
+              python_version = tomllib.load(stream)["project"]["version"]
+          with Path("Cargo.toml").open("rb") as stream:
+              rust_version = tomllib.load(stream)["package"]["version"]
+
+          module = ast.parse(Path("python/pyroxide/__init__.py").read_text())
+          runtime_version = next(
+              ast.literal_eval(node.value)
+              for node in module.body
+              if isinstance(node, ast.Assign)
+              and any(
+                  isinstance(target, ast.Name) and target.id == "__version__"
+                  for target in node.targets
+              )
+          )
+          rust_as_python = re.sub(r"-(a|b|rc)\.(\d+)$", r"\1\2", rust_version)
+          expected_tag = f"v{python_version}"
+
+          if os.environ["GITHUB_REF_NAME"] != expected_tag:
+              raise SystemExit(
+                  f"tag {os.environ['GITHUB_REF_NAME']!r} must equal {expected_tag!r}"
+              )
+          if runtime_version != python_version or rust_as_python != python_version:
+              raise SystemExit(
+                  "version mismatch: "
+                  f"pyproject={python_version}, runtime={runtime_version}, Cargo={rust_version}"
+              )
+          print(f"validated {expected_tag}")
+          PY
+
+  source-verification:
+    name: Verify tagged source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
+        with:
+          python-version: '3.10'
+
+      - uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: "1.86.0"
+
+      - name: Sync development dependencies
+        run: uv sync --extra dev
+
+      - name: Build native extension
+        run: uv run maturin develop
+
+      - name: Test tagged source
+        run: |
+          uv run python -m pytest -q
+          cargo test --all-targets --quiet
+
   build-wheels:
     name: Build Wheels (${{ matrix.target }})
+    needs: [validate-release, source-verification]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -19,49 +96,108 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-15-intel
           - target: aarch64-apple-darwin
-            os: macos-latest
+            os: macos-14
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
         with:
-          python-version: '3.11'
+          python-version: '3.10'
 
       - name: Build Wheels
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@423a6347767a8b16e65c2a7a7042e4a921528da8 # v1
         with:
           target: ${{ matrix.target }}
           command: build
           args: --release --out dist
           sccache: 'true'
 
+      - name: Smoke-test wheel
+        run: |
+          python -c "import glob, subprocess, sys; wheels = glob.glob('dist/*.whl'); assert len(wheels) == 1, wheels; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', wheels[0]])"
+          python -c "import pyroxide; from pyroxide import task; identity = task(lambda value: value); assert identity('wheel-smoke').result() == 'wheel-smoke'; pyroxide.shutdown()"
+
       - name: Upload Wheels Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wheels-${{ matrix.target }}
           path: dist
 
+  build-freethreaded-wheels:
+    name: Build free-threaded wheel (${{ matrix.platform }})
+    needs: [validate-release, source-verification]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            os: ubuntu-latest
+            python: .venv/bin/python
+          - platform: linux-aarch64
+            os: ubuntu-24.04-arm
+            python: .venv/bin/python
+          - platform: macos-x86_64
+            os: macos-15-intel
+            python: .venv/bin/python
+          - platform: macos-arm64
+            os: macos-14
+            python: .venv/bin/python
+          - platform: windows-x86_64
+            os: windows-latest
+            python: .venv/Scripts/python.exe
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: "1.86.0"
+
+      - name: Install Python 3.14t
+        run: |
+          uv python install 3.14t
+          uv venv --python 3.14t .venv
+
+      - name: Build free-threaded wheel
+        run: uv run --python "${{ matrix.python }}" --with maturin maturin build --release --out dist --interpreter "${{ matrix.python }}"
+
+      - name: Smoke-test free-threaded wheel
+        shell: bash
+        run: |
+          wheel=$(find dist -maxdepth 1 -name '*.whl' -print -quit)
+          test -n "$wheel"
+          uv pip install --python "${{ matrix.python }}" "$wheel"
+          "${{ matrix.python }}" -c "import pyroxide; from pyroxide import task; identity = task(lambda value: value); assert identity('wheel-smoke').result() == 'wheel-smoke'; pyroxide.shutdown()"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wheels-cp314t-${{ matrix.platform }}
+          path: dist
+
   build-sdist:
     name: Build Source Distribution
+    needs: [validate-release, source-verification]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Build sdist
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@423a6347767a8b16e65c2a7a7042e4a921528da8 # v1
         with:
           command: sdist
           args: --out dist
 
       - name: Upload sdist Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sdist
           path: dist
@@ -69,19 +205,19 @@ jobs:
   publish:
     name: Publish to PyPI
     runs-on: ubuntu-latest
-    needs: [build-wheels, build-sdist]
+    environment: pypi
+    needs: [validate-release, source-verification, build-wheels, build-freethreaded-wheels, build-sdist]
     permissions:
       id-token: write
       contents: read
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
 
       - name: Publish to PyPI
-        uses: PyO3/maturin-action@v1
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
         with:
-          command: upload
-          args: --skip-existing dist/*
+          packages-dir: dist/

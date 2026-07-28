@@ -1,6 +1,6 @@
 [package]
 name = "pyroxide"
-version = "0.10.0"
+version = "1.0.0-rc.1"
 authors = ["Emirhan TALA <tala.emirhan@gmail.com>"]
 description = "A bounded background task engine for Python, powered by Rust."
 edition = "2024"

@@ -2,59 +2,178 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
+
+permissions:
+  contents: read
 
 jobs:
-  lint-format:
-    name: Lint & Format (Rust)
+  quality:
+    name: Rust and Python quality
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
         with:
+          python-version: "3.10"
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: "1.86.0"
           components: rustfmt, clippy
 
-      - name: Rust Format Check
+      - name: Install Python quality tools
+        run: python -m pip install ruff==0.16.0 mypy==2.3.0
+
+      - name: Ruff
+        run: ruff check python tests examples
+
+      - name: Mypy
+        run: mypy python/pyroxide
+
+      - name: Rust format
         run: cargo fmt --all -- --check
 
-      - name: Cargo Clippy Check
+      - name: Rust Clippy
         run: cargo clippy --all-targets -- -D warnings
 
-  test:
-    name: Run Verification Tests
-    runs-on: ubuntu-latest
+      - name: Rust tests
+        run: cargo test --all-targets
+
+  test-matrix:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python-version }}
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: "1.86.0"
 
-      - name: Install dependencies
+      - name: Build and install
         run: |
           python -m pip install --upgrade pip
-          pip install maturin pyarrow pytest
+          python -m pip install maturin pytest
+          python -m pip install -e .
 
-      - name: Build Pyroxide (Maturin)
-        run: pip install -e .
-
-      - name: Run Pytest Test Suite
+      - name: Test
         run: python -m pytest
 
-      - name: Run Features Examples
-        run: |
-          export PYTHONPATH=$PYTHONPATH:$(pwd)
-          for f in examples/0*.py; do python $f; done
+  test-freethreaded:
+    name: Test free-threaded Python 3.14t
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Run Odoo PoC Simulation
+      - uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5.4.1
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: "1.86.0"
+
+      - name: Install Python 3.14t
         run: |
-          export PYTHONPATH=$PYTHONPATH:$(pwd)
-          python examples/odoo_poc/odoo_complex_simulation.py
+          uv python install 3.14t
+          uv venv --python 3.14t .venv
+          uv pip install --python .venv/bin/python maturin pytest
+
+      - name: Build and test
+        run: |
+          .venv/bin/maturin develop
+          .venv/bin/python -m pytest
+
+  wheel-smoke-and-coverage:
+    name: Wheel smoke test and coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
+        with:
+          python-version: "3.10"
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: "1.86.0"
+
+      - name: Build wheel and sdist
+        run: |
+          python -m pip install maturin pytest pytest-cov
+          python -m maturin build --release --out dist
+          python -m maturin sdist --out dist
+
+      - name: Test clean wheel installation
+        run: |
+          python -m venv wheel-env
+          wheel-env/bin/python -m pip install dist/*.whl
+          wheel-env/bin/python -c "import pyroxide; assert pyroxide.__version__ == '1.0.0rc1'"
+
+      - name: Generate coverage report
+        run: |
+          python -m pip install -e .
+          python -m pytest --cov=pyroxide --cov-report=xml
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-and-package-artifacts
+          path: |
+            coverage.xml
+            dist/
+
+  docs:
+    name: Build documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
+        with:
+          python-version: "3.10"
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: "1.86.0"
+
+      - uses: peaceiris/actions-mdbook@948b432f0fddb61de0806565a7222b36e12e2ee3 # v2.0.0
+        with:
+          mdbook-version: "0.5.4"
+
+      - name: Generate API and book
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install maturin pdoc
+          PYTHON_BIN=.venv/bin/python MATURIN_BIN=.venv/bin/maturin scripts/generate_docs.sh
+
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
+        with:
+          python-version: "3.10"
+
+      - name: Audit Python dependencies
+        run: |
+          python -m pip install pip-audit
+          pip-audit . --strict
+
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

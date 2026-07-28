@@ -48,7 +48,7 @@ from .wasm import (
 )
 from .workflows import TaskGroup, group
 
-__version__ = "0.10.0"
+__version__ = "1.0.0rc1"
 
 
 def shutdown(wait: bool = True, cancel_pending: bool = False) -> None:
