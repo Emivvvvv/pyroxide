@@ -114,6 +114,29 @@ Odoo 19 and pinned Odoo master (“Odoo 20 preview”) could not install their
 official `libsass==0.22.0` requirement on Python 3.14. No 3.14 Odoo timing was
 published and no unpinned dependency was substituted.
 
+## RC1 reliability observation
+
+The fixed-seed RC1 controller ran for five minutes with seed 1729 and recorded
+301 ordered once-per-second samples. The first and last 60-sample windows had
+process-tree RSS medians of 123,666,432 and 88,588,288 bytes, while descriptor
+medians fell from 9 to 3. The maximum observed child count was 1 against a
+configured bound of 2; the later four one-minute RSS medians ranged from
+88,375,296 to 88,588,288 bytes with descriptors fixed at 3.
+
+Terminal accounting was exact: 209 accepted operations became 207 completions,
+one expected crash failure, and one expected cancellation; one saturation
+submission was rejected. Isolated work succeeded after the deliberate crash
+and after both 100-task recycling boundaries. The two synchronous recycling
+operations took 70.480 ms and 68.926 ms, so the observed maximum recycling
+latency was 70.480 ms. Shutdown completed in 1.844 ms with no queued, running,
+or active tasks.
+
+Recycling remained correct and bounded in this observation, so RC1 retains the
+100-task default and documents its synchronous replacement latency. This is a
+synthetic embedded-engine observation, not a hard leak threshold, an HTTP/Odoo
+service benchmark, or evidence of final long-duration stability. The
+configurable eight-hour final soak remains separate.
+
 Canonical summaries, sample counts, environment metadata, native/WASM
 boundaries, distributed tracks, and Odoo results are versioned in
 `benchmark_results/`. Raw observations, logs, and invalid runs are generated
@@ -141,8 +164,9 @@ plans; benchmark the deployed platform with representative task sizes and queue
 pressure.
 
 The generic runner refuses the reliability manifest. A one-task throughput cell
-is not a 30-minute or four-hour soak, so reliability evidence must come from a
-dedicated duration-aware harness.
+is not a duration-aware soak, so reliability evidence must come from the
+dedicated reliability harness. The RC profile declares a five-minute evidence
+run and a separately configurable eight-hour final soak.
 
 ## Production evaluation
 

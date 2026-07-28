@@ -30,16 +30,16 @@ _PROFILE_FIELDS = {"id", "track", "output_label", "comparison_scope"}
 _REQUIREMENT_FIELDS = {
     "calibrated_operations",
     "complete_checksums",
+    "final_soak_hours",
     "fixed_affinity",
     "fresh_process_blocks",
     "latency_observations",
     "macro_observations",
     "post_import_gil",
     "power_metadata",
-    "rc_soak_hours",
+    "rc_soak_minutes",
     "sample_seconds_max",
     "sample_seconds_min",
-    "soak_minutes",
 }
 _MATRIX_FIELDS = {"payload_bytes", "python_versions", "task_grains", "worker_levels"}
 _AVAILABILITY_FIELDS = {"extension_compatibility", "optional_backends"}

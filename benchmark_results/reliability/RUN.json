@@ -1,0 +1,30 @@
+{
+  "artifacts": {
+    "rc1-5m.jsonl": {
+      "sha256": "5a0e69c19f1909caae9ce3e091dc7c2ebb4fae7cf0ef23a0a6e37af64fd9206f",
+      "tracked": false
+    },
+    "rc1-5m.summary.json": {
+      "sha256": "f80ea04ffcf4dc0fe3831faf283bae5ac379e3bcb954a3f563c05f1223748247",
+      "tracked": true
+    }
+  },
+  "command": [
+    "uv",
+    "run",
+    "python",
+    "-m",
+    "examples.benchmarks.reliability_runner",
+    "--duration-seconds",
+    "300",
+    "--sample-interval-seconds",
+    "1",
+    "--seed",
+    "1729",
+    "--output",
+    "benchmark_results/reliability/rc1-5m.jsonl",
+    "--summary",
+    "benchmark_results/reliability/rc1-5m.summary.json"
+  ],
+  "schema_version": 1
+}

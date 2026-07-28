@@ -8,8 +8,8 @@ comparison_scope = "never_merge_with_steady_state_throughput"
 
 [requirements]
 fresh_process_blocks = 5
-soak_minutes = 30
-rc_soak_hours = 4
+rc_soak_minutes = 5
+final_soak_hours = 8
 
 [availability]
 optional_backends = {}
@@ -37,12 +37,6 @@ payload_bytes = 1024
 
 [[workloads]]
 id = "recycling"
-kind = "trivial"
-tasks_per_sample = 1
-payload_bytes = 1024
-
-[[workloads]]
-id = "exploratory-soak"
 kind = "trivial"
 tasks_per_sample = 1
 payload_bytes = 1024
@@ -91,15 +85,7 @@ random_seed = 1729
 repetitions = 1
 
 [[experiments]]
-id = "exploratory-soak-30m"
-workload = "exploratory-soak"
-backend = "pyroxide"
-profile = "reliability"
-random_seed = 1729
-repetitions = 1
-
-[[experiments]]
-id = "rc-soak-4h"
+id = "rc-soak-5m"
 workload = "rc-soak"
 backend = "pyroxide"
 profile = "reliability"

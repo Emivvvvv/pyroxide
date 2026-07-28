@@ -115,11 +115,15 @@ def test_exploratory_paper_and_reliability_profiles_have_required_sample_boundar
         "macro_observations": 30,
     }
     assert profile_manifest.count_cells(paper) == 8
+    assert soak["requirements"] == {
+        "fresh_process_blocks": 5,
+        "rc_soak_minutes": 5,
+        "final_soak_hours": 8,
+    }
     assert {experiment["id"] for experiment in soak["experiments"]} == {
         "cancellation-reliability",
         "crash-reliability",
-        "exploratory-soak-30m",
-        "rc-soak-4h",
+        "rc-soak-5m",
         "recycling-reliability",
         "saturation-reliability",
     }

@@ -30,10 +30,31 @@ invalid runs are excluded from the versioned summaries.
 | `distributed/python-3.14-2026-07-27/brokers.summary.json` | Redis-backed Celery and Dramatiq | 30 blocks/cell |
 | `odoo/odoo19-py313.json` | Odoo 19 steady compute-only matched batch | 30 blocks/implementation |
 | `odoo/odoo19-py313-recycling.json` | same track with 100-task worker recycling | 30 blocks/implementation |
+| `reliability/rc1-5m.summary.json` | fixed-seed bounded RC1 reliability controller | 301 once-per-second samples |
 
 The headline outcomes are in the project README and book. Summary files record
 median, deterministic 95% bootstrap interval, p95, MAD, IQR, throughput, sample
 count, and peak process-tree RSS.
+
+## RC1 reliability evidence
+
+The five-minute run used seed 1729. First/last 60-sample process-tree medians
+were 123,666,432/88,588,288 RSS bytes and 9/3 descriptors; maximum child count
+was 1 with a configured maximum of 2. All 209 accepted operations reached one
+terminal state: 207 completed, one deliberate crash failed, and one pending
+operation was cancelled. One bounded-capacity submission was rejected.
+
+Crash recovery and post-recycle work both succeeded. The two 100-task
+recycling-boundary operations took 70.480 ms and 68.926 ms, for a 70.480 ms
+maximum recycling latency. Shutdown took 1.844 ms and left no queued, running,
+or active tasks. The result retains RC1's 100-task worker lifetime while
+documenting synchronous replacement latency.
+
+`reliability/RUN.json` records the exact command and SHA-256 hashes for the
+ignored raw JSONL and tracked summary. This synthetic five-minute observation
+does not establish a hard leak threshold, HTTP/Odoo service performance, or
+final long-duration stability; the configurable eight-hour final soak is a
+separate release activity.
 
 ## Excluded evidence
 

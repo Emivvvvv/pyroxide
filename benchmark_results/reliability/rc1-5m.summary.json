@@ -1,0 +1,50 @@
+{
+  "assertion_failures": [],
+  "final": {
+    "accepted_operations": 209,
+    "assertion_failure_count": 0,
+    "cancelled_operations": 1,
+    "completed_operations": 207,
+    "elapsed_seconds": 300.03080449999834,
+    "failed_operations": 1,
+    "final_engine": {
+      "active_tasks": 0,
+      "cancelled_tasks": 1,
+      "completed_tasks": 207,
+      "failed_tasks": 1,
+      "max_processes": 2,
+      "queue_capacity": 4,
+      "queued_tasks": 0,
+      "rejected_tasks": 1,
+      "running_tasks": 0,
+      "submitted_tasks": 209,
+      "worker_count": 2
+    },
+    "incorrect_results": 0,
+    "max_observed_child_count": 1,
+    "post_crash_success": true,
+    "post_recycle_success": true,
+    "rejected_operations": 1,
+    "shutdown_seconds": 0.001844458998675691,
+    "timestamp_utc": "2026-07-28T14:03:27.445623+00:00"
+  },
+  "latency_seconds": {
+    "count": 209,
+    "maximum": 0.1274615830006951,
+    "median": 0.00042491700151003897,
+    "p95": 0.001300874999287771
+  },
+  "ok": true,
+  "resources": {
+    "first_window": {
+      "descriptor_median": 9.0,
+      "rss_median_bytes": 123666432.0
+    },
+    "last_window": {
+      "descriptor_median": 3.0,
+      "rss_median_bytes": 88588288.0
+    },
+    "maximum_child_count": 1.0
+  },
+  "sample_count": 301
+}
