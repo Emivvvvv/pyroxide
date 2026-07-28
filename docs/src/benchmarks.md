@@ -118,18 +118,23 @@ published and no unpinned dependency was substituted.
 
 The fixed-seed RC1 controller ran for five minutes with seed 1729 and recorded
 301 ordered once-per-second samples. The first and last 60-sample windows had
-process-tree RSS medians of 123,666,432 and 88,588,288 bytes, while descriptor
+process-tree RSS medians of 123,142,144 and 88,375,296 bytes, while descriptor
 medians fell from 9 to 3. The maximum observed child count was 1 against a
 configured bound of 2; the later four one-minute RSS medians ranged from
-88,375,296 to 88,588,288 bytes with descriptors fixed at 3.
+88,162,304 to 88,375,296 bytes with descriptors fixed at 3.
 
-Terminal accounting was exact: 209 accepted operations became 207 completions,
+Terminal accounting was exact: 211 accepted operations became 209 completions,
 one expected crash failure, and one expected cancellation; one saturation
 submission was rejected. Isolated work succeeded after the deliberate crash
 and after both 100-task recycling boundaries. The two synchronous recycling
-operations took 70.480 ms and 68.926 ms, so the observed maximum recycling
-latency was 70.480 ms. Shutdown completed in 1.844 ms with no queued, running,
+operations took 67.784 ms and 70.157 ms, so the observed maximum recycling
+latency was 70.157 ms. Shutdown completed in 1.046 ms with no queued, running,
 or active tasks.
+
+All 211 terminal latencies were drained into sample records before the final
+sample. The final latency list was therefore empty in this run; when shutdown
+drain work completes after the final sample, the summary includes that final
+tail list as well.
 
 Recycling remained correct and bounded in this observation, so RC1 retains the
 100-task default and documents its synchronous replacement latency. This is a
