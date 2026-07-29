@@ -1,8 +1,8 @@
 use crate::config::get_wasm_tick_ms;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use wasmtime::{Engine, Module};
 
 pub(crate) struct WasmState {
@@ -79,7 +79,7 @@ pub(crate) fn execute_wasm_guest(
     store.limiter(|s| &mut s.limits);
 
     let tick_ms = get_wasm_tick_ms();
-    let ticks = (timeout_ms / tick_ms).max(1);
+    let ticks = timeout_ms.div_ceil(tick_ms).max(1);
     store.set_epoch_deadline(ticks);
 
     let linker = wasmtime::Linker::new(engine);
@@ -140,7 +140,9 @@ pub(crate) fn execute_wasm_guest(
     if let Some(check) = cancel_check {
         if check() {
             let _ = dealloc_fn.call(&mut store, (guest_ptr, input_len));
-            let _ = dealloc_fn.call(&mut store, (out_ptr, out_len));
+            if !ranges_overlap(guest_ptr, input_len, out_ptr, out_len) {
+                let _ = dealloc_fn.call(&mut store, (out_ptr, out_len));
+            }
             return Err("Task cancelled".to_string());
         }
     }
@@ -151,7 +153,18 @@ pub(crate) fn execute_wasm_guest(
         .map_err(|e| format!("Failed to read from WASM memory: {e}"))?;
 
     let _ = dealloc_fn.call(&mut store, (guest_ptr, input_len));
-    let _ = dealloc_fn.call(&mut store, (out_ptr, out_len));
+    if !ranges_overlap(guest_ptr, input_len, out_ptr, out_len) {
+        let _ = dealloc_fn.call(&mut store, (out_ptr, out_len));
+    }
 
     Ok(output_bytes)
+}
+
+fn ranges_overlap(left_ptr: i32, left_len: i32, right_ptr: i32, right_len: i32) -> bool {
+    let left_start = i64::from(left_ptr);
+    let left_end = left_start + i64::from(left_len);
+    let right_start = i64::from(right_ptr);
+    let right_end = right_start + i64::from(right_len);
+
+    left_start < right_end && right_start < left_end
 }

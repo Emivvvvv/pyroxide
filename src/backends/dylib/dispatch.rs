@@ -1,3 +1,12 @@
+//! Prepared primitive FFI dispatch for zero through eight arguments.
+//!
+//! # Safety
+//!
+//! Every `invokeN` caller must provide a non-null function pointer whose C ABI
+//! argument and return types exactly match the resolved `FfiArg` and
+//! `FfiReturn` parameters. The dispatcher validates the payload length before
+//! transmuting or calling the pointer.
+
 use super::ffi::{FfiArg, FfiReturn, FfiType, ParsedFfiSignature};
 
 pub(crate) type FfiThunk =
@@ -13,6 +22,8 @@ pub(crate) unsafe fn invoke0<R: FfiReturn>(
             payload.len()
         ));
     }
+    // SAFETY: the resolver selected this thunk only for the exact C ABI
+    // argument and return types, and payload decoding consumed every byte.
     let res = unsafe {
         let f: unsafe extern "C" fn() -> R = std::mem::transmute(function_ptr);
         f()
@@ -32,6 +43,8 @@ pub(crate) unsafe fn invoke1<A: FfiArg, R: FfiReturn>(
             payload.len()
         ));
     }
+    // SAFETY: the resolver selected this thunk only for the exact C ABI
+    // argument and return types, and payload decoding consumed every byte.
     let res = unsafe {
         let f: unsafe extern "C" fn(A) -> R = std::mem::transmute(function_ptr);
         f(a)
@@ -52,6 +65,8 @@ pub(crate) unsafe fn invoke2<A: FfiArg, B: FfiArg, R: FfiReturn>(
             payload.len()
         ));
     }
+    // SAFETY: the resolver selected this thunk only for the exact C ABI
+    // argument and return types, and payload decoding consumed every byte.
     let res = unsafe {
         let f: unsafe extern "C" fn(A, B) -> R = std::mem::transmute(function_ptr);
         f(a, b)
@@ -73,6 +88,8 @@ pub(crate) unsafe fn invoke3<A: FfiArg, B: FfiArg, C: FfiArg, R: FfiReturn>(
             payload.len()
         ));
     }
+    // SAFETY: the resolver selected this thunk only for the exact C ABI
+    // argument and return types, and payload decoding consumed every byte.
     let res = unsafe {
         let f: unsafe extern "C" fn(A, B, C) -> R = std::mem::transmute(function_ptr);
         f(a, b, c)
@@ -95,6 +112,8 @@ pub(crate) unsafe fn invoke4<A: FfiArg, B: FfiArg, C: FfiArg, D: FfiArg, R: FfiR
             payload.len()
         ));
     }
+    // SAFETY: the resolver selected this thunk only for the exact C ABI
+    // argument and return types, and payload decoding consumed every byte.
     let res = unsafe {
         let f: unsafe extern "C" fn(A, B, C, D) -> R = std::mem::transmute(function_ptr);
         f(a, b, c, d)
@@ -125,6 +144,8 @@ pub(crate) unsafe fn invoke5<
             payload.len()
         ));
     }
+    // SAFETY: the resolver selected this thunk only for the exact C ABI
+    // argument and return types, and payload decoding consumed every byte.
     let res = unsafe {
         let f: unsafe extern "C" fn(A, B, C, D, E) -> R = std::mem::transmute(function_ptr);
         f(a, b, c, d, e)
@@ -157,6 +178,8 @@ pub(crate) unsafe fn invoke6<
             payload.len()
         ));
     }
+    // SAFETY: the resolver selected this thunk only for the exact C ABI
+    // argument and return types, and payload decoding consumed every byte.
     let res = unsafe {
         let func: unsafe extern "C" fn(A, B, C, D, E, F) -> R = std::mem::transmute(function_ptr);
         func(a, b, c, d, e, f_arg)
@@ -191,6 +214,8 @@ pub(crate) unsafe fn invoke7<
             payload.len()
         ));
     }
+    // SAFETY: the resolver selected this thunk only for the exact C ABI
+    // argument and return types, and payload decoding consumed every byte.
     let res = unsafe {
         let func: unsafe extern "C" fn(A, B, C, D, E, F, G) -> R =
             std::mem::transmute(function_ptr);
@@ -228,6 +253,8 @@ pub(crate) unsafe fn invoke8<
             payload.len()
         ));
     }
+    // SAFETY: the resolver selected this thunk only for the exact C ABI
+    // argument and return types, and payload decoding consumed every byte.
     let res = unsafe {
         let func: unsafe extern "C" fn(A, B, C, D, E, F, G, H) -> R =
             std::mem::transmute(function_ptr);

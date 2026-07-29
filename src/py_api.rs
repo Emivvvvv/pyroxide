@@ -1,7 +1,5 @@
 use crate::async_waker;
-use crate::backends::dylib::{
-    register_dylib_internal, unregister_dylib_internal,
-};
+use crate::backends::dylib::{register_dylib_internal, unregister_dylib_internal};
 use crate::backends::wasm::{get_wasm_module, register_wasm_module_internal};
 use crate::broker::{self, get_engine_stats, get_task_result, get_task_status, wait_task};
 use crate::config::{
@@ -9,7 +7,8 @@ use crate::config::{
     set_global_wasm_timeout_ms_internal,
 };
 use crate::registry::{
-    get_dylib_paths, next_registry_generation, DYLIB_PATHS, WASM_BYTES, RegistryEntry,
+    DYLIB_PATHS, DylibRegistration, RegistryEntry, WASM_BYTES, get_dylib_paths,
+    next_registry_generation,
 };
 
 use object::Object;
@@ -42,11 +41,11 @@ pub(crate) fn register_dylib(
     broker::check_engine_process()?;
     register_dylib_internal(name.clone(), library_path.clone(), free_fn_name.clone())
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
-    let paths = DYLIB_PATHS.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()));
-    let val_to_store = if let Some(ref free_name) = free_fn_name {
-        format!("{library_path};{free_name}")
-    } else {
-        library_path
+    let paths =
+        DYLIB_PATHS.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+    let val_to_store = DylibRegistration {
+        library_path,
+        free_fn_name,
     };
     paths
         .write()
@@ -285,7 +284,11 @@ pub(crate) fn get_status(task_id: usize) -> PyResult<String> {
 
 #[pyfunction]
 #[pyo3(signature = (task_id, timeout_ms=None))]
-pub(crate) fn wait_status(py: Python<'_>, task_id: usize, timeout_ms: Option<u64>) -> PyResult<String> {
+pub(crate) fn wait_status(
+    py: Python<'_>,
+    task_id: usize,
+    timeout_ms: Option<u64>,
+) -> PyResult<String> {
     broker::check_engine_process()?;
     let res = py.detach(move || wait_task(task_id, timeout_ms));
     match res {
@@ -387,51 +390,19 @@ pub(crate) fn get_dylib_exports(plugin_name: String) -> PyResult<Vec<String>> {
 #[pyfunction]
 pub(crate) fn get_dylib_metadata(name: &str) -> PyResult<Option<String>> {
     broker::check_engine_process()?;
-    let registry = crate::backends::dylib::DYLIB_PLUGINS.get().ok_or_else(|| {
-        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Dylib registry not initialized")
-    })?;
-    let plugin = {
-        let map = registry.read().map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                "Registry lock poisoned: {e}"
-            ))
-        })?;
-        match map.get(name) {
-            Some(p) => std::sync::Arc::clone(p),
-            None => return Ok(None),
-        }
-    };
-
-    unsafe {
-        let symbol: Result<
-            libloading::Symbol<unsafe extern "C" fn() -> *const std::ffi::c_char>,
-            _,
-        > = plugin.lib.get(b"pyroxide_metadata");
-
-        match symbol {
-            Ok(sym) => {
-                let ptr = sym();
-                if ptr.is_null() {
-                    Ok(None)
-                } else {
-                    let c_str = std::ffi::CStr::from_ptr(ptr);
-                    let s = c_str.to_string_lossy().into_owned();
-                    Ok(Some(s))
-                }
-            }
-            Err(_) => Ok(None),
-        }
-    }
+    crate::backends::dylib::get_dylib_metadata_internal(name)
+        .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
 }
 
 #[pyfunction]
 pub(crate) fn get_dylib_path(name: String) -> PyResult<Option<String>> {
     broker::check_engine_process()?;
-    let paths = DYLIB_PATHS.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+    let paths =
+        DYLIB_PATHS.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()));
     let map = paths
         .read()
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-    Ok(map.get(&name).map(|entry| entry.value.clone()))
+    Ok(map.get(&name).map(|entry| entry.value.library_path.clone()))
 }
 
 #[pyfunction]
@@ -473,8 +444,8 @@ pub(crate) fn shutdown_engine(py: Python<'_>, wait: bool, cancel_pending: bool) 
 
 #[cfg(unix)]
 #[pyfunction]
-pub(crate) fn register_async_waker(fd: std::os::fd::RawFd) {
-    async_waker::set_async_waker_fd(fd);
+pub(crate) fn register_async_waker(fd: std::os::fd::RawFd) -> PyResult<()> {
+    async_waker::set_async_waker_fd(fd).map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
 #[cfg(unix)]

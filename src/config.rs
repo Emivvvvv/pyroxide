@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 pub(crate) struct GlobalConfig {
     pub(crate) wasm_memory_limit_bytes: AtomicUsize,

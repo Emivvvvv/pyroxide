@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone)]
 pub(crate) struct RegistryEntry<T> {
@@ -27,9 +27,17 @@ pub(crate) fn registry_sync<T: Clone>(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DylibRegistration {
+    pub(crate) library_path: String,
+    pub(crate) free_fn_name: Option<String>,
+}
+
 static NEXT_REGISTRY_GENERATION: AtomicU64 = AtomicU64::new(1);
-pub(crate) static DYLIB_PATHS: OnceLock<RwLock<HashMap<String, RegistryEntry<String>>>> = OnceLock::new();
-pub(crate) static WASM_BYTES: OnceLock<RwLock<HashMap<String, RegistryEntry<Vec<u8>>>>> = OnceLock::new();
+pub(crate) static DYLIB_PATHS: OnceLock<RwLock<HashMap<String, RegistryEntry<DylibRegistration>>>> =
+    OnceLock::new();
+pub(crate) static WASM_BYTES: OnceLock<RwLock<HashMap<String, RegistryEntry<Vec<u8>>>>> =
+    OnceLock::new();
 
 pub(crate) fn next_registry_generation() -> u64 {
     NEXT_REGISTRY_GENERATION.fetch_add(1, Ordering::Relaxed)
@@ -41,11 +49,11 @@ pub(crate) fn get_dylib_paths() -> HashMap<String, String> {
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
-        .map(|(name, entry)| (name.clone(), entry.value.clone()))
+        .map(|(name, entry)| (name.clone(), entry.value.library_path.clone()))
         .collect()
 }
 
-pub(crate) fn get_dylib_registrations() -> HashMap<String, RegistryEntry<String>> {
+pub(crate) fn get_dylib_registrations() -> HashMap<String, RegistryEntry<DylibRegistration>> {
     DYLIB_PATHS
         .get_or_init(|| RwLock::new(HashMap::new()))
         .read()
@@ -64,7 +72,7 @@ pub(crate) fn get_wasm_registrations() -> HashMap<String, RegistryEntry<Vec<u8>>
 pub(crate) fn get_dylib_registration_sync(
     name: &str,
     known_generation: Option<u64>,
-) -> RegistrySync<String> {
+) -> RegistrySync<DylibRegistration> {
     let registrations = DYLIB_PATHS
         .get_or_init(|| RwLock::new(HashMap::new()))
         .read()

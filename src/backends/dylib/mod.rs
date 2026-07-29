@@ -2,7 +2,7 @@ pub(crate) mod dispatch;
 pub(crate) mod ffi;
 
 use crate::config::{get_max_native_output_bytes, validate_native_output_len};
-use dispatch::{resolve_ffi_thunk, FfiThunk};
+use dispatch::{FfiThunk, resolve_ffi_thunk};
 use ffi::{ParsedFfiSignature, SignatureCode};
 
 use std::collections::HashMap;
@@ -23,7 +23,8 @@ pub(crate) struct DylibPlugin {
     pub(crate) ffi_call_cache: RwLock<HashMap<String, HashMap<SignatureCode, PreparedFfiCall>>>,
 }
 
-pub(crate) static DYLIB_PLUGINS: OnceLock<RwLock<HashMap<String, Arc<DylibPlugin>>>> = OnceLock::new();
+pub(crate) static DYLIB_PLUGINS: OnceLock<RwLock<HashMap<String, Arc<DylibPlugin>>>> =
+    OnceLock::new();
 
 pub type PluginRunFn =
     unsafe extern "C" fn(ptr: *const u8, len: usize, out_len: *mut usize) -> *mut u8;
@@ -41,6 +42,9 @@ pub(crate) fn register_dylib_internal(
     library_path: String,
     free_fn_name: Option<String>,
 ) -> Result<(), String> {
+    // SAFETY: loading native code is an explicit trusted-host operation. Any
+    // resolved function pointer is copied while `lib` remains owned by the
+    // stored plugin for at least as long as that pointer can be used.
     unsafe {
         let lib = libloading::Library::new(&library_path)
             .map_err(|e| format!("Failed to load dynamic library: {e}"))?;
@@ -75,6 +79,44 @@ pub(crate) fn unregister_dylib_internal(name: &str) -> Result<(), String> {
             .remove(name);
     }
     Ok(())
+}
+
+/// Retrieve the `pyroxide_metadata` string from a loaded dylib plugin.
+/// Returns `Ok(None)` if the plugin has no metadata symbol or the symbol returns NULL.
+pub(crate) fn get_dylib_metadata_internal(name: &str) -> Result<Option<String>, String> {
+    let registry = DYLIB_PLUGINS
+        .get()
+        .ok_or_else(|| "Dylib registry not initialized".to_string())?;
+    let plugin = {
+        let map = registry
+            .read()
+            .map_err(|e| format!("Registry lock poisoned: {e}"))?;
+        match map.get(name) {
+            Some(p) => Arc::clone(p),
+            None => return Ok(None),
+        }
+    };
+
+    // SAFETY: `pyroxide_metadata` is an optional native ABI symbol documented
+    // to return either null or a valid, static, NUL-terminated UTF-8 string.
+    unsafe {
+        type MetadataFn = unsafe extern "C" fn() -> *const std::ffi::c_char;
+        let symbol = match plugin.lib.get::<MetadataFn>(b"pyroxide_metadata") {
+            Ok(sym) => sym,
+            Err(_) => return Ok(None),
+        };
+
+        let ptr = symbol();
+        if ptr.is_null() {
+            return Err("pyroxide_metadata returned NULL".to_string());
+        }
+
+        let metadata = std::ffi::CStr::from_ptr(ptr)
+            .to_str()
+            .map_err(|_| "pyroxide_metadata returned invalid UTF-8".to_string())?;
+
+        Ok(Some(metadata.to_owned()))
+    }
 }
 
 pub(crate) fn execute_dylib(
@@ -122,6 +164,8 @@ pub(crate) fn execute_dylib(
             if let Some(&v) = cache.get(&key) {
                 v
             } else {
+                // SAFETY: the plugin library remains owned by `plugin`; the
+                // requested raw-task symbol must implement `PluginRunFn`.
                 unsafe {
                     let symbol: libloading::Symbol<PluginRunFn> = plugin
                         .lib
@@ -135,6 +179,8 @@ pub(crate) fn execute_dylib(
             }
         }
     };
+    // SAFETY: `run_ptr_val` was produced from a `PluginRunFn` resolved from
+    // the still-live plugin library immediately above.
     let run_fn: PluginRunFn =
         unsafe { std::mem::transmute(run_ptr_val as *const std::ffi::c_void) };
 
@@ -143,6 +189,9 @@ pub(crate) fn execute_dylib(
             .to_string()
     })?;
 
+    // SAFETY: `run_fn` and `free_fn` come from the same live plugin. The input
+    // slice is valid for the call, output length is bounded before reading,
+    // and every non-null returned allocation is released exactly once.
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
         let mut out_len: usize = 0;
         let out_ptr = (run_fn)(payload.as_ptr(), payload.len(), &mut out_len);
@@ -202,6 +251,8 @@ pub(crate) fn execute_dylib_ffi(
                 payload.len()
             ));
         }
+        // SAFETY: the cached thunk and pointer were resolved for the exact
+        // validated signature and expected payload length.
         return unsafe {
             (prepared.thunk)(prepared.function_ptr as *const std::ffi::c_void, payload)
         };
@@ -216,30 +267,18 @@ pub(crate) fn execute_dylib_ffi(
         ));
     }
 
-    unsafe {
-        let symbol: Result<
-            libloading::Symbol<unsafe extern "C" fn() -> *const std::ffi::c_char>,
-            _,
-        > = plugin.lib.get(b"pyroxide_metadata");
-        if let Ok(sym) = symbol {
-            let ptr = sym();
-            let c_str_opt = if ptr.is_null() {
-                None
-            } else {
-                std::ffi::CStr::from_ptr(ptr).to_str().ok()
-            };
-            if let Some(c_str) = c_str_opt {
-                let expected_sig = format!("{}:{}|{}", symbol_name, args_sig.join(","), ret_sig);
-                let entries: Vec<&str> = c_str.split(';').collect();
-                if !entries.contains(&expected_sig.as_str()) {
-                    return Err(format!(
-                        "FFI signature mismatch for symbol '{symbol_name}': expected '{expected_sig}', metadata contains: {c_str}"
-                    ));
-                }
-            }
+    if let Some(c_str) = get_dylib_metadata_internal(name)? {
+        let expected_sig = format!("{}:{}|{}", symbol_name, args_sig.join(","), ret_sig);
+        let entries: Vec<&str> = c_str.split(';').collect();
+        if !entries.contains(&expected_sig.as_str()) {
+            return Err(format!(
+                "FFI signature mismatch for symbol '{symbol_name}': expected '{expected_sig}', metadata contains: {c_str}"
+            ));
         }
     }
 
+    // SAFETY: the library remains owned by `plugin`; the untyped pointer is
+    // called only through a thunk resolved from validated metadata below.
     let raw_ptr = unsafe {
         let symbol: libloading::Symbol<*const std::ffi::c_void> = plugin
             .lib
@@ -273,5 +312,7 @@ pub(crate) fn execute_dylib_ffi(
             .insert(parsed_sig.encoded, prepared);
     }
 
+    // SAFETY: `thunk` was resolved from `parsed_sig`, `raw_ptr` belongs to the
+    // live plugin, and the payload length was validated above.
     unsafe { (thunk)(raw_ptr, payload) }
 }
