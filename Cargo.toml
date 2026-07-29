@@ -14,13 +14,18 @@ keywords = ["rust", "python", "pyo3", "concurrency", "task-broker"]
 
 [lib]
 # "cdylib" produces the shared library required by Python C-extensions
+# "rlib" allows cargo test to compile and link core Rust unit tests
 name = "_pyroxide"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
 
 [dependencies]
 crossbeam-channel = "0.5.16"
-# Enable the "extension-module" feature to build a native Python module
-pyo3 = { version = "0.29.0", features = ["extension-module", "abi3-py310"] }
+# Enable the "extension-module" feature conditionally via package features
+pyo3 = { version = "0.29.0", features = ["abi3-py310"] }
 slab = "0.4.12"
 wasmtime = { version = "36.0.7", default-features = false, features = ["addr2line", "cranelift", "demangle", "runtime", "std", "wat"] }
 libloading = "0.8"

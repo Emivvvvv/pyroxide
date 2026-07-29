@@ -64,7 +64,7 @@ def test_release_workflow_verifies_source_before_building_or_publishing():
     assert "uv sync --extra dev" in commands
     assert "uv run maturin develop" in commands
     assert "uv run python -m pytest -q" in commands
-    assert "cargo test --all-targets --quiet" in commands
+    assert "cargo test --no-default-features --all-targets --quiet" in commands
 
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     dev_dependencies = pyproject["project"]["optional-dependencies"]["dev"]

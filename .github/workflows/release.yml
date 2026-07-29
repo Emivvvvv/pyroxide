@@ -83,7 +83,7 @@ jobs:
       - name: Test tagged source
         run: |
           uv run python -m pytest -q
-          cargo test --all-targets --quiet
+          cargo test --no-default-features --all-targets --quiet
 
   build-wheels:
     name: Build Wheels (${{ matrix.target }})
