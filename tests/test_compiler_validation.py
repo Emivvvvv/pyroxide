@@ -76,8 +76,8 @@ def test_wasm_compiler_commands_use_configured_timeout(monkeypatch):
     failed = SimpleNamespace(returncode=1, stdout="", stderr="compile failed")
 
     with (
-        patch("pyroxide.wasm._verify_compiler"),
-        patch("pyroxide.wasm.subprocess.run", return_value=failed) as run,
+        patch("pyroxide._wasm_compile._verify_compiler"),
+        patch("pyroxide._wasm_compile.subprocess.run", return_value=failed) as run,
         pytest.raises(RuntimeError, match="C to WASM compilation failed"),
     ):
         wasm.compile_c_wasm("timeout_test", "int run(void) { return 0; }")
@@ -88,7 +88,7 @@ def test_wasm_compiler_commands_use_configured_timeout(monkeypatch):
 
 def test_wasm_lock_failure_releases_thread_lock():
     with (
-        patch("pyroxide.wasm._verify_compiler"),
+        patch("pyroxide._wasm_compile._verify_compiler"),
         patch.object(
             native_compile.CrossProcessLock,
             "acquire",

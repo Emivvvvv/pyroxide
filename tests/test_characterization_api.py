@@ -2,6 +2,7 @@ import inspect
 
 import pyroxide
 import pyroxide.plugins as plugin_api
+import pyroxide.wasm as wasm_api
 from pyroxide import (
     CompilerNotFoundError,
     ForkSafetyError,
@@ -105,6 +106,28 @@ def test_native_public_objects_retain_plugins_facade_identity():
     assert plugin_api.compile_rust is pyroxide.compile_rust
     assert plugin_api.dylib_task is pyroxide.dylib_task
     assert plugin_api.load_dylib is pyroxide.load_dylib
+
+
+def test_wasm_public_objects_retain_wasm_facade_identity():
+    public_names = [
+        "WasmProxy",
+        "compile_c_wasm",
+        "compile_rust_wasm",
+        "compile_wasm",
+        "compile_wat_wasm",
+        "compile_zig_wasm",
+        "load_wasm",
+        "register_wasm",
+        "register_wasm_wat",
+        "wasm_task",
+    ]
+    for name in public_names:
+        value = getattr(wasm_api, name)
+        assert value.__module__ == "pyroxide.wasm"
+
+    assert wasm_api.register_wasm is pyroxide.register_wasm
+    assert wasm_api.wasm_task is pyroxide.wasm_task
+    assert wasm_api.load_wasm is pyroxide.load_wasm
 
 
 def sample_func_api(x):
