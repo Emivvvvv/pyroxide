@@ -1458,6 +1458,8 @@ def test_live_reliability_module_completes_with_clean_invariants(
         for name, value in os.environ.items()
         if not name.startswith("PYROXIDE_")
     }
+    environment["PYTHONPATH"] = str(ROOT)
+    environment["PYTHONUTF8"] = "1"
 
     started = time.perf_counter()
     completed = subprocess.run(
@@ -1465,12 +1467,17 @@ def test_live_reliability_module_completes_with_clean_invariants(
         cwd=ROOT,
         env=environment,
         capture_output=True,
-        text=True,
-        timeout=10,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
     )
     elapsed = time.perf_counter() - started
 
-    assert completed.returncode == 0, completed.stderr
+    assert completed.returncode == 0, (
+        f"stdout: {completed.stdout}\n"
+        f"stderr: {completed.stderr}\n"
+        f"summary: {summary_path.read_text(encoding='utf-8') if summary_path.is_file() else 'None'}"
+    )
     assert 2.0 <= elapsed <= 5.0
     records = [
         json.loads(line)

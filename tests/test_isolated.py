@@ -58,6 +58,8 @@ def test_isolated_crash_safety():
         or "eof" in err_msg
         or "broken pipe" in err_msg
         or "connection reset" in err_msg
+        or "failed to read response" in err_msg
+        or "failed to fill whole buffer" in err_msg
     )
 
 

@@ -164,22 +164,45 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
         };
 
         let request_shm = if flags.uses_shared_memory() {
-            let shm_name = std::str::from_utf8(&payload_bytes)
-                .map_err(|e| format!("Invalid SHM name: {e}"))?
-                .to_owned();
-            Some(
-                ShmemGuard::open(&shm_name)
-                    .map_err(|e| format!("Failed to open request SHM {shm_name}: {e}"))?,
-            )
+            let shm_name = match std::str::from_utf8(&payload_bytes) {
+                Ok(name) => name.to_owned(),
+                Err(error) => {
+                    write_response(
+                        &mut stream,
+                        false,
+                        FrameFlags::inline(),
+                        format!("Invalid SHM name: {error}").as_bytes(),
+                    )?;
+                    continue;
+                }
+            };
+            match ShmemGuard::open(&shm_name) {
+                Ok(shmem) => Some(shmem),
+                Err(error) => {
+                    write_response(
+                        &mut stream,
+                        false,
+                        FrameFlags::inline(),
+                        format!("Failed to open request SHM {shm_name}: {error}").as_bytes(),
+                    )?;
+                    continue;
+                }
+            }
         } else {
             None
         };
         let actual_payload_slice: &[u8] = if let Some(guard) = request_shm.as_ref() {
-            let size = crate::config::checked_ipc_len(
+            let size = match crate::config::checked_ipc_len(
                 guard.len() as u64,
                 crate::config::get_max_ipc_frame_bytes(),
                 "shared-memory payload",
-            )?;
+            ) {
+                Ok(size) => size,
+                Err(error) => {
+                    write_response(&mut stream, false, FrameFlags::inline(), error.as_bytes())?;
+                    continue;
+                }
+            };
             &guard.as_slice()[..size]
         } else {
             &payload_bytes

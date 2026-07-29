@@ -104,6 +104,9 @@ class TaskHandle:
         fut: Optional[asyncio.Future] = None
         try:
             if sys.platform == "win32":
+                current_status = self.status
+                if current_status in ("Completed", "Failed", "Cancelled"):
+                    return self.result(timeout_sec=0, consume=consume)
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, self.wait, 10, timeout_sec)
                 return self.result(timeout_sec=0, consume=consume)

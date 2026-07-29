@@ -73,6 +73,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: "1.86.0"
+          targets: wasm32-unknown-unknown
 
       - name: Sync development dependencies
         run: uv sync --extra dev

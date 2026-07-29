@@ -634,7 +634,7 @@ fn execute_isolated_task(task_id: usize, task: &Arc<Task>) {
     }
 
     let engine = crate::broker::get_engine();
-    engine.broker.running_count.fetch_sub(1, Ordering::Relaxed);
+    engine.broker.running_count.fetch_sub(1, Ordering::Release);
 
     // Signal completion only after all observable task counters are final.
     {
@@ -871,96 +871,87 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
         .map_err(|error| format!("IPC write error: {error}"))?;
 
     // 4. Read response frame with cancellation checking
-    let _ = worker.stream.set_nonblocking(true);
-    let mut resp_header = [0u8; 10];
-    let mut header_read = 0;
+    #[cfg(unix)]
+    let (response_header, data_bytes) = {
+        let _ = worker.stream.set_nonblocking(true);
+        let mut resp_header = [0u8; 10];
+        let mut header_read = 0;
 
-    while header_read < 10 {
-        if task.cancelled.load(Ordering::Acquire) {
-            #[allow(unused_variables)]
-            let pid = worker.child.id();
-            let _ = worker.child.kill();
-            let _ = worker.child.wait();
-            #[cfg(unix)]
-            crate::process_pool::cleanup_worker_shm(pid);
-            return Err("Task cancelled".to_string());
-        }
+        while header_read < 10 {
+            if task.cancelled.load(Ordering::Acquire) {
+                let pid = worker.child.id();
+                let _ = worker.child.kill();
+                let _ = worker.child.wait();
+                crate::process_pool::cleanup_worker_shm(pid);
+                return Err("Task cancelled".to_string());
+            }
 
-        match worker.stream.read(&mut resp_header[header_read..]) {
-            Ok(0) => {
-                return Err("Worker process closed connection (crashed/EOF) on read".to_string());
-            }
-            Ok(n) => {
-                header_read += n;
-            }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                #[cfg(unix)]
-                {
+            match worker.stream.read(&mut resp_header[header_read..]) {
+                Ok(0) => {
+                    return Err(
+                        "Worker process closed connection (crashed/EOF) on read".to_string()
+                    );
+                }
+                Ok(n) => {
+                    header_read += n;
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     match wait_readable(&worker.stream, 5) {
                         Ok(_) => {}
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                         Err(e) => return Err(format!("IPC poll error: {e}")),
                     }
                 }
-                #[cfg(not(unix))]
-                {
-                    std::thread::sleep(std::time::Duration::from_micros(100));
+                Err(e) => {
+                    return Err(format!("IPC read error: {e}"));
                 }
             }
-            Err(e) => {
-                return Err(format!("IPC read error: {e}"));
+        }
+
+        let response_header = crate::ipc::protocol::ResponseHeader::decode(resp_header)?;
+        let data_len = response_header.payload_len;
+        let mut data_bytes = vec![0u8; data_len];
+        let mut data_read = 0;
+
+        while data_read < data_len {
+            if task.cancelled.load(Ordering::Acquire) {
+                let pid = worker.child.id();
+                let _ = worker.child.kill();
+                let _ = worker.child.wait();
+                crate::process_pool::cleanup_worker_shm(pid);
+                return Err("Task cancelled".to_string());
+            }
+
+            match worker.stream.read(&mut data_bytes[data_read..]) {
+                Ok(0) => {
+                    return Err(
+                        "Worker process closed connection (crashed/EOF) on read".to_string()
+                    );
+                }
+                Ok(n) => {
+                    data_read += n;
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    match wait_readable(&worker.stream, 5) {
+                        Ok(_) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(e) => return Err(format!("IPC poll error: {e}")),
+                    }
+                }
+                Err(e) => {
+                    return Err(format!("IPC read error: {e}"));
+                }
             }
         }
-    }
+        let _ = worker.stream.set_nonblocking(false);
+        (response_header, data_bytes)
+    };
 
-    let response_header = crate::ipc::protocol::ResponseHeader::decode(resp_header)?;
+    #[cfg(not(unix))]
+    let (response_header, data_bytes) = crate::ipc::frame::read_response(&mut worker.stream)?;
+
     let success = response_header.success;
     let response_flags = response_header.flags;
-    let data_len = response_header.payload_len;
-
-    let mut data_bytes = vec![0u8; data_len];
-    let mut data_read = 0;
-
-    while data_read < data_len {
-        if task.cancelled.load(Ordering::Acquire) {
-            #[allow(unused_variables)]
-            let pid = worker.child.id();
-            let _ = worker.child.kill();
-            let _ = worker.child.wait();
-            #[cfg(unix)]
-            crate::process_pool::cleanup_worker_shm(pid);
-            return Err("Task cancelled".to_string());
-        }
-
-        match worker.stream.read(&mut data_bytes[data_read..]) {
-            Ok(0) => {
-                return Err("Worker process closed connection (crashed/EOF) on read".to_string());
-            }
-            Ok(n) => {
-                data_read += n;
-            }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                #[cfg(unix)]
-                {
-                    match wait_readable(&worker.stream, 5) {
-                        Ok(_) => {}
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                        Err(e) => return Err(format!("IPC poll error: {e}")),
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    std::thread::sleep(std::time::Duration::from_micros(100));
-                }
-            }
-            Err(e) => {
-                return Err(format!("IPC read error: {e}"));
-            }
-        }
-    }
-
-    // Restore blocking mode
-    let _ = worker.stream.set_nonblocking(false);
 
     fn unpack_worker_response(
         py: Python<'_>,

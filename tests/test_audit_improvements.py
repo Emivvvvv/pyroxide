@@ -149,7 +149,7 @@ def test_compiler_cleanup():
     temp_dir_before = os.listdir(tempfile.gettempdir())
 
     lib_path = compile_c("test_cleanup_lib", c_source)
-    assert "/.pyroxide/cache/" in lib_path
+    assert "/.pyroxide/cache/" in lib_path.replace("\\", "/")
     assert os.path.exists(lib_path)
 
     # Check that temporary compiler directories have been cleaned up

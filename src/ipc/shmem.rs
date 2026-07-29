@@ -15,13 +15,24 @@ impl ShmemGuard {
     }
 
     pub(crate) fn open(os_id: &str) -> Result<Self, String> {
-        let shm = ShmemConf::new()
-            .os_id(os_id)
-            .open()
-            .map_err(|e| format!("Failed to open shared memory segment '{os_id}': {e}"))?;
-        #[cfg(unix)]
-        unlink_name(os_id);
-        Ok(Self { shm: Some(shm) })
+        let mut last_err = None;
+        for _ in 0..10 {
+            match ShmemConf::new().os_id(os_id).open() {
+                Ok(shm) => {
+                    #[cfg(unix)]
+                    unlink_name(os_id);
+                    return Ok(Self { shm: Some(shm) });
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        }
+        let e = last_err.unwrap();
+        Err(format!(
+            "Failed to open shared memory segment '{os_id}': {e}"
+        ))
     }
 
     pub(crate) fn len(&self) -> usize {

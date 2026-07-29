@@ -720,22 +720,24 @@ def _lazy(
 def _process_tree_rss_bytes() -> int:
     try:
         import psutil
-    except ModuleNotFoundError:
-        # Every boundary cell in this controller is in-process. With no child
-        # processes, the process-tree peak is the current process peak.
-        import resource
 
-        peak = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-        return peak if sys.platform == "darwin" else peak * 1024
-    process = psutil.Process()
-    processes = (process, *process.children(recursive=True))
-    total = 0
-    for observed in processes:
+        process = psutil.Process()
+        processes = (process, *process.children(recursive=True))
+        total = 0
+        for observed in processes:
+            try:
+                total += observed.memory_info().rss
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                continue
+        return total
+    except (ModuleNotFoundError, Exception):
         try:
-            total += observed.memory_info().rss
-        except (psutil.AccessDenied, psutil.NoSuchProcess):
-            continue
-    return total
+            import resource
+
+            peak = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+            return peak if sys.platform == "darwin" else peak * 1024
+        except ModuleNotFoundError:
+            return 0
 
 
 def _environment_label() -> str:

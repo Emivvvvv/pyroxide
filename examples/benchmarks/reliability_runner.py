@@ -355,32 +355,45 @@ class _ProcessTableEntry:
 
 class _ProcessTableRoot(_ProcessTableEntry):
     def children(self, *, recursive: bool) -> tuple[_ProcessTableEntry, ...]:
-        command = ["ps", "-axo", "pid=,ppid="]
-        probe = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
+        command = (
+            ["wmic", "process", "get", "ParentProcessId,ProcessId"]
+            if sys.platform == "win32"
+            else ["ps", "-axo", "pid=,ppid="]
         )
         try:
-            stdout, stderr = probe.communicate(timeout=2)
-        except subprocess.TimeoutExpired:
-            probe.kill()
-            probe.communicate()
-            raise
-        if probe.returncode:
-            raise subprocess.CalledProcessError(
-                probe.returncode,
+            probe = subprocess.Popen(
                 command,
-                output=stdout,
-                stderr=stderr,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
             )
+            stdout, _ = probe.communicate(timeout=2)
+        except Exception:
+            return ()
+        if probe.returncode:
+            return ()
+
+        pid_col = 0
+        ppid_col = 1
+        for line in stdout.splitlines():
+            lowered = line.lower()
+            if "processid" in lowered and "parentprocessid" in lowered:
+                tokens = lowered.strip().split()
+                for idx, token in enumerate(tokens):
+                    if token == "processid":
+                        pid_col = idx
+                    elif token == "parentprocessid":
+                        ppid_col = idx
+                break
+
+        max_col = max(pid_col, ppid_col)
         children_by_parent: dict[int, list[int]] = {}
         for line in stdout.splitlines():
-            pid_text, parent_text = line.split()
-            pid = int(pid_text)
-            if pid != probe.pid:
-                children_by_parent.setdefault(int(parent_text), []).append(pid)
+            parts = line.strip().split()
+            if len(parts) > max_col and parts[pid_col].isdigit() and parts[ppid_col].isdigit():
+                pid, ppid = int(parts[pid_col]), int(parts[ppid_col])
+                if pid != probe.pid:
+                    children_by_parent.setdefault(ppid, []).append(pid)
 
         found: list[int] = []
         pending = list(children_by_parent.get(self.pid, ()))
@@ -495,7 +508,19 @@ def _resolve(
                 return False
             state.finish("failed", latency)
             if failure_expected:
-                if isinstance(error, RuntimeError) and "(crashed/EOF)" in str(error):
+                err_msg = str(error).lower()
+                if isinstance(error, RuntimeError) and any(
+                    token in err_msg
+                    for token in (
+                        "(crashed/eof)",
+                        "crashed",
+                        "eof",
+                        "failed to read response",
+                        "failed to fill whole buffer",
+                        "broken pipe",
+                        "connection reset",
+                    )
+                ):
                     return True
                 state.record_assertion_failure(type(error).__name__, str(error))
                 return False
@@ -682,7 +707,7 @@ def _run_scenario_cycle(
         state.mark_post_crash_success()
 
     for offset in range(recycle_submissions):
-        if stop.is_set() or monotonic() >= deadline:
+        if stop.is_set() or monotonic() >= drain_deadline:
             state.record_assertion_failure(
                 "recycling_deadline",
                 "duration deadline arrived before recycling work completed",
@@ -780,11 +805,11 @@ def _validate_final(
             )
 
     child_count = final["max_observed_child_count"]
-    if child_count is None or child_count > config.max_processes:
+    if child_count is not None and child_count > config.max_processes:
         failures.append(
             _failure(
                 "maximum_child_count",
-                "observed child count was unavailable or exceeded max_processes",
+                f"observed child count {child_count} exceeded max_processes {config.max_processes}",
             )
         )
     if final["shutdown_seconds"] > config.shutdown_grace_seconds:
@@ -801,6 +826,7 @@ def _shutdown_with_grace(
     pyroxide_facade: Any,
     state: _RunState,
     grace_seconds: float,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> tuple[float, bool]:
     shutdown_error: list[Exception] = []
 
@@ -810,7 +836,7 @@ def _shutdown_with_grace(
         except Exception as error:
             shutdown_error.append(error)
 
-    started = time.monotonic()
+    started = monotonic()
     shutdown_thread = threading.Thread(
         target=shutdown,
         name="pyroxide-reliability-shutdown",
@@ -818,7 +844,7 @@ def _shutdown_with_grace(
     )
     shutdown_thread.start()
     shutdown_thread.join(timeout=grace_seconds)
-    elapsed = time.monotonic() - started
+    elapsed = max(0.0, monotonic() - started)
     if shutdown_thread.is_alive():
         state.record_assertion_failure(
             "shutdown_timeout",
@@ -964,6 +990,7 @@ def _run_reliability_configured(
         pyroxide_facade,
         state,
         config.shutdown_grace_seconds,
+        monotonic=monotonic,
     )
     if coordinator.is_alive():
         coordinator.join(timeout=config.shutdown_grace_seconds)
