@@ -354,7 +354,6 @@ class ReleasableBlockingHandle(FakeHandle):
 
     def result(self) -> int:
         self._released.wait()
-        time.sleep(0.02)
         return super().result()
 
 

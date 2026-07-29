@@ -97,19 +97,22 @@ def test_config_asyncio_task_safety():
     from pyroxide.config import _get_scoped_wasm_timeout_ms, scoped
 
     async def main():
-        barrier = asyncio.Barrier(2)
+        event_a = asyncio.Event()
+        event_b = asyncio.Event()
         results = {}
 
         async def coroutine_a():
             with scoped(wasm_timeout_ms=123):
-                await barrier.wait()
+                event_a.set()
+                await event_b.wait()
                 # Interleaved pause while coroutine_b runs on the same thread
                 await asyncio.sleep(0.01)
                 results["a"] = _get_scoped_wasm_timeout_ms()
 
         async def coroutine_b():
             with scoped(wasm_timeout_ms=456):
-                await barrier.wait()
+                event_b.set()
+                await event_a.wait()
                 await asyncio.sleep(0.01)
                 results["b"] = _get_scoped_wasm_timeout_ms()
 

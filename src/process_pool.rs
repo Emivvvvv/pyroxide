@@ -270,7 +270,10 @@ impl IsolatedProcessPool {
                     stream = Some(s);
                     break;
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(ref e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.raw_os_error() == Some(536) =>
+                {
                     std::thread::sleep(Duration::from_millis(50));
                 }
                 Err(e) => {

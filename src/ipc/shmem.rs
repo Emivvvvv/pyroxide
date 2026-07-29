@@ -19,6 +19,7 @@ impl ShmemGuard {
             .os_id(os_id)
             .open()
             .map_err(|e| format!("Failed to open shared memory segment '{os_id}': {e}"))?;
+        #[cfg(unix)]
         unlink_name(os_id);
         Ok(Self { shm: Some(shm) })
     }
@@ -63,9 +64,9 @@ impl ShmemGuard {
 
 impl Drop for ShmemGuard {
     fn drop(&mut self) {
-        if let Some(shm) = self.shm.take() {
+        if let Some(_shm) = self.shm.take() {
             #[cfg(unix)]
-            unlink_name(shm.get_os_id());
+            unlink_name(_shm.get_os_id());
         }
     }
 }

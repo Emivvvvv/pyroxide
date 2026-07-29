@@ -76,3 +76,7 @@ files = ["python/pyroxide"]
 ignore_missing_imports = true
 check_untyped_defs = true
 warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+pythonpath = [".", "python"]
+

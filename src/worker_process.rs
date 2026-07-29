@@ -24,6 +24,15 @@ fn cleanup_socket_path(socket_path: &str) {
 }
 
 #[cfg(target_os = "windows")]
+const PROCESS_SYNCHRONIZE: u32 = 0x0010_0000;
+#[cfg(target_os = "windows")]
+const WAIT_OBJECT_0: u32 = 0x0000_0000;
+#[cfg(target_os = "windows")]
+const WAIT_FAILED: u32 = u32::MAX;
+#[cfg(target_os = "windows")]
+const INFINITE: u32 = u32::MAX;
+
+#[cfg(target_os = "windows")]
 // SAFETY: these declarations match the documented Win32 process API
 // signatures and are called with handles and pointers checked below.
 unsafe extern "system" {
@@ -33,7 +42,7 @@ unsafe extern "system" {
         dwProcessId: u32,
     ) -> *mut std::ffi::c_void;
     fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
-    fn GetExitCodeProcess(hProcess: *mut std::ffi::c_void, lpExitCode: *mut u32) -> i32;
+    fn GetLastError() -> u32;
     fn WaitForSingleObject(hHandle: *mut std::ffi::c_void, dwMilliseconds: u32) -> u32;
 }
 
@@ -93,24 +102,53 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
         if let Ok(parent_pid_str) = std::env::var("PYROXIDE_PARENT_PID") {
             if let Ok(parent_pid) = parent_pid_str.parse::<u32>() {
                 std::thread::spawn(move || {
-                    // SAFETY: the Win32 calls use the parsed PID, validate the
-                    // returned handle, and close that handle exactly once.
+                    // Fail open: a broken monitor must never kill a healthy worker.
+                    // The IPC stream still provides normal cleanup when the broker
+                    // closes its end of the named pipe.
                     unsafe {
-                        let handle = OpenProcess(0x00100000 /* SYNCHRONIZE */, 0, parent_pid);
+                        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, parent_pid);
                         if handle.is_null() {
+                            return;
+                        }
+
+                        let wait_result = WaitForSingleObject(handle, INFINITE);
+                        let wait_error = if wait_result == WAIT_FAILED {
+                            Some(GetLastError())
+                        } else {
+                            None
+                        };
+                        CloseHandle(handle);
+
+                        if wait_result == WAIT_OBJECT_0 {
                             std::process::exit(1);
                         }
-                        WaitForSingleObject(handle, 0xFFFFFFFF);
-                        CloseHandle(handle);
-                        std::process::exit(1);
+
+                        if let Some(error) = wait_error {
+                            eprintln!(
+                                "Pyroxide parent monitor wait failed for PID {parent_pid}: WinError {error}"
+                            );
+                        }
                     }
                 });
             }
         }
     }
 
-    let mut stream = LocalSocketStream::connect(socket_path)
-        .map_err(|e| format!("Failed to connect to local socket {socket_path}: {e}"))?;
+    let start = std::time::Instant::now();
+    let stream_res = loop {
+        match LocalSocketStream::connect(socket_path) {
+            Ok(s) => break Ok(s),
+            Err(e) => {
+                if start.elapsed() > std::time::Duration::from_secs(5) {
+                    break Err(format!(
+                        "Failed to connect to local socket {socket_path}: {e}"
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    };
+    let mut stream = stream_res?;
 
     // Keep track of the last response SHM so it stays alive until the broker reads it,
     // and is dropped when we start processing the next task or exit.

@@ -3,7 +3,11 @@ import re
 from pathlib import Path
 
 import pytest
-import yaml
+
+try:
+    import yaml
+except ModuleNotFoundError:
+    yaml = None
 
 try:
     import tomllib
@@ -40,6 +44,7 @@ def _assert_source_bootstrap_actions_are_pinned(source):
         )
 
 
+@pytest.mark.skipif(yaml is None, reason="pyyaml is required")
 def test_release_workflow_verifies_source_before_building_or_publishing():
     """Release artifacts and publishing wait for the tagged source checks."""
     workflow = _load_release_workflow()
@@ -88,6 +93,7 @@ def test_release_workflow_verifies_source_before_building_or_publishing():
     assert jobs["publish"]["permissions"]["id-token"] == "write"
 
 
+@pytest.mark.skipif(yaml is None, reason="pyyaml is required")
 def test_source_verification_rejects_a_mutable_bootstrap_action_ref():
     """A branch or version tag must not pass the release bootstrap source gate."""
     workflow = copy.deepcopy(_load_release_workflow())

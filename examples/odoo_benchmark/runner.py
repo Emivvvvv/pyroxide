@@ -113,7 +113,8 @@ def addon_tree_sha256(path: str | Path) -> str:
         if not child.is_file() or child.is_symlink() or "__pycache__" in child.parts:
             continue
         relative_path = child.relative_to(root).as_posix().encode("utf-8")
-        content_hash = hashlib.sha256(child.read_bytes()).hexdigest().encode("ascii")
+        content_bytes = child.read_bytes().replace(b"\r\n", b"\n")
+        content_hash = hashlib.sha256(content_bytes).hexdigest().encode("ascii")
         digest.update(relative_path)
         digest.update(b"\0")
         digest.update(content_hash)

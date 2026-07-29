@@ -7,8 +7,12 @@ import json
 import subprocess
 from pathlib import Path
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
+    import tomli as tomllib
+
 import pytest
-import tomllib
 
 from examples.benchmarks.brokers import (
     adapter,
@@ -429,6 +433,11 @@ def test_compose_configuration_uses_pinned_images_and_execution_profiles_only() 
 
 def test_compose_file_resolves_project_mount_and_worker_commands() -> None:
     """A compose file that mounts only examples/benchmarks cannot import the package."""
+    import shutil
+
+    if shutil.which("docker") is None:
+        pytest.skip("docker command line tool is not available")
+
     completed = subprocess.run(
         [
             "docker",

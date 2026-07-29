@@ -21,12 +21,13 @@ try:  # Supports both ``python worker.py`` and package imports in tests.
     from .report import artifact_checksum
     from .workloads import expected_result, run_workload
 except ImportError:  # pragma: no cover - exercised by the script entry point.
-    import backends as backend_module
-    from backends import create_backend
     from environment import ProcessTreeSampler
     from models import BackendSpec
     from report import artifact_checksum
     from workloads import expected_result, run_workload
+
+    import backends as backend_module
+    from backends import create_backend
 
 
 def _payload(run_id: str, size: int) -> bytes:

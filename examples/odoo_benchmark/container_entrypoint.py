@@ -53,13 +53,13 @@ def _build_command(
     database_password = values.get("ODOO_DATABASE_PASSWORD", "odoo")
     return (
         "python",
-        str(odoo_root / "odoo-bin"),
+        (odoo_root / "odoo-bin").as_posix(),
         f"--database={database}",
         f"--db_host={database_host}",
         f"--db_port={database_port}",
         f"--db_user={database_user}",
         f"--db_password={database_password}",
-        f"--addons-path={addons_root},{odoo_root / 'addons'}",
+        f"--addons-path={addons_root.as_posix()},{(odoo_root / 'addons').as_posix()}",
         "--init=pyroxide_benchmark",
         "--test-enable",
         f"--test-tags={test_tag}",

@@ -56,7 +56,9 @@ docs/api/
 
 # Stub files
 *_proxy.pyi
-*_proxy.py
+!python/pyroxide/_ffi_proxy.py
+!python/pyroxide/_wasm_proxy.py
+
 
 # Benchmark output telemetry
 benchmark_results/**/*.jsonl

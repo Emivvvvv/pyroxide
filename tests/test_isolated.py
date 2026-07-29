@@ -428,9 +428,11 @@ print("SUCCESS")
 """
     env = os.environ.copy()
     env["PYROXIDE_IDLE_TIMEOUT_SEC"] = "1"
-    env["PYTHONPATH"] = (
-        f"{os.path.abspath('python')}:{os.path.abspath('.')}:{env.get('PYTHONPATH', '')}"
-    )
+    env["PYTHONPATH"] = os.pathsep.join([
+        os.path.abspath("python"),
+        os.path.abspath("."),
+        env.get("PYTHONPATH", ""),
+    ])
     res = subprocess.run(
         [sys.executable, "-c", code], env=env, capture_output=True, text=True
     )
@@ -469,11 +471,10 @@ assert pid1 == pid2, f"Worker was reaped even though PYROXIDE_MIN_WORKERS=1 (pid
     env["PYROXIDE_MIN_WORKERS"] = "1"
     env["PYROXIDE_IDLE_TIMEOUT_SEC"] = "1"
     # Ensure sys.path and PYTHONPATH are clean or propagated
-    env["PYTHONPATH"] = (
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "python"))
-        + ":"
-        + env.get("PYTHONPATH", "")
-    )
+    env["PYTHONPATH"] = os.pathsep.join([
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "python")),
+        env.get("PYTHONPATH", ""),
+    ])
 
     res = subprocess.run(
         [sys.executable, "-c", code],

@@ -44,23 +44,41 @@ def wasm_artifact(tmp_path_factory: pytest.TempPathFactory) -> Path:
     assert _WASM_MANIFEST.is_file(), "WASM core manifest is required for byte vectors"
     target_directory = tmp_path_factory.mktemp("wasm-core-target")
     environment = {**os.environ, "CARGO_TARGET_DIR": str(target_directory)}
-    subprocess.run(
-        [
-            "cargo",
-            "build",
-            "--offline",
-            "--release",
-            "--target",
-            "wasm32-unknown-unknown",
-            "--manifest-path",
-            str(_WASM_MANIFEST),
-        ],
-        check=True,
-        cwd=_ROOT,
-        env=environment,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        subprocess.run(
+            [
+                "cargo",
+                "build",
+                "--offline",
+                "--release",
+                "--target",
+                "wasm32-unknown-unknown",
+                "--manifest-path",
+                str(_WASM_MANIFEST),
+            ],
+            check=True,
+            cwd=_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        subprocess.run(
+            [
+                "cargo",
+                "build",
+                "--release",
+                "--target",
+                "wasm32-unknown-unknown",
+                "--manifest-path",
+                str(_WASM_MANIFEST),
+            ],
+            check=True,
+            cwd=_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
     artifact = (
         target_directory
         / "wasm32-unknown-unknown"

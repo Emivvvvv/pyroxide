@@ -244,11 +244,15 @@ def parse_args(argv: Sequence[str] | None = None) -> ReliabilityConfig:
     return config
 
 
-def _reserve_output(path: Path) -> tuple[int, int]:
+def _file_identity(status: os.stat_result) -> tuple[int, int, int]:
+    return status.st_dev, status.st_ino, getattr(status, "st_ctime_ns", int(getattr(status, "st_ctime", 0) * 1e9))
+
+
+def _reserve_output(path: Path) -> tuple[int, int, int]:
     descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     try:
         status = os.fstat(descriptor)
-        return status.st_dev, status.st_ino
+        return _file_identity(status)
     finally:
         os.close(descriptor)
 
@@ -257,11 +261,11 @@ def _reservation_key(path: Path) -> Path:
     return Path(os.path.abspath(path))
 
 
-def _unlink_reserved_empty(path: Path, identity: tuple[int, int]) -> None:
+def _unlink_reserved_empty(path: Path, identity: tuple[int, int, int]) -> None:
     try:
         status = os.stat(path, follow_symlinks=False)
         if (
-            (status.st_dev, status.st_ino) == identity
+            _file_identity(status) == identity
             and status.st_size == 0
         ):
             path.unlink()
@@ -271,6 +275,8 @@ def _unlink_reserved_empty(path: Path, identity: tuple[int, int]) -> None:
 
 def reserve_outputs(output: Path, summary: Path) -> None:
     """Create empty raw and summary artifacts without replacing either one."""
+    output_key = _reservation_key(output)
+    summary_key = summary.resolve()
     try:
         output_identity = _reserve_output(output)
     except FileExistsError as error:
@@ -285,8 +291,8 @@ def reserve_outputs(output: Path, summary: Path) -> None:
                 f"refusing to overwrite existing summary: {summary}"
             ) from error
         raise
-    _RESERVED_OUTPUTS[_reservation_key(output)] = output_identity
-    _RESERVED_SUMMARIES[summary.resolve()] = summary_identity
+    _RESERVED_OUTPUTS[output_key] = output_identity
+    _RESERVED_SUMMARIES[summary_key] = summary_identity
 
 
 def _configure_pyroxide(config: ReliabilityConfig) -> dict[str, str | None]:
@@ -1135,7 +1141,7 @@ def write_summary_exclusive(path: Path, summary: Mapping[str, object]) -> None:
             ) from error
         descriptor = os.open(path, os.O_WRONLY)
         status = os.fstat(descriptor)
-        if (status.st_dev, status.st_ino) != reserved_identity or status.st_size:
+        if _file_identity(status) != reserved_identity or status.st_size:
             os.close(descriptor)
             raise FileExistsError(f"refusing to overwrite existing summary: {path}")
     try:
@@ -1151,7 +1157,8 @@ def write_summary_exclusive(path: Path, summary: Mapping[str, object]) -> None:
 
 def _append_jsonl(path: Path, record: Mapping[str, object]) -> None:
     encoded = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
-    reserved_identity = _RESERVED_OUTPUTS.get(_reservation_key(path))
+    key = _reservation_key(path)
+    reserved_identity = _RESERVED_OUTPUTS.get(key)
     flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
@@ -1165,13 +1172,16 @@ def _append_jsonl(path: Path, record: Mapping[str, object]) -> None:
         status = os.fstat(descriptor)
         if (
             reserved_identity is not None
-            and (status.st_dev, status.st_ino) != reserved_identity
+            and _file_identity(status) != reserved_identity
         ):
             raise FileExistsError(f"refusing to overwrite existing output: {path}")
         with os.fdopen(descriptor, "ab", closefd=False) as stream:
             stream.write(encoded)
             stream.flush()
             os.fsync(descriptor)
+        if reserved_identity is not None:
+            new_status = os.fstat(descriptor)
+            _RESERVED_OUTPUTS[key] = _file_identity(new_status)
     finally:
         os.close(descriptor)
 

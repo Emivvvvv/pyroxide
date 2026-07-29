@@ -61,14 +61,24 @@ def native_library(tmp_path_factory: pytest.TempPathFactory) -> Path:
     assert _CORE_MANIFEST.is_file(), "native core manifest is required for ABI vectors"
     target_directory = tmp_path_factory.mktemp("native-core-target")
     environment = {**os.environ, "CARGO_TARGET_DIR": str(target_directory)}
-    subprocess.run(
-        ["cargo", "build", "--offline", "--release", "--manifest-path", str(_CORE_MANIFEST)],
-        check=True,
-        cwd=_ROOT,
-        env=environment,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        subprocess.run(
+            ["cargo", "build", "--offline", "--release", "--manifest-path", str(_CORE_MANIFEST)],
+            check=True,
+            cwd=_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        subprocess.run(
+            ["cargo", "build", "--release", "--manifest-path", str(_CORE_MANIFEST)],
+            check=True,
+            cwd=_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
     suffix = ".dylib" if os.name == "posix" and sys_platform() == "darwin" else ".so"
     if os.name == "nt":
         suffix = ".dll"
