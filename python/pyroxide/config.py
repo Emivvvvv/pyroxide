@@ -12,9 +12,6 @@ from ._pyroxide import (
 )
 
 __all__ = [
-    "get_scoped_queue_timeout_ms",
-    "get_scoped_wasm_memory_limit_bytes",
-    "get_scoped_wasm_timeout_ms",
     "is_free_threaded",
     "scoped",
     "set_queue_timeout",
@@ -35,15 +32,15 @@ _queue_timeout_var: contextvars.ContextVar[Optional[int]] = contextvars.ContextV
 _MAX_WASM_MEMORY_BYTES = 2**31 - 1
 
 
-def get_scoped_wasm_timeout_ms() -> Optional[int]:
+def _get_scoped_wasm_timeout_ms() -> Optional[int]:
     return _wasm_timeout_var.get()
 
 
-def get_scoped_wasm_memory_limit_bytes() -> Optional[int]:
+def _get_scoped_wasm_memory_limit_bytes() -> Optional[int]:
     return _wasm_memory_limit_var.get()
 
 
-def get_scoped_queue_timeout_ms() -> Optional[int]:
+def _get_scoped_queue_timeout_ms() -> Optional[int]:
     return _queue_timeout_var.get()
 
 

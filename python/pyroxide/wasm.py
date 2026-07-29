@@ -67,14 +67,14 @@ def wasm_task(module_name: str, func_name: str = "run", *, isolated: bool = Fals
         @functools.wraps(func)
         def wrapper(payload) -> TaskHandle:
             from .config import (
-                get_scoped_queue_timeout_ms,
-                get_scoped_wasm_memory_limit_bytes,
-                get_scoped_wasm_timeout_ms,
+                _get_scoped_queue_timeout_ms,
+                _get_scoped_wasm_memory_limit_bytes,
+                _get_scoped_wasm_timeout_ms,
             )
 
-            wasm_mem = get_scoped_wasm_memory_limit_bytes()
-            wasm_time = get_scoped_wasm_timeout_ms()
-            queue_time = get_scoped_queue_timeout_ms()
+            wasm_mem = _get_scoped_wasm_memory_limit_bytes()
+            wasm_time = _get_scoped_wasm_timeout_ms()
+            queue_time = _get_scoped_queue_timeout_ms()
             task_id = submit_wasm_task(
                 module_name,
                 func_name,
@@ -101,14 +101,14 @@ class WasmProxy:
     def __getattr__(self, func_name: str):
         def wasm_method(payload) -> TaskHandle:
             from .config import (
-                get_scoped_queue_timeout_ms,
-                get_scoped_wasm_memory_limit_bytes,
-                get_scoped_wasm_timeout_ms,
+                _get_scoped_queue_timeout_ms,
+                _get_scoped_wasm_memory_limit_bytes,
+                _get_scoped_wasm_timeout_ms,
             )
 
-            wasm_mem = get_scoped_wasm_memory_limit_bytes()
-            wasm_time = get_scoped_wasm_timeout_ms()
-            queue_time = get_scoped_queue_timeout_ms()
+            wasm_mem = _get_scoped_wasm_memory_limit_bytes()
+            wasm_time = _get_scoped_wasm_timeout_ms()
+            queue_time = _get_scoped_queue_timeout_ms()
             task_id = submit_wasm_task(
                 self._module_name,
                 func_name,
@@ -122,14 +122,14 @@ class WasmProxy:
 
         def wasm_batch(payloads: list) -> list[TaskHandle]:
             from .config import (
-                get_scoped_queue_timeout_ms,
-                get_scoped_wasm_memory_limit_bytes,
-                get_scoped_wasm_timeout_ms,
+                _get_scoped_queue_timeout_ms,
+                _get_scoped_wasm_memory_limit_bytes,
+                _get_scoped_wasm_timeout_ms,
             )
 
-            wasm_mem = get_scoped_wasm_memory_limit_bytes()
-            wasm_time = get_scoped_wasm_timeout_ms()
-            queue_time = get_scoped_queue_timeout_ms()
+            wasm_mem = _get_scoped_wasm_memory_limit_bytes()
+            wasm_time = _get_scoped_wasm_timeout_ms()
+            queue_time = _get_scoped_queue_timeout_ms()
             task_ids = submit_wasm_batch(
                 self._module_name,
                 func_name,
