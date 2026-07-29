@@ -15,6 +15,13 @@ from pyroxide.types import TaskHandle
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_types_retains_async_waker_callable_aliases():
+    import pyroxide.types as handle_types
+
+    assert handle_types.ensure_waker_registered.__module__ == "pyroxide.types"
+    assert handle_types._cleanup_waker.__module__ == "pyroxide.types"
+
+
 def test_result_async_cannot_lose_completion(monkeypatch):
     release = threading.Event()
 
@@ -76,6 +83,7 @@ def test_async_waker_can_be_reinitialized():
         import os
         import time
 
+        import pyroxide._async_waker as waker
         import pyroxide.types as handle_types
         from pyroxide import task
 
@@ -87,8 +95,8 @@ def test_async_waker_can_be_reinitialized():
         async def run():
             loop = asyncio.get_running_loop()
             handle_types.ensure_waker_registered(loop)
-            assert handle_types._waker_w is not None
-            assert os.get_blocking(handle_types._waker_w) is False
+            assert waker._waker_w is not None
+            assert os.get_blocking(waker._waker_w) is False
             handle_types._cleanup_waker()
 
             handle = delayed(9)
@@ -123,7 +131,7 @@ def test_shutdown_resolves_an_active_async_waiter_before_waker_teardown():
         import threading
 
         import pyroxide
-        import pyroxide.types as handle_types
+        import pyroxide._async_waker as waker
         from pyroxide import task
 
         worker_release = threading.Event()
@@ -137,7 +145,7 @@ def test_shutdown_resolves_an_active_async_waiter_before_waker_teardown():
             waker_started.set()
             waker_release.wait(5)
 
-        handle_types._waker_thread_loop = gated_waker_loop
+        waker._waker_thread_loop = gated_waker_loop
 
         @task
         def wait_for_release(value):
@@ -150,8 +158,8 @@ def test_shutdown_resolves_an_active_async_waiter_before_waker_teardown():
 
             deadline = asyncio.get_running_loop().time() + 1
             while True:
-                with handle_types._pending_futures_lock:
-                    is_pending = handle.task_id in handle_types._pending_futures
+                with waker._pending_futures_lock:
+                    is_pending = handle.task_id in waker._pending_futures
                 if is_pending and waker_started.is_set():
                     break
                 assert asyncio.get_running_loop().time() < deadline
