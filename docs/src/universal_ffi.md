@@ -65,7 +65,7 @@ In the following table:
 |              3 | `i32,i32,f64`; `f64,f64,i32` | Any supported primitive |
 |              4 | Homogeneous `T,T,T,T`        | Any supported primitive |
 |              4 | `i32,i32,f64,f64`            | Any supported primitive |
-|            5–8 | Homogeneous arguments only   | Any supported primitive |
+|            5-8 | Homogeneous arguments only   | Any supported primitive |
 
 Examples of supported signatures include:
 

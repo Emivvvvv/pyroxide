@@ -22,9 +22,12 @@ ruff check python tests examples
 mypy python/pyroxide
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
+cargo test --no-default-features --all-targets
 scripts/generate_docs.sh
 ```
+
+See [docs/development.md](docs/development.md) for the full local verification
+sequence and the reason standalone Rust tests disable the extension feature.
 
 Add a regression test for behavior changes. Keep public docs and type information
 in sync with the implementation. Do not add performance claims without a script,
