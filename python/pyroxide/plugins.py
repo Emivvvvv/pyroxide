@@ -422,9 +422,9 @@ def dylib_task(
 
     def decorator(func: Callable[[Any], Any]) -> Callable[[Any], TaskHandle]:
         def wrapper(payload: Any) -> TaskHandle:
-            from .config import _local
+            from .config import get_scoped_queue_timeout_ms
 
-            queue_time = getattr(_local, "queue_timeout_ms", None)
+            queue_time = get_scoped_queue_timeout_ms()
             task_id = submit_dylib_task(
                 dylib_name,
                 symbol_name,
@@ -436,9 +436,9 @@ def dylib_task(
             return TaskHandle(task_id)
 
         def batch(payloads: list) -> list[TaskHandle]:
-            from .config import _local
+            from .config import get_scoped_queue_timeout_ms
 
-            queue_time = getattr(_local, "queue_timeout_ms", None)
+            queue_time = get_scoped_queue_timeout_ms()
             task_ids = submit_dylib_batch(
                 dylib_name,
                 symbol_name,
@@ -514,7 +514,7 @@ class DylibProxy:
                 return handle
 
             def ffi_method(*args) -> TaskHandle:
-                from .config import _local
+                from .config import get_scoped_queue_timeout_ms
 
                 if len(args) != len(args_types):
                     raise ValueError(
@@ -530,7 +530,7 @@ class DylibProxy:
 
                 ffi_sig_arg = (args_types, ret_type)
 
-                queue_time = getattr(_local, "queue_timeout_ms", None)
+                queue_time = get_scoped_queue_timeout_ms()
                 task_id = submit_dylib_task(
                     self._lib_name,
                     symbol_name,
@@ -543,7 +543,7 @@ class DylibProxy:
                 return ffi_handle(task_id)
 
             def ffi_batch(payloads: list) -> list[TaskHandle]:
-                from .config import _local
+                from .config import get_scoped_queue_timeout_ms
 
                 def pack_payload(payload):
                     args: tuple[Any, ...]
@@ -566,7 +566,7 @@ class DylibProxy:
                         ) from e
 
                 ffi_sig_arg = (args_types, ret_type)
-                queue_time = getattr(_local, "queue_timeout_ms", None)
+                queue_time = get_scoped_queue_timeout_ms()
                 task_ids = submit_dylib_batch(
                     self._lib_name,
                     symbol_name,
@@ -583,9 +583,9 @@ class DylibProxy:
         else:
             # Regular bytes/string call
             def dylib_method(payload) -> TaskHandle:
-                from .config import _local
+                from .config import get_scoped_queue_timeout_ms
 
-                queue_time = getattr(_local, "queue_timeout_ms", None)
+                queue_time = get_scoped_queue_timeout_ms()
                 task_id = submit_dylib_task(
                     self._lib_name,
                     symbol_name,
@@ -597,9 +597,9 @@ class DylibProxy:
                 return TaskHandle(task_id)
 
             def dylib_batch(payloads: list) -> list[TaskHandle]:
-                from .config import _local
+                from .config import get_scoped_queue_timeout_ms
 
-                queue_time = getattr(_local, "queue_timeout_ms", None)
+                queue_time = get_scoped_queue_timeout_ms()
                 task_ids = submit_dylib_batch(
                     self._lib_name,
                     symbol_name,

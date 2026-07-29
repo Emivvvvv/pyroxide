@@ -1,9 +1,9 @@
 import pytest
 from pyroxide.config import (
-    _get_scoped_queue_timeout_ms,
-    _get_scoped_wasm_timeout_ms,
-    _local,
     _validate_environment,
+    get_scoped_queue_timeout_ms,
+    get_scoped_wasm_memory_limit_bytes,
+    get_scoped_wasm_timeout_ms,
     scoped,
     set_queue_timeout,
     set_wasm_limits,
@@ -67,28 +67,28 @@ def test_set_queue_timeout_validation():
 
 
 def test_scoped_context_nesting_and_restoration():
-    assert getattr(_local, "wasm_timeout_ms", None) is None
-    assert getattr(_local, "queue_timeout_ms", None) is None
+    assert get_scoped_wasm_timeout_ms() is None
+    assert get_scoped_queue_timeout_ms() is None
 
     with scoped(wasm_timeout_ms=1000, queue_timeout_ms=500):
-        assert getattr(_local, "wasm_timeout_ms", None) == 1000
-        assert getattr(_local, "queue_timeout_ms", None) == 500
+        assert get_scoped_wasm_timeout_ms() == 1000
+        assert get_scoped_queue_timeout_ms() == 500
 
         with scoped(wasm_timeout_ms=2000):
-            assert getattr(_local, "wasm_timeout_ms", None) == 2000
-            assert getattr(_local, "queue_timeout_ms", None) == 500
+            assert get_scoped_wasm_timeout_ms() == 2000
+            assert get_scoped_queue_timeout_ms() == 500
 
-        assert getattr(_local, "wasm_timeout_ms", None) == 1000
-        assert getattr(_local, "queue_timeout_ms", None) == 500
+        assert get_scoped_wasm_timeout_ms() == 1000
+        assert get_scoped_queue_timeout_ms() == 500
 
-    assert getattr(_local, "wasm_timeout_ms", None) is None
-    assert getattr(_local, "queue_timeout_ms", None) is None
+    assert get_scoped_wasm_timeout_ms() is None
+    assert get_scoped_queue_timeout_ms() is None
 
 
 def test_scoped_context_restoration_on_exception():
     with pytest.raises(RuntimeError):
         with scoped(wasm_timeout_ms=1234):
-            assert getattr(_local, "wasm_timeout_ms", None) == 1234
+            assert get_scoped_wasm_timeout_ms() == 1234
             raise RuntimeError("Test error")
 
-    assert getattr(_local, "wasm_timeout_ms", None) is None
+    assert get_scoped_wasm_timeout_ms() is None

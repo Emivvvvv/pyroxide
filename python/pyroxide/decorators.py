@@ -52,7 +52,7 @@ def task(func_or_none=None, *, isolated: bool = False):
         def wrapper(payload: P) -> TaskHandle:
             import os
 
-            from .config import _local
+            from .config import get_scoped_queue_timeout_ms
 
             if os.environ.get("PYROXIDE_WORKER") == "1":
                 return cast(TaskHandle, func(payload))
@@ -64,7 +64,7 @@ def task(func_or_none=None, *, isolated: bool = False):
                     if _registered_original(func)
                     else wrapper
                 )
-            queue_time = getattr(_local, "queue_timeout_ms", None)
+            queue_time = get_scoped_queue_timeout_ms()
             task_id = submit_task(
                 target_callable, payload, isolated=isolated, queue_timeout_ms=queue_time
             )
@@ -74,7 +74,7 @@ def task(func_or_none=None, *, isolated: bool = False):
             import os
 
             from ._pyroxide import submit_batch
-            from .config import _local
+            from .config import get_scoped_queue_timeout_ms
 
             if os.environ.get("PYROXIDE_WORKER") == "1":
                 return [cast(TaskHandle, func(p)) for p in payloads]
@@ -86,7 +86,7 @@ def task(func_or_none=None, *, isolated: bool = False):
                     if _registered_original(func)
                     else wrapper
                 )
-            queue_time = getattr(_local, "queue_timeout_ms", None)
+            queue_time = get_scoped_queue_timeout_ms()
             task_ids = submit_batch(
                 target_callable,
                 payloads,

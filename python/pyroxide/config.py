@@ -1,7 +1,7 @@
+import contextvars
 import math
 import os
 import sys
-import threading
 from contextlib import contextmanager
 from typing import Optional
 
@@ -12,6 +12,9 @@ from ._pyroxide import (
 )
 
 __all__ = [
+    "get_scoped_queue_timeout_ms",
+    "get_scoped_wasm_memory_limit_bytes",
+    "get_scoped_wasm_timeout_ms",
     "is_free_threaded",
     "scoped",
     "set_queue_timeout",
@@ -19,9 +22,29 @@ __all__ = [
     "stats",
 ]
 
-# Thread-local storage for overrides
-_local = threading.local()
+_wasm_timeout_var: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
+    "_wasm_timeout_var", default=None
+)
+_wasm_memory_limit_var: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
+    "_wasm_memory_limit_var", default=None
+)
+_queue_timeout_var: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
+    "_queue_timeout_var", default=None
+)
+
 _MAX_WASM_MEMORY_BYTES = 2**31 - 1
+
+
+def get_scoped_wasm_timeout_ms() -> Optional[int]:
+    return _wasm_timeout_var.get()
+
+
+def get_scoped_wasm_memory_limit_bytes() -> Optional[int]:
+    return _wasm_memory_limit_var.get()
+
+
+def get_scoped_queue_timeout_ms() -> Optional[int]:
+    return _queue_timeout_var.get()
 
 
 def _positive_int(value: int, name: str) -> int:
@@ -156,38 +179,21 @@ def scoped(
 ):
     """
     Context manager to temporarily override execution limits or queue timeouts
-    for the current thread.
+    for the current thread or asyncio task.
     """
-    # Save current overrides
-    prev_wasm_timeout = getattr(_local, "wasm_timeout_ms", None)
-    prev_wasm_mem = getattr(_local, "wasm_memory_limit_bytes", None)
-    prev_queue_timeout = getattr(_local, "queue_timeout_ms", None)
-
-    # Set new overrides if specified (otherwise inherit current)
+    tokens = []
     if wasm_timeout_ms is not None:
-        _local.wasm_timeout_ms = _positive_int(wasm_timeout_ms, "wasm_timeout_ms")
+        val = _positive_int(wasm_timeout_ms, "wasm_timeout_ms")
+        tokens.append((_wasm_timeout_var, _wasm_timeout_var.set(val)))
     if wasm_memory_limit_bytes is not None:
-        _local.wasm_memory_limit_bytes = _wasm_memory_bytes(
-            wasm_memory_limit_bytes, "wasm_memory_limit_bytes"
-        )
+        val = _wasm_memory_bytes(wasm_memory_limit_bytes, "wasm_memory_limit_bytes")
+        tokens.append((_wasm_memory_limit_var, _wasm_memory_limit_var.set(val)))
     if queue_timeout_ms is not None:
-        _local.queue_timeout_ms = _nonnegative_int(queue_timeout_ms, "queue_timeout_ms")
+        val = _nonnegative_int(queue_timeout_ms, "queue_timeout_ms")
+        tokens.append((_queue_timeout_var, _queue_timeout_var.set(val)))
 
     try:
         yield
     finally:
-        # Restore previous overrides
-        if prev_wasm_timeout is not None:
-            _local.wasm_timeout_ms = prev_wasm_timeout
-        elif hasattr(_local, "wasm_timeout_ms"):
-            delattr(_local, "wasm_timeout_ms")
-
-        if prev_wasm_mem is not None:
-            _local.wasm_memory_limit_bytes = prev_wasm_mem
-        elif hasattr(_local, "wasm_memory_limit_bytes"):
-            delattr(_local, "wasm_memory_limit_bytes")
-
-        if prev_queue_timeout is not None:
-            _local.queue_timeout_ms = prev_queue_timeout
-        elif hasattr(_local, "queue_timeout_ms"):
-            delattr(_local, "queue_timeout_ms")
+        for var, token in reversed(tokens):
+            var.reset(token)

@@ -68,16 +68,16 @@ def test_config_thread_safety():
         with pyroxide.config.scoped(wasm_timeout_ms=50):
             # Wait a moment to let the other thread dispatch
             time.sleep(0.1)
-            from pyroxide.config import _local
+            from pyroxide.config import get_scoped_wasm_timeout_ms
 
-            results["override_thread_val"] = getattr(_local, "wasm_timeout_ms", None)
+            results["override_thread_val"] = get_scoped_wasm_timeout_ms()
 
     def worker_without_override():
         # Sleep to let override enter
         time.sleep(0.05)
-        from pyroxide.config import _local
+        from pyroxide.config import get_scoped_wasm_timeout_ms
 
-        results["normal_thread_val"] = getattr(_local, "wasm_timeout_ms", None)
+        results["normal_thread_val"] = get_scoped_wasm_timeout_ms()
 
     t1 = threading.Thread(target=worker_with_override)
     t2 = threading.Thread(target=worker_without_override)
@@ -89,6 +89,35 @@ def test_config_thread_safety():
 
     assert results["override_thread_val"] == 50
     assert results["normal_thread_val"] is None
+
+
+def test_config_asyncio_task_safety():
+    import asyncio
+
+    from pyroxide.config import get_scoped_wasm_timeout_ms, scoped
+
+    async def main():
+        barrier = asyncio.Barrier(2)
+        results = {}
+
+        async def coroutine_a():
+            with scoped(wasm_timeout_ms=123):
+                await barrier.wait()
+                # Interleaved pause while coroutine_b runs on the same thread
+                await asyncio.sleep(0.01)
+                results["a"] = get_scoped_wasm_timeout_ms()
+
+        async def coroutine_b():
+            with scoped(wasm_timeout_ms=456):
+                await barrier.wait()
+                await asyncio.sleep(0.01)
+                results["b"] = get_scoped_wasm_timeout_ms()
+
+        await asyncio.gather(coroutine_a(), coroutine_b())
+        assert results["a"] == 123
+        assert results["b"] == 456
+
+    asyncio.run(main())
 
 
 @pytest.mark.parametrize(
