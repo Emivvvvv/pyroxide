@@ -1,16 +1,15 @@
 import inspect
-import pytest
+
 import pyroxide
+import pyroxide.plugins as plugin_api
 from pyroxide import (
     CompilerNotFoundError,
     ForkSafetyError,
-    TaskGroup,
     TaskHandle,
     compile_rust,
     group,
     load_dylib,
     load_wasm,
-    register_wasm,
     shutdown,
     task,
     wasm_task,
@@ -87,8 +86,30 @@ def test_exception_classes():
     assert issubclass(CompilerNotFoundError, RuntimeError)
 
 
+def test_native_public_objects_retain_plugins_facade_identity():
+    public_names = [
+        "CompilerNotFoundError",
+        "CrossProcessLock",
+        "DylibProxy",
+        "compile_c",
+        "compile_rust",
+        "compile_zig",
+        "dylib_task",
+        "load_dylib",
+        "unregister_dylib",
+    ]
+    for name in public_names:
+        value = getattr(plugin_api, name)
+        assert value.__module__ == "pyroxide.plugins"
+
+    assert plugin_api.compile_rust is pyroxide.compile_rust
+    assert plugin_api.dylib_task is pyroxide.dylib_task
+    assert plugin_api.load_dylib is pyroxide.load_dylib
+
+
 def sample_func_api(x):
     return x * 2
+
 
 def test_task_status_strings():
     decorated = task(sample_func_api)

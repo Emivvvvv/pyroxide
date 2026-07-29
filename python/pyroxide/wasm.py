@@ -6,8 +6,7 @@ import sys
 import tempfile
 from contextlib import contextmanager
 
-from ._pyroxide import register_wasm_module, submit_wasm_batch, submit_wasm_task
-from .plugins import (
+from ._native_compile import (
     CrossProcessLock,
     _acquire_compilation_locks,
     _cache_dir,
@@ -16,6 +15,7 @@ from .plugins import (
     _compiler_timeout_seconds,
     _verify_compiler,
 )
+from ._pyroxide import register_wasm_module, submit_wasm_batch, submit_wasm_task
 from .types import TaskHandle
 
 __all__ = [
