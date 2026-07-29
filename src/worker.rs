@@ -232,32 +232,7 @@ pub(crate) enum NativePayload {
     Bytes(Vec<u8>),
 }
 
-pub(crate) struct ShmemGuard {
-    pub(crate) shmem: Option<shared_memory::Shmem>,
-}
-
-impl ShmemGuard {
-    pub fn new(shmem: shared_memory::Shmem) -> Self {
-        Self { shmem: Some(shmem) }
-    }
-}
-
-impl Drop for ShmemGuard {
-    fn drop(&mut self) {
-        if let Some(shmem) = self.shmem.take() {
-            #[cfg(unix)]
-            {
-                let os_id = shmem.get_os_id();
-                if let Ok(c_name) = std::ffi::CString::new(os_id) {
-                    unsafe {
-                        libc::shm_unlink(c_name.as_ptr());
-                    }
-                }
-            }
-            std::mem::drop(shmem);
-        }
-    }
-}
+pub(crate) use crate::ipc::ShmemGuard;
 
 fn worker_loop(
     broker: Arc<Broker>,
@@ -293,7 +268,12 @@ fn worker_loop(
                 continue;
             }
 
-            // 3. Execute the task (Python Callable or Native Execution) with panic safety
+            // 3. Execute the task (Python Callable or Native Execution) with panic safety.
+            //
+            // NOTE: catch_unwind only catches Rust panics, NOT native crashes (e.g. SIGSEGV
+            // from a misbehaving C/Rust FFI plugin). True crash containment for native
+            // code requires running in isolated mode (task.isolated = true), which routes
+            // execution to a separate child process via the process pool.
             let task_clone = Arc::clone(&task);
 
             let exec_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
@@ -314,25 +294,23 @@ fn worker_loop(
                 }
 
                 match &task_clone.kind {
-                    TaskKind::PythonCall { callable } => {
-                        Python::attach(|py| {
-                            let bound_cb = callable.bind(py);
-                            let bound_payload = task_clone.payload.bind(py);
+                    TaskKind::PythonCall { callable } => Python::attach(|py| {
+                        let bound_cb = callable.bind(py);
+                        let bound_payload = task_clone.payload.bind(py);
 
-                            match bound_cb.call1((bound_payload,)) {
-                                Ok(val) => Ok(val.into_any().unbind()),
-                                Err(err) => {
-                                    let tb_str = match err.traceback(py) {
-                                        Some(tb) => tb
-                                            .format()
-                                            .unwrap_or_else(|_| "No traceback available".to_string()),
-                                        None => "No traceback available".to_string(),
-                                    };
-                                    Err(format!("{err}\n\nOriginal Background Traceback:\n{tb_str}"))
-                                }
+                        match bound_cb.call1((bound_payload,)) {
+                            Ok(val) => Ok(val.into_any().unbind()),
+                            Err(err) => {
+                                let tb_str = match err.traceback(py) {
+                                    Some(tb) => tb
+                                        .format()
+                                        .unwrap_or_else(|_| "No traceback available".to_string()),
+                                    None => "No traceback available".to_string(),
+                                };
+                                Err(format!("{err}\n\nOriginal Background Traceback:\n{tb_str}"))
                             }
-                        })
-                    }
+                        }
+                    }),
                     TaskKind::Wasm {
                         module: module_name,
                         function: func_name,
@@ -358,8 +336,8 @@ fn worker_loop(
 
                             let limit_bytes = memory_limit_bytes
                                 .unwrap_or_else(crate::config::get_wasm_memory_limit_bytes);
-                            let timeout_ms = timeout_ms
-                                .unwrap_or_else(crate::config::get_wasm_timeout_ms);
+                            let timeout_ms =
+                                timeout_ms.unwrap_or_else(crate::config::get_wasm_timeout_ms);
 
                             let cancel_checker = || task_clone.cancelled.load(Ordering::Acquire);
                             let output_bytes = crate::backends::wasm::execute_wasm_guest(
@@ -373,8 +351,9 @@ fn worker_loop(
 
                             match payload {
                                 NativePayload::Str(_) => {
-                                    let s = String::from_utf8(output_bytes)
-                                        .map_err(|e| format!("Invalid UTF-8 output from WASM: {e}"))?;
+                                    let s = String::from_utf8(output_bytes).map_err(|e| {
+                                        format!("Invalid UTF-8 output from WASM: {e}")
+                                    })?;
                                     Ok(NativePayload::Str(s))
                                 }
                                 NativePayload::Bytes(_) => Ok(NativePayload::Bytes(output_bytes)),
@@ -428,13 +407,18 @@ fn worker_loop(
                                     input_bytes,
                                 )?
                             } else {
-                                crate::backends::dylib::execute_dylib(plugin_name, symbol_name, input_bytes)?
+                                crate::backends::dylib::execute_dylib(
+                                    plugin_name,
+                                    symbol_name,
+                                    input_bytes,
+                                )?
                             };
 
                             match payload {
                                 NativePayload::Str(_) => {
-                                    let s = String::from_utf8(output_bytes)
-                                        .map_err(|e| format!("Invalid UTF-8 output from dylib: {e}"))?;
+                                    let s = String::from_utf8(output_bytes).map_err(|e| {
+                                        format!("Invalid UTF-8 output from dylib: {e}")
+                                    })?;
                                     Ok(NativePayload::Str(s))
                                 }
                                 NativePayload::Bytes(_) => Ok(NativePayload::Bytes(output_bytes)),
@@ -599,6 +583,7 @@ fn wait_readable(
         events: libc::POLLIN,
         revents: 0,
     };
+    // SAFETY: `fds` points to one initialized `pollfd` for this call.
     let ret = unsafe { libc::poll(&mut fds, 1, timeout_ms) };
     if ret < 0 {
         Err(std::io::Error::last_os_error())
@@ -706,8 +691,10 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
     }
 
     // 1. Prepare serialization payload based on task type
-    let (task_type, metadata, payload_bytes) =
-        Python::attach(|py| -> Result<(u8, String, Vec<u8>), String> {
+    use crate::ipc::protocol::RequestMetadata;
+
+    let (meta, payload_bytes) =
+        Python::attach(|py| -> Result<(RequestMetadata, Vec<u8>), String> {
             match &task.kind {
                 TaskKind::PythonCall { callable: cb } => {
                     let pickle = PyModule::import(py, "pickle").map_err(|e| e.to_string())?;
@@ -720,7 +707,7 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
                         .extract()
                         .map_err(|e: pyo3::PyErr| e.to_string())?;
 
-                    Ok((0u8, "".to_string(), bytes))
+                    Ok((RequestMetadata::Python, bytes))
                 }
                 TaskKind::Wasm {
                     module: module_name,
@@ -730,9 +717,7 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
                 } => {
                     let limit_bytes = memory_limit_bytes
                         .unwrap_or_else(crate::config::get_wasm_memory_limit_bytes);
-                    let timeout_ms = timeout_ms
-                        .unwrap_or_else(crate::config::get_wasm_timeout_ms);
-                    let metadata = format!("{module_name}:{func_name}:{limit_bytes}:{timeout_ms}");
+                    let timeout_ms = timeout_ms.unwrap_or_else(crate::config::get_wasm_timeout_ms);
                     let bound_payload = task.payload.bind(py);
                     let bytes = if let Ok(s) = bound_payload.extract::<String>() {
                         s.into_bytes()
@@ -741,20 +726,21 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
                     } else {
                         return Err("Unsupported payload type for WASM".to_string());
                     };
-                    Ok((1u8, metadata, bytes))
+                    Ok((
+                        RequestMetadata::Wasm {
+                            module: module_name.clone(),
+                            function: func_name.clone(),
+                            memory_limit: limit_bytes,
+                            timeout_ms,
+                        },
+                        bytes,
+                    ))
                 }
                 TaskKind::Dylib {
                     plugin: plugin_name,
                     symbol: symbol_name,
                     ffi_sig,
                 } => {
-                    let metadata = if let Some(sig) = ffi_sig {
-                        let args = sig.0.join(",");
-                        let ret = &sig.1;
-                        format!("{plugin_name}:{symbol_name}:{args}|{ret}")
-                    } else {
-                        format!("{plugin_name}:{symbol_name}")
-                    };
                     let bound_payload = task.payload.bind(py);
                     let bytes = if let Ok(s) = bound_payload.extract::<String>() {
                         s.into_bytes()
@@ -763,7 +749,14 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
                     } else {
                         return Err("Unsupported payload type for dynamic library".to_string());
                     };
-                    Ok((2u8, metadata, bytes))
+                    Ok((
+                        RequestMetadata::Dylib {
+                            plugin: plugin_name.clone(),
+                            symbol: symbol_name.clone(),
+                            signature: ffi_sig.clone(),
+                        },
+                        bytes,
+                    ))
                 }
             }
         })?;
@@ -790,10 +783,12 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
                 }
                 crate::registry::RegistrySync::Current => {}
                 crate::registry::RegistrySync::Changed(registration) => {
+                    let sync_meta = RequestMetadata::RegisterWasm {
+                        module: wasm_module.clone(),
+                    };
                     crate::process_pool::send_registration_task(
                         &mut worker.stream,
-                        10,
-                        wasm_module,
+                        &sync_meta,
                         &registration.value,
                     )
                     .map_err(|e| format!("Failed to sync WASM module {wasm_module}: {e}"))?;
@@ -818,22 +813,24 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
                 crate::registry::RegistrySync::Current => {}
                 crate::registry::RegistrySync::Changed(registration) => {
                     if worker.registered_dylibs.remove(plugin_name).is_some() {
+                        let unreg_meta = RequestMetadata::UnregisterDylib {
+                            plugin: plugin_name.clone(),
+                        };
                         crate::process_pool::send_registration_task(
                             &mut worker.stream,
-                            12,
-                            plugin_name,
+                            &unreg_meta,
                             &[],
                         )
                         .map_err(|e| format!("Failed to remove stale dylib {plugin_name}: {e}"))?;
                     }
 
-                    crate::process_pool::send_registration_task(
-                        &mut worker.stream,
-                        11,
-                        plugin_name,
-                        registration.value.as_bytes(),
-                    )
-                    .map_err(|e| format!("Failed to sync dylib {plugin_name}: {e}"))?;
+                    let reg_meta = RequestMetadata::RegisterDylib {
+                        plugin: plugin_name.clone(),
+                        library_path: registration.value.library_path,
+                        free_fn_name: registration.value.free_fn_name,
+                    };
+                    crate::process_pool::send_registration_task(&mut worker.stream, &reg_meta, &[])
+                        .map_err(|e| format!("Failed to sync dylib {plugin_name}: {e}"))?;
                     worker
                         .registered_dylibs
                         .insert(plugin_name.clone(), registration.generation);
@@ -850,7 +847,7 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
         "payload",
     )?;
     let use_shm = payload_bytes.len() >= crate::config::get_shm_threshold();
-    let mut flags = 0u8;
+    let mut flags = crate::ipc::protocol::FrameFlags::inline();
     let mut actual_payload = payload_bytes.clone();
     let mut _created_shm: Option<ShmemGuard> = None;
 
@@ -860,55 +857,18 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
             std::process::id(),
             rand::random::<u32>()
         );
-        match shared_memory::ShmemConf::new()
-            .size(payload_bytes.len())
-            .os_id(&shm_name)
-            .create()
-        {
-            Ok(shmem) => {
-                // Safety: both pointers point to valid, non-overlapping regions of the same size.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        payload_bytes.as_ptr(),
-                        shmem.as_ptr(),
-                        payload_bytes.len(),
-                    );
-                }
-                flags |= 1;
+        match ShmemGuard::create(payload_bytes.len(), &shm_name) {
+            Ok(shmem) if shmem.copy_from_slice(&payload_bytes).is_ok() => {
+                flags = crate::ipc::protocol::FrameFlags::shared_memory();
                 actual_payload = shm_name.into_bytes();
-                _created_shm = Some(ShmemGuard::new(shmem));
+                _created_shm = Some(shmem);
             }
-            Err(_) => {
-                flags = 0;
-            }
+            Ok(_) | Err(_) => {}
         }
     }
 
-    let metadata_len = crate::config::checked_ipc_len(
-        metadata.len() as u64,
-        crate::config::MAX_IPC_METADATA_BYTES,
-        "metadata",
-    )?;
-    let payload_len = crate::config::checked_ipc_len(
-        actual_payload.len() as u64,
-        crate::config::get_max_ipc_frame_bytes(),
-        "payload",
-    )?;
-    let mut header = vec![task_type, flags];
-    header.extend_from_slice(&(metadata_len as u32).to_be_bytes());
-    header.extend_from_slice(&(payload_len as u64).to_be_bytes());
-
-    let write_result = (|| -> std::io::Result<()> {
-        worker.stream.write_all(&header)?;
-        worker.stream.write_all(metadata.as_bytes())?;
-        worker.stream.write_all(&actual_payload)?;
-        worker.stream.flush()?;
-        Ok(())
-    })();
-
-    if let Err(e) = write_result {
-        return Err(format!("IPC write error: {e}"));
-    }
+    crate::ipc::frame::write_request(&mut worker.stream, &meta, flags, &actual_payload)
+        .map_err(|error| format!("IPC write error: {error}"))?;
 
     // 4. Read response frame with cancellation checking
     let _ = worker.stream.set_nonblocking(true);
@@ -953,13 +913,10 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
         }
     }
 
-    let success = resp_header[0] == 1;
-    let res_flags = resp_header[1];
-    let data_len = crate::config::checked_ipc_len(
-        u64::from_be_bytes(resp_header[2..10].try_into().unwrap_or([0u8; 8])),
-        crate::config::get_max_ipc_frame_bytes(),
-        "response",
-    )?;
+    let response_header = crate::ipc::protocol::ResponseHeader::decode(resp_header)?;
+    let success = response_header.success;
+    let response_flags = response_header.flags;
+    let data_len = response_header.payload_len;
 
     let mut data_bytes = vec![0u8; data_len];
     let mut data_read = 0;
@@ -1033,26 +990,17 @@ fn execute_isolated_task_inner(task: &Arc<Task>) -> Result<Py<PyAny>, String> {
         }
     }
 
-    let final_res = if success && (res_flags & 1) == 1 {
+    let final_res = if success && response_flags.uses_shared_memory() {
         let shm_name =
             String::from_utf8(data_bytes).map_err(|e| format!("Invalid SHM name string: {e}"))?;
-        match shared_memory::ShmemConf::new().os_id(&shm_name).open() {
+        match ShmemGuard::open(&shm_name) {
             Ok(shmem) => {
-                #[cfg(unix)]
-                {
-                    if let Ok(c_name) = std::ffi::CString::new(shm_name.clone()) {
-                        unsafe {
-                            libc::shm_unlink(c_name.as_ptr());
-                        }
-                    }
-                }
-                let ptr = shmem.as_ptr();
                 let size = crate::config::checked_ipc_len(
                     shmem.len() as u64,
                     crate::config::get_max_ipc_frame_bytes(),
                     "shared-memory response",
                 )?;
-                let slice = unsafe { std::slice::from_raw_parts(ptr, size) };
+                let slice = &shmem.as_slice()[..size];
 
                 let py_res = Python::attach(|py| unpack_worker_response(py, slice, task));
 

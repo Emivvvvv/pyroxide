@@ -1,6 +1,5 @@
 use interprocess::local_socket::{LocalSocketListener, LocalSocketStream};
 use pyo3::types::PyAnyMethods;
-use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -150,6 +149,8 @@ pub(crate) fn get_process_pool() -> Arc<IsolatedProcessPool> {
                                 };
                                 if let Some(pid_str) = pid_str {
                                     if let Ok(pid) = pid_str.parse::<i32>() {
+                                        // SAFETY: signal zero only probes whether this
+                                        // parsed process ID exists.
                                         if unsafe { libc::kill(pid, 0) } != 0 {
                                             let _ = std::fs::remove_file(entry.path());
                                         }
@@ -327,8 +328,13 @@ pub(crate) fn shutdown_process_pool() {
 }
 
 fn sync_registries(worker: &mut IpcWorker) -> Result<(), String> {
+    use crate::ipc::protocol::RequestMetadata;
+
     for (name, registration) in crate::registry::get_wasm_registrations() {
-        send_registration_task(&mut worker.stream, 10, &name, &registration.value)
+        let meta = RequestMetadata::RegisterWasm {
+            module: name.clone(),
+        };
+        send_registration_task(&mut worker.stream, &meta, &registration.value)
             .map_err(|e| format!("Failed to sync WASM module {name} to worker: {e}"))?;
         worker
             .registered_wasms
@@ -336,7 +342,12 @@ fn sync_registries(worker: &mut IpcWorker) -> Result<(), String> {
     }
 
     for (name, registration) in crate::registry::get_dylib_registrations() {
-        send_registration_task(&mut worker.stream, 11, &name, registration.value.as_bytes())
+        let meta = RequestMetadata::RegisterDylib {
+            plugin: name.clone(),
+            library_path: registration.value.library_path,
+            free_fn_name: registration.value.free_fn_name,
+        };
+        send_registration_task(&mut worker.stream, &meta, &[])
             .map_err(|e| format!("Failed to sync dylib {name} to worker: {e}"))?;
         worker
             .registered_dylibs
@@ -348,47 +359,20 @@ fn sync_registries(worker: &mut IpcWorker) -> Result<(), String> {
 
 pub(crate) fn send_registration_task(
     stream: &mut LocalSocketStream,
-    task_type: u8,
-    metadata: &str,
+    meta: &crate::ipc::protocol::RequestMetadata,
     payload: &[u8],
 ) -> Result<(), String> {
-    let metadata_len = crate::config::checked_ipc_len(
-        metadata.len() as u64,
-        crate::config::MAX_IPC_METADATA_BYTES,
-        "metadata",
+    crate::ipc::frame::write_request(
+        stream,
+        meta,
+        crate::ipc::protocol::FrameFlags::inline(),
+        payload,
     )?;
-    let payload_len = crate::config::checked_ipc_len(
-        payload.len() as u64,
-        crate::config::get_max_ipc_frame_bytes(),
-        "payload",
-    )?;
-    let mut header = vec![task_type, 0u8];
-    header.extend_from_slice(&(metadata_len as u32).to_be_bytes());
-    header.extend_from_slice(&(payload_len as u64).to_be_bytes());
-
-    stream.write_all(&header).map_err(|e| e.to_string())?;
-    stream
-        .write_all(metadata.as_bytes())
-        .map_err(|e| e.to_string())?;
-    stream.write_all(payload).map_err(|e| e.to_string())?;
-    stream.flush().map_err(|e| e.to_string())?;
-
-    let mut res_header = [0u8; 10];
-    stream
-        .read_exact(&mut res_header)
-        .map_err(|e| format!("Failed to read registration response header: {e}"))?;
-    let success = res_header[0] == 1;
-    let _res_flags = res_header[1];
-    let data_len = crate::config::checked_ipc_len(
-        u64::from_be_bytes(res_header[2..10].try_into().unwrap_or([0u8; 8])),
-        crate::config::get_max_ipc_frame_bytes(),
-        "registration response",
-    )?;
-
-    let mut data = vec![0u8; data_len];
-    stream.read_exact(&mut data).map_err(|e| e.to_string())?;
-
-    if !success {
+    let (header, data) = crate::ipc::frame::read_response(stream)?;
+    if header.flags.uses_shared_memory() {
+        return Err("Registration response cannot use shared memory".to_string());
+    }
+    if !header.success {
         return Err(String::from_utf8(data).unwrap_or_else(|_| "Unknown error".to_string()));
     }
 

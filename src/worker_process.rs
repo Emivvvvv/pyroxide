@@ -1,7 +1,10 @@
+use crate::ipc::ShmemGuard;
+use crate::ipc::frame::{read_request, write_response};
+use crate::ipc::protocol::{FrameFlags, RequestMetadata};
 use interprocess::local_socket::LocalSocketStream;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyModule};
-use std::io::{Read, Write};
+use std::io::Read;
 
 #[cfg(unix)]
 fn cleanup_socket_path(socket_path: &str) {
@@ -20,34 +23,9 @@ fn cleanup_socket_path(socket_path: &str) {
     }
 }
 
-pub(crate) struct ShmemGuard {
-    pub(crate) shmem: Option<shared_memory::Shmem>,
-}
-
-impl ShmemGuard {
-    pub fn new(shmem: shared_memory::Shmem) -> Self {
-        Self { shmem: Some(shmem) }
-    }
-}
-
-impl Drop for ShmemGuard {
-    fn drop(&mut self) {
-        if let Some(shmem) = self.shmem.take() {
-            #[cfg(unix)]
-            {
-                let os_id = shmem.get_os_id();
-                if let Ok(c_name) = std::ffi::CString::new(os_id) {
-                    unsafe {
-                        libc::shm_unlink(c_name.as_ptr());
-                    }
-                }
-            }
-            std::mem::drop(shmem);
-        }
-    }
-}
-
 #[cfg(target_os = "windows")]
+// SAFETY: these declarations match the documented Win32 process API
+// signatures and are called with handles and pointers checked below.
 unsafe extern "system" {
     fn OpenProcess(
         dwDesiredAccess: u32,
@@ -64,8 +42,11 @@ unsafe extern "system" {
 pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
+        // SAFETY: `getppid` has no pointer arguments or caller preconditions.
         let ppid = unsafe { libc::getppid() };
         let socket_path = socket_path.to_string();
+        // SAFETY: the kqueue descriptor and event buffers are initialized in
+        // this closure and remain valid for each corresponding system call.
         std::thread::spawn(move || unsafe {
             let kq = libc::kqueue();
             if kq == -1 {
@@ -91,11 +72,14 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
+        // SAFETY: `getppid` has no pointer arguments or caller preconditions.
         let ppid = unsafe { libc::getppid() };
         let socket_path = socket_path.to_string();
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(500));
+                // SAFETY: `getppid` has no pointer arguments or caller
+                // preconditions.
                 if unsafe { libc::getppid() } != ppid {
                     cleanup_socket_path(&socket_path);
                     std::process::exit(1);
@@ -109,6 +93,8 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
         if let Ok(parent_pid_str) = std::env::var("PYROXIDE_PARENT_PID") {
             if let Ok(parent_pid) = parent_pid_str.parse::<u32>() {
                 std::thread::spawn(move || {
+                    // SAFETY: the Win32 calls use the parsed PID, validate the
+                    // returned handle, and close that handle exactly once.
                     unsafe {
                         let handle = OpenProcess(0x00100000 /* SYNCHRONIZE */, 0, parent_pid);
                         if handle.is_null() {
@@ -131,96 +117,38 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
     let mut _last_response_shm: Option<ShmemGuard> = None;
 
     loop {
-        // Read Task Type (1 byte)
-        let mut type_buf = [0u8; 1];
-        if stream.read_exact(&mut type_buf).is_err() {
-            // Stream closed, worker terminates gracefully
-            break;
-        }
-        let task_type = type_buf[0];
-
         // Drop the previous response SHM now that the master has definitely finished reading it and started a new task
         _last_response_shm = None;
 
-        // Read Flags (1 byte)
-        let mut flags_buf = [0u8; 1];
-        stream
-            .read_exact(&mut flags_buf)
-            .map_err(|e| format!("Failed to read flags: {e}"))?;
-        let flags = flags_buf[0];
+        let Some((meta, flags, payload_bytes)) = read_request(&mut stream)? else {
+            // Stream closed between tasks, so the worker terminates gracefully.
+            break;
+        };
 
-        // Read Extra Len (4 bytes)
-        let mut extra_len_buf = [0u8; 4];
-        stream
-            .read_exact(&mut extra_len_buf)
-            .map_err(|e| format!("Failed to read extra_len: {e}"))?;
-        let extra_len = crate::config::checked_ipc_len(
-            u32::from_be_bytes(extra_len_buf) as u64,
-            crate::config::MAX_IPC_METADATA_BYTES,
-            "metadata",
-        )?;
-
-        // Read Payload Len (8 bytes)
-        let mut payload_len_buf = [0u8; 8];
-        stream
-            .read_exact(&mut payload_len_buf)
-            .map_err(|e| format!("Failed to read payload_len: {e}"))?;
-        let payload_len = crate::config::checked_ipc_len(
-            u64::from_be_bytes(payload_len_buf),
-            crate::config::get_max_ipc_frame_bytes(),
-            "payload",
-        )?;
-
-        // Read Extra Metadata Bytes
-        let mut extra_bytes = vec![0u8; extra_len];
-        stream
-            .read_exact(&mut extra_bytes)
-            .map_err(|e| format!("Failed to read extra bytes: {e}"))?;
-        let metadata = String::from_utf8(extra_bytes).unwrap_or_default();
-
-        // Read Payload Bytes
-        let mut payload_bytes = vec![0u8; payload_len];
-        stream
-            .read_exact(&mut payload_bytes)
-            .map_err(|e| format!("Failed to read payload bytes: {e}"))?;
-
-        let _shm_guard;
-        // Resolve SHM payload if flags say so
-        let actual_payload_slice: &[u8] = if (flags & 1) == 1 {
-            let shm_name =
-                String::from_utf8(payload_bytes).map_err(|e| format!("Invalid SHM name: {e}"))?;
-            let shmem = shared_memory::ShmemConf::new()
-                .os_id(&shm_name)
-                .open()
-                .map_err(|e| format!("Failed to open request SHM {shm_name}: {e}"))?;
-
-            #[cfg(unix)]
-            {
-                if let Ok(c_name) = std::ffi::CString::new(shm_name.clone()) {
-                    unsafe {
-                        libc::shm_unlink(c_name.as_ptr());
-                    }
-                }
-            }
-
-            let ptr = shmem.as_ptr();
+        let request_shm = if flags.uses_shared_memory() {
+            let shm_name = std::str::from_utf8(&payload_bytes)
+                .map_err(|e| format!("Invalid SHM name: {e}"))?
+                .to_owned();
+            Some(
+                ShmemGuard::open(&shm_name)
+                    .map_err(|e| format!("Failed to open request SHM {shm_name}: {e}"))?,
+            )
+        } else {
+            None
+        };
+        let actual_payload_slice: &[u8] = if let Some(guard) = request_shm.as_ref() {
             let size = crate::config::checked_ipc_len(
-                shmem.len() as u64,
+                guard.len() as u64,
                 crate::config::get_max_ipc_frame_bytes(),
                 "shared-memory payload",
             )?;
-            // Store guard locally to keep mapped until the end of this task execution
-            _shm_guard = Some(ShmemGuard::new(shmem));
-            // Safety: SHM is mapped and valid for the duration of this loop iteration.
-            unsafe { std::slice::from_raw_parts(ptr, size) }
+            &guard.as_slice()[..size]
         } else {
-            _shm_guard = None;
             &payload_bytes
         };
 
         // Process Task
-        let (mut success, mut response_bytes) =
-            execute_worker_task(task_type, &metadata, actual_payload_slice);
+        let (mut success, mut response_bytes) = execute_worker_task(&meta, actual_payload_slice);
 
         if let Err(error) = crate::config::checked_ipc_len(
             response_bytes.len() as u64,
@@ -232,7 +160,7 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
         }
 
         let use_shm = success && response_bytes.len() >= crate::config::get_shm_threshold();
-        let mut res_flags = 0u8;
+        let mut response_flags = FrameFlags::inline();
         let mut actual_response = response_bytes.clone();
         let mut shm_to_keep: Option<ShmemGuard> = None;
 
@@ -242,43 +170,17 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
                 std::process::id(),
                 rand::random::<u32>()
             );
-            match shared_memory::ShmemConf::new()
-                .size(response_bytes.len())
-                .os_id(&shm_name)
-                .create()
-            {
-                Ok(shmem) => {
-                    // Safety: valid, non-overlapping buffers of the same size.
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            response_bytes.as_ptr(),
-                            shmem.as_ptr(),
-                            response_bytes.len(),
-                        );
-                    }
-                    res_flags |= 1;
+            match ShmemGuard::create(response_bytes.len(), &shm_name) {
+                Ok(shmem) if shmem.copy_from_slice(&response_bytes).is_ok() => {
+                    response_flags = FrameFlags::shared_memory();
                     actual_response = shm_name.into_bytes();
-                    shm_to_keep = Some(ShmemGuard::new(shmem));
+                    shm_to_keep = Some(shmem);
                 }
-                Err(_) => {
-                    res_flags = 0;
-                }
+                Ok(_) | Err(_) => {}
             }
         }
 
-        // Write Response: [Success: 1 byte] [Flags: 1 byte] [Data Len: 8 bytes] [Data Bytes]
-        let mut response_header = vec![if success { 1u8 } else { 0u8 }, res_flags];
-        response_header.extend_from_slice(&(actual_response.len() as u64).to_be_bytes());
-
-        stream
-            .write_all(&response_header)
-            .map_err(|e| format!("Failed to write response header: {e}"))?;
-        stream
-            .write_all(&actual_response)
-            .map_err(|e| format!("Failed to write response data: {e}"))?;
-        stream
-            .flush()
-            .map_err(|e| format!("Failed to flush stream: {e}"))?;
+        write_response(&mut stream, success, response_flags, &actual_response)?;
 
         if shm_to_keep.is_some() {
             // Wait for master's acknowledgment before we continue (so master has read the SHM safely)
@@ -291,14 +193,12 @@ pub fn start_worker_loop(socket_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, Vec<u8>) {
-    match task_type {
-        0 => {
-            // Python Callable Task (Metadata contains func description, payload is pickled func + arguments)
+fn execute_worker_task(meta: &RequestMetadata, payload: &[u8]) -> (bool, Vec<u8>) {
+    match meta {
+        RequestMetadata::Python => {
+            // Python Callable Task
             let result = Python::attach(|py| -> PyResult<Vec<u8>> {
                 let pickle = PyModule::import(py, "pickle")?;
-
-                // Unpack payload: (func, payload)
                 let tuple: Bound<'_, pyo3::types::PyTuple> = pickle
                     .call_method1("loads", (PyBytes::new(py, payload),))?
                     .extract()?;
@@ -306,7 +206,6 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, 
                 let func = tuple.get_item(0)?;
                 let arg = tuple.get_item(1)?;
 
-                // Run callable
                 match func.call1((arg,)) {
                     Ok(val) => {
                         let pickled_val = pickle.call_method1("dumps", (val,))?;
@@ -332,83 +231,39 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, 
                 Err(err) => (false, err.to_string().into_bytes()),
             }
         }
-        1 => {
-            // WebAssembly Task (Metadata contains module_name:func_name, payload is raw input string/bytes)
-            let parts: Vec<&str> = metadata.split(':').collect();
-            if parts.len() < 2 {
-                return (
-                    false,
-                    "Invalid WebAssembly metadata format"
-                        .to_string()
-                        .into_bytes(),
-                );
-            }
-            let module_name = parts[0];
-            let func_name = parts[1];
-
-            let limit_bytes = if parts.len() >= 3 {
-                parts[2].parse::<usize>().unwrap_or(100 * 1024 * 1024)
-            } else {
-                std::env::var("PYROXIDE_WASM_MEMORY_LIMIT_BYTES")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(100 * 1024 * 1024)
-            };
-            let timeout_ms = if parts.len() >= 4 {
-                parts[3].parse::<u64>().unwrap_or(1000)
-            } else {
-                std::env::var("PYROXIDE_WASM_TIMEOUT_MS")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(1000)
-            };
-
+        RequestMetadata::Wasm {
+            module,
+            function,
+            memory_limit,
+            timeout_ms,
+        } => {
             match crate::backends::wasm::execute_wasm_guest(
-                module_name,
-                func_name,
+                module,
+                function,
                 payload,
-                limit_bytes,
-                timeout_ms,
+                *memory_limit,
+                *timeout_ms,
                 None,
             ) {
                 Ok(bytes) => (true, bytes),
                 Err(err) => (false, err.into_bytes()),
             }
         }
-        2 => {
-            // Dynamic Shared Library Task (Metadata contains plugin_name:symbol_name, payload is raw input string/bytes)
-            let parts: Vec<&str> = metadata.split(':').collect();
-            if parts.is_empty() {
-                return (
-                    false,
-                    "Invalid dynamic library metadata format"
-                        .to_string()
-                        .into_bytes(),
-                );
-            }
-            let plugin_name = parts[0];
-            let symbol_name = if parts.len() > 1 {
-                parts[1]
+        RequestMetadata::Dylib {
+            plugin,
+            symbol,
+            signature,
+        } => {
+            let processed = if let Some((args, ret)) = signature {
+                crate::backends::dylib::execute_dylib_ffi(
+                    plugin,
+                    symbol,
+                    args,
+                    ret.as_str(),
+                    payload,
+                )
             } else {
-                "pyroxide_plugin_run"
-            };
-
-            let processed = if parts.len() > 2 {
-                let sig_part = parts[2];
-                let sig_parts: Vec<&str> = sig_part.split('|').collect();
-                if sig_parts.len() != 2 {
-                    Err("Invalid FFI signature metadata format".to_string())
-                } else {
-                    let args: Vec<String> = sig_parts[0]
-                        .split(',')
-                        .map(|s| s.to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    let ret = sig_parts[1];
-                    crate::backends::dylib::execute_dylib_ffi(plugin_name, symbol_name, &args, ret, payload)
-                }
-            } else {
-                crate::backends::dylib::execute_dylib(plugin_name, symbol_name, payload)
+                crate::backends::dylib::execute_dylib(plugin, symbol, payload)
             };
 
             match processed {
@@ -416,37 +271,34 @@ fn execute_worker_task(task_type: u8, metadata: &str, payload: &[u8]) -> (bool, 
                 Err(err) => (false, err.into_bytes()),
             }
         }
-        10 => {
-            // Register WASM module in worker
-            let module_name = metadata.to_string();
-            match crate::backends::wasm::register_wasm_module_internal(module_name, payload.to_vec()) {
+        RequestMetadata::RegisterWasm { module } => {
+            match crate::backends::wasm::register_wasm_module_internal(
+                module.clone(),
+                payload.to_vec(),
+            ) {
                 Ok(_) => (true, Vec::new()),
                 Err(e) => (false, e.into_bytes()),
             }
         }
-        11 => {
-            // Register Dylib in worker
-            let plugin_name = metadata.to_string();
-            let payload_str = String::from_utf8_lossy(payload).into_owned();
-            let parts: Vec<&str> = payload_str.split(';').collect();
-            let library_path = parts[0].to_string();
-            let free_fn_name = if parts.len() > 1 && !parts[1].is_empty() {
-                Some(parts[1].to_string())
-            } else {
-                None
-            };
-            match crate::backends::dylib::register_dylib_internal(plugin_name, library_path, free_fn_name) {
+        RequestMetadata::RegisterDylib {
+            plugin,
+            library_path,
+            free_fn_name,
+        } => {
+            match crate::backends::dylib::register_dylib_internal(
+                plugin.clone(),
+                library_path.clone(),
+                free_fn_name.clone(),
+            ) {
                 Ok(_) => (true, Vec::new()),
                 Err(e) => (false, e.into_bytes()),
             }
         }
-        12 => {
-            // Unregister a stale Dylib before replacing it in a warm worker.
-            match crate::backends::dylib::unregister_dylib_internal(metadata) {
+        RequestMetadata::UnregisterDylib { plugin } => {
+            match crate::backends::dylib::unregister_dylib_internal(plugin) {
                 Ok(_) => (true, Vec::new()),
                 Err(e) => (false, e.into_bytes()),
             }
         }
-        _ => (false, "Unknown task type".to_string().into_bytes()),
     }
 }
